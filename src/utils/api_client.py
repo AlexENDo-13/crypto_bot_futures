@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AsyncBingXClient — полностью исправленный клиент BingX API.
-Правильные эндпоинты v2, обработка ошибок, retry, синхронизация времени.
+AsyncBingXClient — исправленный клиент BingX API.
+Корректная подпись HMAC-SHA256 для v2 эндпоинтов.
 """
 import aiohttp
 import asyncio
@@ -18,14 +18,13 @@ logger = logging.getLogger("AsyncBingXClient")
 
 
 class AsyncBingXClient:
-    """Асинхронный клиент BingX Futures API v2 с полной обработкой ошибок."""
+    """Асинхронный клиент BingX Futures API v2 с корректной подписью."""
 
     BASE_URL = "https://open-api.bingx.com"
     DEMO_URL = "https://open-api-vst.bingx.com"
 
-    # BingX error codes
     ERROR_CODES = {
-        100001: "API key не действителен",
+        100001: "API key не действителен или подпись неверна",
         100002: "Ошибка подписи",
         100003: "Неверный timestamp",
         100004: "Нет разрешения",
@@ -52,26 +51,6 @@ class AsyncBingXClient:
         100423: "Неверный тип позиции",
         100424: "Неверный режим маржи",
         100425: "Неверный режим позиции",
-        100426: "Неверный trigger price",
-        100427: "Неверный clientOrderId",
-        100428: "Ордер уже отменён",
-        100429: "Ордер в процессе отмены",
-        100430: "Неверный timeInForce",
-        100431: "Неверный workingType",
-        100432: "Неверный priceProtect",
-        100433: "Неверный newClientOrderId",
-        100434: "Неверный stopPrice",
-        100435: "Неверный icebergQty",
-        100436: "Неверный recvWindow",
-        100437: "Неверный positionSide",
-        100438: "Неверный closePosition",
-        100439: "Неверный activationPrice",
-        100440: "Неверный callbackRate",
-        100441: "Неверный priceRate",
-        100442: "Неверный trailingStop",
-        100443: "Неверный triggerDirection",
-        100444: "Неверный marginType",
-        100445: "Неверный autoAddMargin",
         80001: "Система занята, повторите позже",
         80016: "Неверный период свечей",
     }
@@ -87,9 +66,8 @@ class AsyncBingXClient:
         self._server_time_offset = 0
         self._symbol_info_cache: Dict[str, Dict] = {}
         self._last_symbol_info_update = 0
-        self._request_count = 0
         self._last_request_time = 0
-        self._rate_limit_delay = 0.05  # 50ms между запросами
+        self._rate_limit_delay = 0.05
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -132,12 +110,11 @@ class AsyncBingXClient:
         """Возвращает timestamp с учётом смещения сервера."""
         return int(time.time() * 1000) + self._server_time_offset
 
-    def _sign(self, params: dict) -> str:
-        """Создаёт подпись HMAC-SHA256."""
-        query = urlencode(sorted(params.items()))
+    def _sign(self, query_string: str) -> str:
+        """Создаёт подпись HMAC-SHA256 из query string."""
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
-            query.encode('utf-8'),
+            query_string.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
         return signature
@@ -151,10 +128,10 @@ class AsyncBingXClient:
         retries: int = 3,
         retry_delay: float = 1.0
     ) -> Optional[Dict]:
-        """Универсальный запрос с retry-логикой и rate limiting."""
+        """Универсальный запрос с корректной подписью BingX."""
         session = await self._get_session()
-        url = f"{self.base_url}{path}"
         params = params or {}
+        headers = {"X-BX-APIKEY": self.api_key}
 
         # Rate limiting
         now = time.time()
@@ -163,43 +140,56 @@ class AsyncBingXClient:
             await asyncio.sleep(self._rate_limit_delay - elapsed)
         self._last_request_time = time.time()
 
-        if signed:
-            params["timestamp"] = self._get_timestamp()
-            params["recvWindow"] = 5000
-            signature = self._sign(params)
-            params["signature"] = signature
-
-        headers = {"X-BX-APIKEY": self.api_key}
-
         last_error = None
         for attempt in range(retries):
             try:
-                if method.upper() == "GET":
-                    async with session.get(url, params=params, headers=headers) as resp:
-                        text = await resp.text()
-                        try:
-                            data = json.loads(text)
-                        except json.JSONDecodeError:
-                            logger.error(f"Невалидный JSON ответ: {text[:200]}")
-                            return None
-                elif method.upper() == "POST":
-                    async with session.post(url, data=params, headers=headers) as resp:
-                        text = await resp.text()
-                        try:
-                            data = json.loads(text)
-                        except json.JSONDecodeError:
-                            logger.error(f"Невалидный JSON ответ: {text[:200]}")
-                            return None
-                elif method.upper() == "DELETE":
-                    async with session.delete(url, params=params, headers=headers) as resp:
-                        text = await resp.text()
-                        try:
-                            data = json.loads(text)
-                        except json.JSONDecodeError:
-                            logger.error(f"Невалидный JSON ответ: {text[:200]}")
-                            return None
+                if signed:
+                    # BingX signature: sort all params, create query string, sign it, append signature
+                    params["timestamp"] = self._get_timestamp()
+                    params["recvWindow"] = 5000
+
+                    # Sort alphabetically and create query string (WITHOUT signature)
+                    sorted_params = sorted(params.items())
+                    query_string = urlencode(sorted_params)
+
+                    # Generate signature from query string
+                    signature = self._sign(query_string)
+
+                    # Build final URL: query_string + &signature=...
+                    full_query = f"{query_string}&signature={signature}"
+                    request_url = f"{self.base_url}{path}?{full_query}"
+
+                    if method.upper() == "GET":
+                        async with session.get(request_url, headers=headers) as resp:
+                            text = await resp.text()
+                    elif method.upper() == "POST":
+                        async with session.post(request_url, headers=headers) as resp:
+                            text = await resp.text()
+                    elif method.upper() == "DELETE":
+                        async with session.delete(request_url, headers=headers) as resp:
+                            text = await resp.text()
+                    else:
+                        raise ValueError(f"Unsupported HTTP method: {method}")
                 else:
-                    raise ValueError(f"Unsupported HTTP method: {method}")
+                    # Unsigned request
+                    request_url = f"{self.base_url}{path}"
+                    if method.upper() == "GET":
+                        async with session.get(request_url, params=params, headers=headers) as resp:
+                            text = await resp.text()
+                    elif method.upper() == "POST":
+                        async with session.post(request_url, data=params, headers=headers) as resp:
+                            text = await resp.text()
+                    elif method.upper() == "DELETE":
+                        async with session.delete(request_url, params=params, headers=headers) as resp:
+                            text = await resp.text()
+                    else:
+                        raise ValueError(f"Unsupported HTTP method: {method}")
+
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    logger.error(f"Невалидный JSON ответ: {text[:200]}")
+                    return None
 
                 # Check for BingX errors
                 if data and data.get("code") != 0:
@@ -209,12 +199,12 @@ class AsyncBingXClient:
                     logger.warning(f"BingX API Error {code}: {msg} ({error_desc})")
 
                     # Retryable errors
-                    if code in (100003, 100005, 80001, 100002):
+                    if code in (100001, 100002, 100003, 100005, 80001):
                         if attempt < retries - 1:
                             await self._sync_server_time(force=True)
                             await asyncio.sleep(retry_delay * (attempt + 1))
                             continue
-                    return data  # Return error response for caller to handle
+                    return data
 
                 return data
 
@@ -244,7 +234,7 @@ class AsyncBingXClient:
 
     async def get_symbol_info(self, symbol: str = None) -> Optional[Dict]:
         """Получает информацию о торговых парах (stepSize, minNotional и т.д.)."""
-        cache_ttl = 300  # 5 minutes
+        cache_ttl = 300
         now = time.time()
 
         if symbol and symbol in self._symbol_info_cache:
@@ -372,10 +362,8 @@ class AsyncBingXClient:
         result = await self._request("GET", "/openApi/swap/v2/user/balance", signed=True)
         if result and result.get("code") == 0:
             data = result.get("data", {})
-            # BingX returns balance in nested structure
             balances = data.get("balance", []) if isinstance(data.get("balance"), list) else []
             if not balances and isinstance(data, dict):
-                # Try direct access
                 usdt_balance = data.get("availableMargin", data.get("balance", 0))
                 if isinstance(usdt_balance, (int, float, str)):
                     return {
@@ -390,7 +378,6 @@ class AsyncBingXClient:
                         "available": float(bal.get("availableBalance", bal.get("balance", 0))),
                         "used": float(bal.get("usedMargin", 0)),
                     }
-            # Fallback: return total if we can't find USDT
             if isinstance(data, dict):
                 return {
                     "balance": float(data.get("balance", 0)),
