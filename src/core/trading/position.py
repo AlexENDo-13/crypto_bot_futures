@@ -2,17 +2,17 @@
 Страница открытых позиций
 """
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QHeaderView, QLabel, QPushButton, QMessageBox
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
+    QTableWidgetItem, QHeaderView, QLabel, QPushButton, QMessageBox
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
+
 
 class PositionsPage(QWidget):
     def __init__(self):
         super().__init__()
         self.init_ui()
-
         # Таймер автообновления
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self._auto_update)
@@ -32,14 +32,13 @@ class PositionsPage(QWidget):
         self.btn_close_all.setEnabled(False)
         header.addWidget(self.btn_close_all)
         header.addStretch()
-
         layout.addLayout(header)
 
         # Таблица позиций
         self.table = QTableWidget()
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
-            "Символ", "Направление", "Кол-во", "Цена входа", 
+            "Символ", "Направление", "Кол-во", "Цена входа",
             "Текущая цена", "PnL", "PnL %", "Действия"
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -58,18 +57,15 @@ class PositionsPage(QWidget):
         Обновляет таблицу позиций.
         Принимает list (от engine) или dict (старый формат).
         """
-        # Нормализуем в list
         if isinstance(positions, dict):
             positions = list(positions.values())
         elif not isinstance(positions, list):
             positions = []
 
         self.table.setRowCount(len(positions))
-
         total_pnl = 0.0
 
         for row, pos in enumerate(positions):
-            # Поддержка разных форматов данных
             symbol = pos.get("symbol", pos.get("Symbol", "UNKNOWN"))
             side = pos.get("side", pos.get("positionSide", "UNKNOWN"))
             qty = float(pos.get("quantity", pos.get("positionAmt", 0)))
@@ -85,78 +81,32 @@ class PositionsPage(QWidget):
             pnl_percent = (pnl / (entry_price * qty) * 100) if entry_price > 0 and qty > 0 else 0
             total_pnl += pnl
 
-            # Заполняем таблицу
             items = [
-                symbol,
-                side,
-                f"{qty:.6f}",
-                f"{entry_price:.4f}",
-                f"{current_price:.4f}",
-                f"{pnl:+.2f}",
-                f"{pnl_percent:+.2f}%",
-                "Закрыть"
+                symbol, side, f"{qty:.6f}", f"{entry_price:.4f}",
+                f"{current_price:.4f}", f"{pnl:+.2f}", f"{pnl_percent:+.2f}%", "Закрыть"
             ]
-
             for col, text in enumerate(items):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-
-                # Цвета для PnL
                 if col == 5:  # PnL
                     if pnl > 0:
                         item.setForeground(QColor("#4CAF50"))
                     elif pnl < 0:
                         item.setForeground(QColor("#F44336"))
-
                 if col == 6:  # PnL %
                     if pnl_percent > 0:
                         item.setForeground(QColor("#4CAF50"))
                     elif pnl_percent < 0:
                         item.setForeground(QColor("#F44336"))
-
                 self.table.setItem(row, col, item)
 
-            # Кнопка закрытия
-            btn = QPushButton("❌")
-            btn.setMaximumWidth(40)
-            btn.clicked.connect(lambda checked, s=symbol: self._close_position(s))
-            self.table.setCellWidget(row, 7, btn)
-
-        # Обновляем статус
-        if positions:
-            self.status_label.setText(f"Позиций: {len(positions)} | Общий PnL: {total_pnl:+.2f} USDT")
-            self.btn_close_all.setEnabled(True)
-        else:
-            self.status_label.setText("Нет открытых позиций")
-            self.btn_close_all.setEnabled(False)
+        self.status_label.setText(
+            f"Всего позиций: {len(positions)} | Общий PnL: {total_pnl:+.2f} USDT"
+        )
 
     def _auto_update(self):
-        """Заглушка для автообновления — вызывается из main_window"""
+        # Будет вызываться из MainWindow
         pass
 
-    def _close_position(self, symbol: str):
-        """Закрыть одну позицию"""
-        reply = QMessageBox.question(
-            self, "Закрытие позиции",
-            f"Закрыть позицию {symbol}?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if reply == QMessageBox.Yes:
-            # Сигнал в main_window
-            main_window = self.window()
-            if main_window and hasattr(main_window, 'engine') and main_window.engine:
-                # TODO: реализовать закрытие через executor
-                pass
-
     def _close_all_positions(self):
-        """Закрыть все позиции"""
-        reply = QMessageBox.question(
-            self, "Закрытие всех позиций",
-            "Закрыть ВСЕ открытые позиции?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if reply == QMessageBox.Yes:
-            main_window = self.window()
-            if main_window and hasattr(main_window, 'engine') and main_window.engine:
-                # TODO: реализовать массовое закрытие
-                pass
+        QMessageBox.information(self, "Закрыть все", "Функция в разработке")

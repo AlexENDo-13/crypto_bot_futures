@@ -1,18 +1,15 @@
-"""
-Главное окно приложения торгового бота
-"""
+""" Главное окно приложения торгового бота """
 import sys
 import asyncio
 import threading
 from datetime import datetime
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QStatusBar, QLabel, QPushButton,
-    QMessageBox, QApplication, QSplitter
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
+    QStatusBar, QLabel, QPushButton, QMessageBox, QApplication,
+    QSplitter
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QMetaObject, Q_ARG
 from PyQt5.QtGui import QFont, QIcon
-
 from src.ui.pages.dashboard import DashboardPage
 from src.ui.pages.positions import PositionsPage
 from src.ui.pages.trades_history import TradesHistoryPage
@@ -22,6 +19,7 @@ from src.ui.pages.system_monitor import SystemMonitorPage
 from src.ui.system_tray import SystemTray
 from src.config.settings import Settings
 from src.core.logger import BotLogger
+
 
 class EngineInitWorker(QThread):
     """Поток для асинхронной инициализации движка"""
@@ -40,21 +38,17 @@ class EngineInitWorker(QThread):
             from src.core.executor.trade_executor import TradeExecutor
             from src.core.risk.risk_manager import RiskManager
             from src.utils.api_client import AsyncBingXClient
-
             logger = BotLogger("TradingBot")
             logger.info("Инициализация компонентов торгового движка...")
-
             api_client = AsyncBingXClient(
                 api_key=self.settings.get("api_key", ""),
-                secret_key=self.settings.get("api_secret", ""),
+                api_secret=self.settings.get("api_secret", ""),
                 demo_mode=self.settings.get("demo_mode", True)
             )
-
             data_fetcher = MarketDataFetcher(api_client, self.settings, logger)
             scanner = MarketScanner(api_client, self.settings, logger)
             executor = TradeExecutor(api_client, self.settings, logger)
             risk_manager = RiskManager(api_client, self.settings)
-
             engine = TradingEngine(
                 client=api_client,
                 data_fetcher=data_fetcher,
@@ -64,12 +58,11 @@ class EngineInitWorker(QThread):
                 settings=self.settings,
                 logger=logger
             )
-
             logger.info("Торговый движок успешно создан")
             self.finished.emit(engine)
-
         except Exception as e:
             self.error.emit(str(e))
+
 
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings):
@@ -82,88 +75,70 @@ class MainWindow(QMainWindow):
         self.scanner = None
         self.executor = None
         self.risk_manager = None
-
         self.setWindowTitle("Crypto Trading Bot - BingX Futures")
         self.setMinimumSize(1200, 800)
-
         self._init_ui()
         self._init_menu()
         self._init_statusbar()
-
         self.tray = SystemTray(QApplication.instance(), self, self.logger)
         self.tray.show()
-
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self._update_status)
         self.status_timer.start(1000)
-
         self._start_engine_init()
 
     def _init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(5, 5, 5, 5)
-
         top_panel = QHBoxLayout()
         self.btn_start = QPushButton("▶ Запустить")
         self.btn_start.setEnabled(False)
-        self.btn_start.clicked.connect(self.start_engine)
-
-        self.btn_stop = QPushButton("⏹ Остановить")
-        self.btn_stop.setEnabled(False)
-        self.btn_stop.clicked.connect(self.stop_engine)
-
+        self.btn_start.clicked.connect(self._toggle_engine)
+        top_panel.addWidget(self.btn_start)
         self.btn_pause = QPushButton("⏸ Пауза")
         self.btn_pause.setEnabled(False)
-        self.btn_pause.clicked.connect(self.pause_engine)
-
-        top_panel.addWidget(self.btn_start)
-        top_panel.addWidget(self.btn_stop)
+        self.btn_pause.clicked.connect(self._toggle_pause)
         top_panel.addWidget(self.btn_pause)
+        self.btn_stop = QPushButton("⏹ Стоп")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self._stop_engine)
+        top_panel.addWidget(self.btn_stop)
         top_panel.addStretch()
-
-        self.label_status = QLabel("Статус: Инициализация...")
-        top_panel.addWidget(self.label_status)
-
+        self.lbl_status = QLabel("⚪ Движок не инициализирован")
+        self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold;")
+        top_panel.addWidget(self.lbl_status)
         main_layout.addLayout(top_panel)
-
-        self.tab_widget = QTabWidget()
-        self.dashboard = DashboardPage()
+        self.tabs = QTabWidget()
+        self.dashboard_page = DashboardPage()
+        self.tabs.addTab(self.dashboard_page, "📊 Дашборд")
         self.positions_page = PositionsPage()
+        self.tabs.addTab(self.positions_page, "📈 Позиции")
         self.trades_page = TradesHistoryPage()
-        self.config_page = ConfigPanel(self.settings)
+        self.tabs.addTab(self.trades_page, "📋 История")
+        self.config_page = ConfigPanel(settings=self.settings)
+        self.tabs.addTab(self.config_page, "⚙ Настройки")
         self.logs_page = LogsPage()
+        self.tabs.addTab(self.logs_page, "📜 Логи")
         self.monitor_page = SystemMonitorPage()
-
-        self.tab_widget.addTab(self.dashboard, "Дашборд")
-        self.tab_widget.addTab(self.positions_page, "Позиции")
-        self.tab_widget.addTab(self.trades_page, "История сделок")
-        self.tab_widget.addTab(self.monitor_page, "Мониторинг")
-        self.tab_widget.addTab(self.config_page, "Настройки")
-        self.tab_widget.addTab(self.logs_page, "Логи")
-
-        main_layout.addWidget(self.tab_widget)
+        self.tabs.addTab(self.monitor_page, "🖥 Система")
+        main_layout.addWidget(self.tabs)
 
     def _init_menu(self):
-        menubar = self.menuBar()
-        file_menu = menubar.addMenu("Файл")
-        exit_action = file_menu.addAction("Выход")
-        exit_action.triggered.connect(self.close)
-
-        view_menu = menubar.addMenu("Вид")
-        view_menu.addAction("Всегда поверх других").setCheckable(True)
-
-        help_menu = menubar.addMenu("Помощь")
-        help_menu.addAction("О программе", self._show_about)
+        pass
 
     def _init_statusbar(self):
-        self.statusbar = QStatusBar()
-        self.setStatusBar(self.statusbar)
-        self.statusbar.showMessage("Готов")
+        self.statusbar = self.statusBar()
+        self.lbl_balance = QLabel("💰 Баланс: --")
+        self.statusbar.addPermanentWidget(self.lbl_balance)
+        self.lbl_pnl = QLabel("📊 PnL: --")
+        self.statusbar.addPermanentWidget(self.lbl_pnl)
+        self.lbl_positions = QLabel("📈 Позиций: 0")
+        self.statusbar.addPermanentWidget(self.lbl_positions)
 
     def _start_engine_init(self):
+        self.lbl_status.setText("🔄 Инициализация движка...")
         self.worker = EngineInitWorker(self.settings)
         self.worker.finished.connect(self._on_engine_ready)
         self.worker.error.connect(self._on_engine_error)
@@ -171,131 +146,82 @@ class MainWindow(QMainWindow):
 
     def _on_engine_ready(self, engine):
         self.engine = engine
-        self.engine.set_update_callback(self._on_engine_update)
-
         self.api_client = engine.client
         self.data_fetcher = engine.data_fetcher
         self.scanner = engine.scanner
         self.executor = engine.executor
         self.risk_manager = engine.risk_manager
-
-        self.tray.set_engine(engine)
-        self.monitor_page.set_engine(engine)
-
+        self.logger.add_callback(self.logs_page.add_log)
+        self.engine.set_update_callback(self._on_engine_update)
         self.btn_start.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        self.btn_pause.setEnabled(False)
-        self.label_status.setText("Статус: Готов")
-        self.statusbar.showMessage("Движок инициализирован")
-        self.logger.info("Главное окно: движок готов к работе")
+        self.lbl_status.setText("🟢 Движок готов")
+        self.logger.info("Движок инициализирован и готов к работе")
 
     def _on_engine_error(self, error_msg):
-        self.label_status.setText("Статус: Ошибка инициализации")
-        self.statusbar.showMessage(f"Ошибка: {error_msg}")
-        self.logger.error(f"Ошибка инициализации движка: {error_msg}")
-        QMessageBox.critical(self, "Ошибка", f"Не удалось инициализировать торговый движок:\n{error_msg}")
+        self.lbl_status.setText(f"🔴 Ошибка: {error_msg[:50]}")
+        QMessageBox.critical(self, "Ошибка инициализации", f"Не удалось запустить торговый движок:\n\n{error_msg}")
 
-    def start_engine(self):
-        if self.engine:
-            try:
-                self.engine.start()
-                self.btn_start.setEnabled(False)
-                self.btn_stop.setEnabled(True)
-                self.btn_pause.setEnabled(True)
-                self.label_status.setText("Статус: Работает")
-                self.statusbar.showMessage("Торговый движок запущен")
-                self.logger.info("Движок запущен пользователем")
-            except Exception as e:
-                QMessageBox.warning(self, "Ошибка", f"Не удалось запустить движок: {e}")
-
-    def stop_engine(self):
-        if self.engine:
-            try:
-                self.engine.stop()
-                self.btn_start.setEnabled(True)
-                self.btn_stop.setEnabled(False)
-                self.btn_pause.setEnabled(False)
-                self.label_status.setText("Статус: Остановлен")
-                self.statusbar.showMessage("Торговый движок остановлен")
-                self.logger.info("Движок остановлен пользователем")
-            except Exception as e:
-                QMessageBox.warning(self, "Ошибка", f"Ошибка при остановке движка: {e}")
-
-    def pause_engine(self):
-        if self.engine and hasattr(self.engine, 'pause'):
-            try:
-                self.engine.pause()
-                self.btn_pause.setText("▶ Продолжить")
-                self.btn_pause.clicked.disconnect()
-                self.btn_pause.clicked.connect(self.resume_engine)
-                self.label_status.setText("Статус: Пауза")
-                self.statusbar.showMessage("Торговля приостановлена")
-                self.logger.info("Движок поставлен на паузу")
-            except Exception as e:
-                QMessageBox.warning(self, "Ошибка", f"Не удалось поставить на паузу: {e}")
-
-    def resume_engine(self):
-        if self.engine and hasattr(self.engine, 'resume'):
-            try:
-                self.engine.resume()
-                self.btn_pause.setText("⏸ Пауза")
-                self.btn_pause.clicked.disconnect()
-                self.btn_pause.clicked.connect(self.pause_engine)
-                self.label_status.setText("Статус: Работает")
-                self.statusbar.showMessage("Торговля возобновлена")
-                self.logger.info("Движок возобновлён")
-            except Exception as e:
-                QMessageBox.warning(self, "Ошибка", f"Не удалось возобновить: {e}")
-
-    def _on_engine_update(self, data):
-        """Обновление UI при получении данных от движка"""
+    def _on_engine_update(self, data: dict):
         if data.get("type") == "status":
             status = data.get("data", {})
-            self.dashboard.update_status(
-                balance=status.get("balance", 0),
-                real_balance=0,
-                pnl=status.get("pnl", 0),
-                pnl_percent=0,
-                mode="Демо" if self.settings.get("demo_mode", True) else "Реальный",
-                positions_count=status.get("positions", 0)
-            )
+            self.lbl_balance.setText(f"💰 Баланс: {status.get('balance', 0):.2f} USDT")
+            self.lbl_pnl.setText(f"📊 PnL: {status.get('pnl', 0):.2f}")
+            self.lbl_positions.setText(f"📈 Позиций: {status.get('positions', 0)}")
+            self.dashboard_page.update_status(status)
         elif data.get("type") == "signals":
-            # Можно добавить отображение сигналов
-            pass
+            self.dashboard_page.update_signals(data.get("data", []))
+
+    def _toggle_engine(self):
+        if self.engine is None:
+            return
+        if self.engine.is_running():
+            self._stop_engine()
+        else:
+            self._start_engine()
+
+    def _start_engine(self):
+        if self.engine:
+            self.engine.start()
+            self.btn_start.setEnabled(False)
+            self.btn_pause.setEnabled(True)
+            self.btn_stop.setEnabled(True)
+            self.lbl_status.setText("🟢 Торговля активна")
+
+    def _stop_engine(self):
+        if self.engine:
+            self.engine.stop()
+            self.btn_start.setEnabled(True)
+            self.btn_pause.setEnabled(False)
+            self.btn_stop.setEnabled(False)
+            self.lbl_status.setText("🔴 Движок остановлен")
+
+    def _toggle_pause(self):
+        if self.engine is None:
+            return
+        if self.engine.state.value == "PAUSED":
+            self.engine.resume()
+            self.btn_pause.setText("⏸ Пауза")
+            self.lbl_status.setText("🟢 Торговля активна")
+        else:
+            self.engine.pause()
+            self.btn_pause.setText("▶ Продолжить")
+            self.lbl_status.setText("🟡 Торговля на паузе")
 
     def _update_status(self):
         if self.engine:
-            try:
-                status = self.engine.get_status()
-                self.statusbar.showMessage(
-                    f"Баланс: {status.get('balance', 0):.2f} USDT | "
-                    f"Позиций: {status.get('positions', 0)} | "
-                    f"PnL: {status.get('pnl', 0):.2f} USDT"
-                )
-            except:
-                pass
-
-    def _show_about(self):
-        QMessageBox.about(
-            self,
-            "О программе",
-            "<h3>Crypto Trading Bot</h3>"
-            "<p>Версия 1.0.0</p>"
-            "<p>Торговый бот для BingX Futures.</p>"
-        )
+            status = self.engine.get_status()
+            self.lbl_balance.setText(f"💰 Баланс: {status.get('balance', 0):.2f} USDT")
+            self.lbl_pnl.setText(f"📊 PnL: {status.get('pnl', 0):.2f}")
+            self.lbl_positions.setText(f"📈 Позиций: {status.get('positions', 0)}")
 
     def closeEvent(self, event):
-        if self.engine and self.engine.is_running():
-            reply = QMessageBox.question(
-                self, 'Подтверждение',
-                'Торговый движок активен. Остановить и выйти?',
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply == QMessageBox.Yes:
-                self.engine.stop()
-                event.accept()
-            else:
-                event.ignore()
-        else:
-            event.accept()
+        if self.engine:
+            self.engine.stop()
+        if self.api_client:
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(self.api_client.close())
+                loop.close()
+            except Exception:
+                pass
+        event.accept()

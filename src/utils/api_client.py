@@ -11,6 +11,7 @@ import asyncio
 from typing import Dict, Any, Optional
 import json
 
+
 class AsyncBingXClient:
     BASE_URL = "https://open-api.bingx.com"
     DEMO_URL = "https://open-api-vst.bingx.com"
@@ -55,6 +56,10 @@ class AsyncBingXClient:
         return int(time.time() * 1000) + self._time_offset
 
     def _sign(self, params: Dict[str, Any]) -> str:
+        """
+        Создаёт HMAC-SHA256 подпись.
+        Параметры должны быть отсортированы и НЕ содержать 'sign'.
+        """
         query = '&'.join(f"{k}={v}" for k, v in sorted(params.items()))
         return hmac.new(
             self.api_secret.encode('utf-8'),
@@ -62,7 +67,10 @@ class AsyncBingXClient:
             hashlib.sha256
         ).hexdigest()
 
-    async def _request(self, endpoint: str, params: Dict[str, Any] = None, method: str = 'GET', signed: bool = True) -> Dict:
+    async def _request(
+        self, endpoint: str, params: Dict[str, Any] = None,
+        method: str = 'GET', signed: bool = True
+    ) -> Dict:
         if params is None:
             params = {}
 
@@ -74,31 +82,39 @@ class AsyncBingXClient:
                 await asyncio.sleep(self._min_interval - elapsed)
             self._last_request_time = time.time()
 
-            # Для приватных запросов добавляем timestamp и подпись
-            if signed:
-                if self._time_offset == 0:
-                    await self._sync_time()
-                params['timestamp'] = self._get_timestamp()
-                params['apiKey'] = self.api_key
-                params['sign'] = self._sign(params)
+        # Для приватных запросов добавляем timestamp и подпись
+        if signed:
+            if self._time_offset == 0:
+                await self._sync_time()
+            params['timestamp'] = self._get_timestamp()
+            params['apiKey'] = self.api_key
+            # ИСПРАВЛЕНО: подпись вычисляется ДО добавления 'sign' в params
+            sign = self._sign(params)
+            params['sign'] = sign
 
-            session = await self._get_session()
-            url = f"{self.base_url}{endpoint}"
+        session = await self._get_session()
+        url = f"{self.base_url}{endpoint}"
 
-            try:
-                if method == 'GET':
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                        data = await resp.json()
-                else:
-                    headers = {'Content-Type': 'application/json'}
-                    async with session.post(url, json=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                        data = await resp.json()
+        try:
+            if method == 'GET':
+                async with session.get(
+                    url, params=params,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    data = await resp.json()
+            else:
+                # ИСПРАВЛЕНО: POST запросы с query string, не JSON body
+                async with session.post(
+                    url, params=params,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    data = await resp.json()
 
-                if data.get('code') != 0:
-                    raise Exception(f"API error {data.get('code')}: {data.get('msg')}")
-                return data.get('data', {})
-            except aiohttp.ClientError as e:
-                raise Exception(f"Network error: {e}")
+            if data.get('code') != 0:
+                raise Exception(f"API error {data.get('code')}: {data.get('msg')}")
+            return data.get('data', {})
+        except aiohttp.ClientError as e:
+            raise Exception(f"Network error: {e}")
 
     # ---------- Публичные методы (без подписи) ----------
     async def get_ticker(self, symbol: str) -> Dict:
@@ -133,11 +149,12 @@ class AsyncBingXClient:
         data = await self._request('/openApi/swap/v2/user/positions', {}, signed=True)
         return data if isinstance(data, list) else []
 
-    async def place_order(self, symbol: str, side: str, quantity: float, 
-                          leverage: int = 3, order_type: str = 'MARKET',
-                          price: float = None, position_side: str = None) -> Dict:
+    async def place_order(
+        self, symbol: str, side: str, quantity: float,
+        leverage: int = 3, order_type: str = 'MARKET',
+        price: float = None, position_side: str = None
+    ) -> Dict:
         symbol = symbol.replace('/', '-')
-
         if position_side is None:
             position_side = 'LONG' if side.upper() == 'BUY' else 'SHORT'
 
@@ -147,9 +164,8 @@ class AsyncBingXClient:
             'positionSide': position_side,
             'type': order_type.upper(),
             'quantity': str(quantity),
-            'leverage': str(leverage)
+            'leverage': str(leverage),
         }
-
         if price is not None and order_type.upper() == 'LIMIT':
             params['price'] = str(price)
 
@@ -172,13 +188,11 @@ class AsyncBingXClient:
             except Exception:
                 return None, None
 
-        # Используем gather с семафором (уже встроен в _request)
-        tasks = [fetch_one(c) for c in contracts[:50]]  # Ограничиваем 50 парами
+        tasks = [fetch_one(c) for c in contracts]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         tickers = {}
-        for result in results:
-            if isinstance(result, tuple) and result[0] is not None:
-                tickers[result[0]] = result[1]
-
+        for res in results:
+            if isinstance(res, tuple) and res[0] and res[1]:
+                tickers[res[0]] = res[1]
         return tickers

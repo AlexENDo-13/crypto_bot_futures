@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Technical Indicators
+ИСПРАВЛЕНО: RSI использует Wilder's smoothing (EMA с alpha=1/period)
+вместо .rolling().mean() (SMA).
 """
 import pandas as pd
 import numpy as np
@@ -11,11 +13,13 @@ from typing import Dict, Any
 def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     if df is None or len(df) < 30:
         return {}
+
     df = df.copy()
     required = ["open", "high", "low", "close", "volume"]
     for col in required:
         if col not in df.columns:
             return {}
+
     df.dropna(subset=required, inplace=True)
     if len(df) < 30:
         return {}
@@ -27,7 +31,7 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     result = {}
     current_price = float(close[-1])
 
-    # ATR%
+    # ATR (14)
     tr1 = high[1:] - low[1:]
     tr2 = np.abs(high[1:] - close[:-1])
     tr3 = np.abs(low[1:] - close[:-1])
@@ -36,11 +40,16 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     result["atr"] = atr
     result["atr_percent"] = (atr / current_price * 100) if current_price > 0 else 0.0
 
-    # RSI
+    # RSI (Wilder's smoothing)
     delta = pd.Series(close).diff()
-    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss.replace(0, np.nan)
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta.where(delta < 0, 0.0))
+
+    # Wilder EMA: alpha = 1 / period
+    alpha = 1.0 / 14
+    avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
     result["rsi"] = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50.0
 
@@ -63,7 +72,6 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     minus_dm = low[:-1] - low[1:]
     plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
     minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
-
     atr_series = pd.Series(tr).rolling(window=period).mean()
     plus_di = 100 * pd.Series(plus_dm).rolling(window=period).mean() / atr_series.replace(0, np.nan)
     minus_di = 100 * pd.Series(minus_dm).rolling(window=period).mean() / atr_series.replace(0, np.nan)

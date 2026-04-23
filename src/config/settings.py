@@ -33,11 +33,7 @@ DEFAULT_CONFIG = {
     # === Мультитаймфрейм ===
     "use_multi_timeframe": True,
     "timeframes": ["15m", "1h", "4h"],
-    "timeframe_weights": {
-        "15m": 0.2,
-        "1h": 0.5,
-        "4h": 0.3
-    },
+    "timeframe_weights": {"15m": 0.2, "1h": 0.5, "4h": 0.3},
     "min_timeframe_agreement": 2,
 
     # === Фильтры ===
@@ -179,7 +175,6 @@ class Settings:
             self._data = DEFAULT_CONFIG.copy()
             self.save()
             logger.info(f"Создан дефолтный конфиг: {self._config_file}")
-
         return self._data.copy()
 
     def save(self):
@@ -205,6 +200,7 @@ class Settings:
     def __getattr__(self, name: str):
         """
         Доступ к настройкам как к атрибутам (для совместимости с dataclass).
+        default=<default> заменён на default=None, чтобы избежать NameError.
         """
         upper_name = name.upper()
         for key in self._data:
@@ -245,29 +241,19 @@ class Settings:
             'TIMEFRAME_WEIGHTS': 'timeframe_weights',
             'MIN_TIMEFRAME_AGREEMENT': 'min_timeframe_agreement',
         }
-
         if name in mapping:
-            return self._data.get(mapping[name], default)
-
+            return self._data.get(mapping[name], None)
         raise AttributeError(f"'Settings' object has no attribute '{name}'")
 
     @property
     def QTY_STEP(self) -> Dict[str, float]:
         """Совместимость с TradeExecutor"""
-        return {
-            "BTC-USDT": 0.001,
-            "ETH-USDT": 0.001,
-            "default": 0.001
-        }
+        return {"BTC-USDT": 0.001, "ETH-USDT": 0.001, "default": 0.001}
 
     @property
     def MIN_QTY(self) -> Dict[str, float]:
         """Совместимость с TradeExecutor"""
-        return {
-            "BTC-USDT": 0.001,
-            "ETH-USDT": 0.001,
-            "default": 0.001
-        }
+        return {"BTC-USDT": 0.001, "ETH-USDT": 0.001, "default": 0.001}
 
 
 # Для обратной совместимости с dataclass
@@ -303,14 +289,10 @@ class SettingsLegacy:
         "SHIB-USDT", "PEPE-USDT"
     ])
     QTY_STEP: Dict[str, float] = field(default_factory=lambda: {
-        "BTC-USDT": 0.001,
-        "ETH-USDT": 0.001,
-        "default": 0.001
+        "BTC-USDT": 0.001, "ETH-USDT": 0.001, "default": 0.001
     })
     MIN_QTY: Dict[str, float] = field(default_factory=lambda: {
-        "BTC-USDT": 0.001,
-        "ETH-USDT": 0.001,
-        "default": 0.001
+        "BTC-USDT": 0.001, "ETH-USDT": 0.001, "default": 0.001
     })
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "logs/trading_bot.log"

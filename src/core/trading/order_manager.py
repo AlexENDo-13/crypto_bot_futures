@@ -1,15 +1,15 @@
 """
-Менеджер ордеров для работы с BingX Futures через AsyncBingXClient
+Менеджер ордеров для работы с BingX Futures через AsyncBingXClient.
+ИСПРАВЛЕНО: убрано прямое использование _request в обход place_order.
 """
 import asyncio
 import time
 import uuid
 from typing import Dict, Optional, List
 from enum import Enum
-
 from src.utils.api_client import AsyncBingXClient
 from src.config.settings import Settings
-from src.core.logger import Logger
+from src.core.logger import BotLogger
 
 
 class OrderSide(str, Enum):
@@ -33,7 +33,7 @@ class PositionSide(str, Enum):
 class OrderManager:
     """Управление ордерами: создание, отмена, отслеживание"""
 
-    def __init__(self, client: AsyncBingXClient, settings: Settings, logger: Logger):
+    def __init__(self, client: AsyncBingXClient, settings: Settings, logger: BotLogger):
         self.client = client
         self.settings = settings
         self.logger = logger
@@ -53,43 +53,27 @@ class OrderManager:
     ) -> Optional[Dict]:
         """
         Размещение ордера на BingX Futures.
-        Возвращает ответ биржи или None при ошибке.
+        ИСПРАВЛЕНО: использует client.place_order вместо прямого _request.
         """
         if not client_order_id:
             client_order_id = f"bot_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
 
-        # Установка плеча
         try:
-            await self._set_leverage(symbol, leverage)
-        except Exception as e:
-            self.logger.error(f"Ошибка установки плеча: {e}")
-            return None
-
-        # Преобразование символа
-        symbol_clean = self._clean_symbol(symbol)
-
-        endpoint = "/api/v1/trade/order"
-        params = {
-            "symbol": symbol_clean,
-            "side": side.value,
-            "positionSide": position_side.value,
-            "type": order_type.value,
-            "quantity": str(quantity),
-            "newClientOrderId": client_order_id,
-        }
-
-        if price and order_type in (OrderType.LIMIT,):
-            params["price"] = str(price)
-        if stop_price and order_type in (OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET):
-            params["stopPrice"] = str(stop_price)
-
-        try:
-            response = await self.client._request("POST", endpoint, params, signed=True)
-            if response and response.get("code") == 0:
-                data = response.get("data", {})
-                order_id = data.get("orderId")
-                self.logger.info(f"Ордер размещён: {symbol} {side.value} {quantity} @ {price or 'MARKET'}, ID: {order_id}")
-                # Сохраняем в активные
+            # Используем унифицированный метод клиента
+            result = await self.client.place_order(
+                symbol=self._clean_symbol(symbol),
+                side=side.value,
+                quantity=quantity,
+                leverage=leverage,
+                order_type=order_type.value,
+                price=price,
+                position_side=position_side.value,
+            )
+            if result:
+                order_id = result.get("orderId", client_order_id)
+                self.logger.info(
+                    f"Ордер размещён: {symbol} {side.value} {quantity} @ {price or 'MARKET'}, ID: {order_id}"
+                )
                 self.active_orders[order_id] = {
                     "orderId": order_id,
                     "symbol": symbol,
@@ -100,21 +84,22 @@ class OrderManager:
                     "clientOrderId": client_order_id,
                     "timestamp": time.time(),
                 }
-                return data
-            else:
-                self.logger.error(f"Ошибка размещения ордера: {response}")
-                return None
+                return result
+            return None
         except Exception as e:
-            self.logger.error(f"Исключение при размещении ордера: {e}")
+            self.logger.error(f"Ошибка размещения ордера: {e}")
             return None
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         """Отмена ордера"""
         symbol_clean = self._clean_symbol(symbol)
-        endpoint = "/api/v1/trade/cancel"
-        params = {"symbol": symbol_clean, "orderId": order_id}
         try:
-            response = await self.client._request("DELETE", endpoint, params, signed=True)
+            # Для отмены используем прямой запрос, т.к. place_order не поддерживает cancel
+            response = await self.client._request(
+                "DELETE", "/api/v1/trade/cancel",
+                {"symbol": symbol_clean, "orderId": order_id},
+                signed=True
+            )
             if response and response.get("code") == 0:
                 self.logger.info(f"Ордер {order_id} отменён")
                 if order_id in self.active_orders:
@@ -127,11 +112,12 @@ class OrderManager:
 
     async def get_order_status(self, symbol: str, order_id: str) -> Optional[Dict]:
         """Получение статуса ордера"""
-        symbol_clean = self._clean_symbol(symbol)
-        endpoint = "/api/v1/trade/order"
-        params = {"symbol": symbol_clean, "orderId": order_id}
         try:
-            response = await self.client._request("GET", endpoint, params, signed=True)
+            response = await self.client._request(
+                "GET", "/api/v1/trade/order",
+                {"symbol": self._clean_symbol(symbol), "orderId": order_id},
+                signed=True
+            )
             if response and response.get("code") == 0:
                 return response.get("data")
             return None
@@ -141,12 +127,13 @@ class OrderManager:
 
     async def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict]:
         """Список открытых ордеров"""
-        endpoint = "/api/v1/trade/openOrders"
-        params = {}
-        if symbol:
-            params["symbol"] = self._clean_symbol(symbol)
         try:
-            response = await self.client._request("GET", endpoint, params, signed=True)
+            params = {}
+            if symbol:
+                params["symbol"] = self._clean_symbol(symbol)
+            response = await self.client._request(
+                "GET", "/api/v1/trade/openOrders", params, signed=True
+            )
             if response and response.get("code") == 0:
                 return response.get("data", [])
             return []
@@ -156,12 +143,13 @@ class OrderManager:
 
     async def get_positions(self, symbol: Optional[str] = None) -> List[Dict]:
         """Получение информации о позициях"""
-        endpoint = "/api/v1/trade/position"
-        params = {}
-        if symbol:
-            params["symbol"] = self._clean_symbol(symbol)
         try:
-            response = await self.client._request("GET", endpoint, params, signed=True)
+            params = {}
+            if symbol:
+                params["symbol"] = self._clean_symbol(symbol)
+            response = await self.client._request(
+                "GET", "/api/v1/trade/position", params, signed=True
+            )
             if response and response.get("code") == 0:
                 return response.get("data", [])
             return []
@@ -184,13 +172,14 @@ class OrderManager:
                     quantity = abs(float(pos.get("positionAmt", 0)))
                     if quantity > 0:
                         side = OrderSide.SELL if pos_side == "LONG" else OrderSide.BUY
-                        return await self.place_order(
+                        result = await self.place_order(
                             symbol=symbol,
                             side=side,
                             order_type=OrderType.MARKET,
                             quantity=quantity,
                             position_side=PositionSide(pos_side)
-                        ) is not None
+                        )
+                        return result is not None
             return False
         except Exception as e:
             self.logger.error(f"Ошибка закрытия позиции {symbol}: {e}")
@@ -198,14 +187,12 @@ class OrderManager:
 
     async def _set_leverage(self, symbol: str, leverage: int) -> bool:
         """Установка кредитного плеча для символа"""
-        symbol_clean = self._clean_symbol(symbol)
-        endpoint = "/api/v1/trade/leverage"
-        params = {
-            "symbol": symbol_clean,
-            "leverage": str(leverage),
-        }
         try:
-            response = await self.client._request("POST", endpoint, params, signed=True)
+            response = await self.client._request(
+                "POST", "/api/v1/trade/leverage",
+                {"symbol": self._clean_symbol(symbol), "leverage": str(leverage)},
+                signed=True
+            )
             if response and response.get("code") == 0:
                 self.logger.info(f"Плечо для {symbol} установлено: {leverage}x")
                 return True

@@ -11,15 +11,18 @@ from src.utils.api_client import AsyncBingXClient
 from src.core.market.data_fetcher import MarketDataFetcher
 from src.core.scanner.market_scanner import MarketScanner
 from src.core.executor.trade_executor import TradeExecutor
-from src.core.risk.risk_manager import RiskManager
+from src.core.risk.risk_manager import RiskManager, Position
+from src.core.exit.exit_manager import ExitManager
 from src.config.settings import Settings
 from src.core.logger import BotLogger
+
 
 class EngineState(Enum):
     STOPPED = "STOPPED"
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
     ERROR = "ERROR"
+
 
 class TradingEngine:
     """Главный торговый движок, управляющий жизненным циклом бота"""
@@ -32,7 +35,7 @@ class TradingEngine:
         executor: TradeExecutor,
         risk_manager: RiskManager,
         settings: Settings,
-        logger: BotLogger
+        logger: BotLogger,
     ):
         self.client = client
         self.data_fetcher = data_fetcher
@@ -41,15 +44,13 @@ class TradingEngine:
         self.risk_manager = risk_manager
         self.settings = settings
         self.logger = logger
-
+        self.exit_manager = ExitManager(settings)
         self.state = EngineState.STOPPED
         self._stop_event: Optional[asyncio.Event] = None
         self._pause_event: Optional[asyncio.Event] = None
-
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._update_callback: Optional[Callable] = None
-
         self._stats = {
             "balance": 0.0,
             "positions": 0,
@@ -59,7 +60,6 @@ class TradingEngine:
             "errors": 0,
             "last_scan_time": None,
         }
-
         self.logger.info("Торговый движок инициализирован")
 
     def set_update_callback(self, callback: Callable[[Dict], None]):
@@ -79,7 +79,6 @@ class TradingEngine:
         if self.state != EngineState.STOPPED:
             self.logger.warning(f"Невозможно запустить движок из состояния {self.state}")
             return
-
         self.state = EngineState.RUNNING
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
@@ -135,10 +134,9 @@ class TradingEngine:
         """Точка входа для потока: создаёт event loop и запускает основной цикл"""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        # Создаём события внутри event loop
         self._stop_event = asyncio.Event()
         self._pause_event = asyncio.Event()
-        self._pause_event.set()  # Изначально не на паузе
+        self._pause_event.set()
         try:
             self._loop.run_until_complete(self._main_loop())
         except Exception as e:
@@ -150,23 +148,17 @@ class TradingEngine:
     async def _main_loop(self):
         """Главный асинхронный цикл движка"""
         self.logger.info("Основной торговый цикл запущен")
-
         await self._update_account_info()
-
-        # ИСПРАВЛЕНО: scan_interval_minutes в минутах
         scan_interval = getattr(self.settings, 'scan_interval_minutes', 5) * 60
 
         while not self._stop_event.is_set():
             await self._pause_event.wait()
-
             cycle_start = time.time()
             try:
                 await self._update_account_info()
-
                 signals = await self.scanner.scan_all()
                 self._stats["signals_found"] = len(signals)
                 self._stats["last_scan_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
-
                 self._notify_ui({"type": "signals", "data": signals})
 
                 for signal in signals:
@@ -175,9 +167,7 @@ class TradingEngine:
                     await self._process_signal(signal)
 
                 await self._manage_positions()
-
                 self._notify_ui({"type": "status", "data": self.get_status()})
-
             except Exception as e:
                 self.logger.error(f"Ошибка в цикле сканирования: {e}")
                 self._stats["errors"] += 1
@@ -198,14 +188,13 @@ class TradingEngine:
             if balance_info:
                 self._stats["balance"] = balance_info.get("total_equity", 0.0)
                 self._stats["pnl"] = balance_info.get("unrealized_pnl", 0.0)
-
             positions = await self.executor.get_open_positions()
             self._stats["positions"] = len(positions) if positions else 0
-
         except Exception as e:
             self.logger.error(f"Ошибка обновления информации о счёте: {e}")
 
     async def _process_signal(self, signal: Dict):
+        """Обработка торгового сигнала с установкой SL/TP"""
         symbol = signal.get("symbol")
         direction = signal.get("direction")
         confidence = signal.get("confidence", 0.5)
@@ -229,6 +218,7 @@ class TradingEngine:
             return
 
         self.logger.info(f"Открытие позиции {direction} {symbol} размером {position_size}")
+
         result = await self.executor.open_position(
             symbol=symbol,
             side=direction,
@@ -239,20 +229,74 @@ class TradingEngine:
         if result and result.get("success"):
             self._stats["trades_executed"] += 1
             self.logger.info(f"Позиция {symbol} {direction} открыта, ордер: {result.get('order_id')}")
+
+            # Рассчитываем SL и TP
+            sl_pct = getattr(self.settings, "default_sl_pct", 1.5)
+            tp_pct = getattr(self.settings, "default_tp_pct", 3.0)
+            entry_price = float(result.get("avg_price", price))
+
+            if direction.upper() == "LONG":
+                stop_loss = entry_price * (1 - sl_pct / 100)
+                take_profit = entry_price * (1 + tp_pct / 100)
+            else:
+                stop_loss = entry_price * (1 + sl_pct / 100)
+                take_profit = entry_price * (1 - tp_pct / 100)
+
+            # Регистрируем позицию для трейлинг-стопа
+            position = Position(
+                symbol=symbol,
+                side=direction,
+                quantity=position_size,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                order_id=str(result.get("order_id", "")),
+            )
+            self.risk_manager.register_position(position)
+            self.logger.info(
+                f"SL={stop_loss:.4f} TP={take_profit:.4f} для {symbol}"
+            )
         else:
             self.logger.error(f"Не удалось открыть позицию {symbol}: {result}")
 
     async def _manage_positions(self):
-        """Управление открытыми позициями"""
+        """Управление открытыми позициями через ExitManager"""
         positions = await self.executor.get_open_positions()
         if not positions:
             return
 
-        for pos in positions:
+        for pos_data in positions:
             try:
-                await self.risk_manager.manage_position_risk(pos)
+                symbol = pos_data.get("symbol", "")
+                # Проверяем выход через ExitManager
+                tracked = self.risk_manager.get_tracked_positions().get(symbol)
+                if tracked:
+                    current_price = float(pos_data.get("markPrice", 0))
+                    exit_reason = self.exit_manager.check_exit(tracked, current_price)
+                    if exit_reason:
+                        self.logger.info(f"Выход из {symbol}: {exit_reason}")
+                        await self.executor.close_position(
+                            symbol=symbol,
+                            side=tracked.side,
+                            quantity=tracked.quantity,
+                        )
+                        self.risk_manager.remove_position(symbol)
+                    else:
+                        # Обновляем трейлинг-стоп
+                        self.exit_manager.update_trailing(tracked, current_price)
+
+                # Также вызываем risk_manager для дополнительных проверок
+                exit_reason = await self.risk_manager.manage_position_risk(pos_data)
+                if exit_reason and symbol in self.risk_manager.get_tracked_positions():
+                    tracked = self.risk_manager.get_tracked_positions()[symbol]
+                    await self.executor.close_position(
+                        symbol=symbol,
+                        side=tracked.side,
+                        quantity=tracked.quantity,
+                    )
+                    self.risk_manager.remove_position(symbol)
             except Exception as e:
-                self.logger.error(f"Ошибка управления позицией {pos.get('symbol')}: {e}")
+                self.logger.error(f"Ошибка управления позицией {pos_data.get('symbol')}: {e}")
 
     def start_async(self):
         self.start()

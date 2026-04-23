@@ -8,10 +8,10 @@ from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-
 from src.utils.api_client import AsyncBingXClient
 from src.config.settings import Settings
 from src.core.logger import BotLogger
+
 
 class MarketDataFetcher:
     """Класс для получения и кэширования рыночных данных"""
@@ -20,7 +20,6 @@ class MarketDataFetcher:
         self.client = client
         self.settings = settings
         self.logger = logger
-
         self._klines_cache: Dict[str, pd.DataFrame] = {}
         self._ticker_cache: Dict[str, Dict] = {}
         self._last_update: Dict[str, float] = {}
@@ -44,10 +43,7 @@ class MarketDataFetcher:
             return []
 
     async def fetch_klines(
-        self,
-        symbol: str,
-        interval: str = "1h",
-        limit: int = 100
+        self, symbol: str, interval: str = "1h", limit: int = 100
     ) -> Optional[pd.DataFrame]:
         """
         Получение исторических свечей.
@@ -62,7 +58,6 @@ class MarketDataFetcher:
             symbol_clean = symbol.replace(":USDT", "").replace("/", "-").upper()
             if not symbol_clean.endswith("-USDT"):
                 symbol_clean = f"{symbol_clean}-USDT"
-
             klines = await self.client.get_klines(symbol_clean, interval, limit)
             if not klines:
                 return None
@@ -94,15 +89,16 @@ class MarketDataFetcher:
             symbol_clean = symbol.replace(":USDT", "").replace("/", "-").upper()
             if not symbol_clean.endswith("-USDT"):
                 symbol_clean = f"{symbol_clean}-USDT"
-
             data = await self.client.get_ticker(symbol_clean)
             if data:
+                # ИСПРАВЛЕНО: volume_24h берётся из quoteVolume (USDT), а не volume (BTC)
+                # BingX API возвращает volume в базовой валюте и quoteVolume в USDT
                 ticker = {
                     "symbol": symbol,
                     "last_price": float(data.get("lastPrice", 0)),
                     "bid": float(data.get("bidPrice", 0)),
                     "ask": float(data.get("askPrice", 0)),
-                    "volume_24h": float(data.get("volume", 0)),
+                    "volume_24h": float(data.get("quoteVolume", data.get("volume", 0))),
                     "high_24h": float(data.get("highPrice", 0)),
                     "low_24h": float(data.get("lowPrice", 0)),
                     "change_percent": float(data.get("priceChangePercent", 0)),
@@ -133,38 +129,53 @@ class MarketDataFetcher:
             return None
 
     async def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Добавляет технические индикаторы: SMA, EMA, RSI, MACD, Bollinger Bands, ATR."""
+        """
+        Добавляет технические индикаторы: SMA, EMA, RSI (Wilder), MACD,
+        Bollinger Bands, ATR.
+        """
         if df.empty:
             return df
 
         df = df.copy()
-
         try:
+            # SMA
             df['sma_20'] = df['close'].rolling(window=20).mean()
             df['sma_50'] = df['close'].rolling(window=50).mean()
+
+            # EMA
             df['ema_12'] = df['close'].ewm(span=12, adjust=False).mean()
             df['ema_26'] = df['close'].ewm(span=26, adjust=False).mean()
 
+            # RSI (Wilder's smoothing)
             delta = df['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
+            gain = delta.where(delta > 0, 0.0)
+            loss = (-delta.where(delta < 0, 0.0))
+
+            # Wilder EMA: alpha = 1/period
+            alpha = 1.0 / 14
+            avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
+            rs = avg_gain / avg_loss.replace(0, np.nan)
             df['rsi'] = 100 - (100 / (1 + rs))
 
+            # MACD
             df['macd'] = df['ema_12'] - df['ema_26']
             df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
             df['macd_hist'] = df['macd'] - df['macd_signal']
 
+            # Bollinger Bands
             df['bb_mid'] = df['close'].rolling(window=20).mean()
             bb_std = df['close'].rolling(window=20).std()
             df['bb_upper'] = df['bb_mid'] + (bb_std * 2)
             df['bb_lower'] = df['bb_mid'] - (bb_std * 2)
 
+            # ATR (14)
             high_low = df['high'] - df['low']
             high_close = (df['high'] - df['close'].shift()).abs()
             low_close = (df['low'] - df['close'].shift()).abs()
             tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
             df['atr'] = tr.rolling(window=14).mean()
+            df['atr_percent'] = (df['atr'] / df['close']) * 100
 
         except Exception as e:
             self.logger.error(f"Ошибка расчёта индикаторов: {e}")
