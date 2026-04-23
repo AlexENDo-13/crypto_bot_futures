@@ -1,0 +1,30 @@
+# Секреты и конфигурации с ключами
+src/config/user_config.json
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Логи и базы данных
+logs/
+*.log
+*.db
+*.sqlite3
+data/logs/
+data/backups/
+
+# Резервные копии и патчи
+*.bak
+*.patch
+.patches_backup/
+
+# Виртуальное окружение
+venv/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
