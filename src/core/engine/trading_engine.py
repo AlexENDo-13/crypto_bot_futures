@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TradingEngine — thread-safe торговый движок.
+TradingEngine v3.0 — thread-safe торговый движок с улучшенной
+автономностью, self-healing и расширенной статистикой.
 """
 import asyncio
 import time
@@ -33,6 +34,7 @@ class TradingEngine:
         self.running = False
         self._task = None
         self._lock = threading.Lock()
+        self._stop_event = asyncio.Event()
 
         self.order_manager = OrderManager(api_client, logger)
         self.risk_manager = RiskManager(api_client, settings.to_dict())
@@ -58,13 +60,17 @@ class TradingEngine:
         self._last_error = ""
         self._total_trades = 0
         self._winning_trades = 0
-        self._positions_hash = ""  # для отслеживания изменений
+        self._positions_hash = ""
         self._history_hash = ""
         self._signals_hash = ""
+        self._loop_count = 0
+        self._start_time = time.time()
+        self._health_status = "OK"
 
     async def start(self):
         self.running = True
-        self.logger.info("🚀 Запуск главного цикла...")
+        self._stop_event.clear()
+        self.logger.info("🚀 Запуск TradingEngine v3.0...")
 
         for attempt in range(3):
             try:
@@ -72,12 +78,7 @@ class TradingEngine:
                 self.balance = bal_info.get("total_equity", 0)
                 self.start_balance = self.balance
                 if self.balance > 0:
-                    self.logger.info(f"💰 Баланс обновлён: {self.balance:.4f} USDT")
-                    self.logger.log_state("balance", {
-                        "total": self.balance, "available": bal_info.get("available_balance", self.balance),
-                        "used": bal_info.get("used", 0), "equity": bal_info.get("equity", self.balance),
-                        "unrealized": bal_info.get("unrealizedProfit", 0),
-                    })
+                    self.logger.info(f"💰 Баланс: {self.balance:.4f} USDT")
                     self._balance_fetch_failures = 0
                     break
                 else:
@@ -85,37 +86,48 @@ class TradingEngine:
                     if attempt < 2:
                         await asyncio.sleep(2)
             except Exception as e:
-                self.logger.error(f"❌ Ошибка получения баланса (попытка {attempt + 1}/3): {e}")
+                self.logger.error(f"❌ Ошибка баланса (попытка {attempt + 1}/3): {e}")
                 if attempt < 2:
                     await asyncio.sleep(2)
 
         if self.balance <= 0:
-            self.logger.warning("⚠️ Баланс не получен. Бот продолжит работу и будет повторять попытки.")
+            self.logger.warning("⚠️ Баланс не получен. Работаем в режиме мониторинга.")
 
         await self._sync_positions()
         self._task = asyncio.create_task(self._main_loop())
+        self.logger.info("✅ Движок запущен")
 
     async def stop(self):
         self.running = False
+        self._stop_event.set()
         if self._task:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        self.logger.info("⏹ Торговый движок остановлен")
+        self.logger.info("⏹ TradingEngine остановлен")
 
     async def _main_loop(self):
-        while self.running:
+        while self.running and not self._stop_event.is_set():
             try:
                 loop_start = time.time()
+                self._loop_count += 1
+
                 await self._update_balance()
                 await self._sync_positions()
                 await self._update_positions_pnl()
                 await self.exit_manager.check_exits(self.positions, self._on_position_closed)
 
                 now = time.time()
-                if now - self.last_scan_time >= self.scan_interval:
+                adaptive_interval = self.scan_interval
+                if self.settings.get("adaptive_scan_interval", True):
+                    if len(self.positions) >= self.settings.get("max_positions", 3):
+                        adaptive_interval = self.scan_interval * 1.5
+                    elif not self._last_scan_result:
+                        adaptive_interval = max(30, self.scan_interval * 0.6)
+
+                if now - self.last_scan_time >= adaptive_interval:
                     self.last_scan_time = now
                     await self._scan_and_trade()
 
@@ -123,15 +135,26 @@ class TradingEngine:
                     "count": len(self.positions),
                     "symbols": list(self.positions.keys()),
                     "total_unrealized_pnl": sum(p.unrealized_pnl for p in self.positions.values()),
+                    "loop": self._loop_count,
+                    "uptime": time.time() - self._start_time,
                 })
 
                 self._api_latency_ms = (time.time() - loop_start) * 1000
-                await asyncio.sleep(5)
+                self._health_status = "OK"
+
+                # Sleep with stop check
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=5)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self._last_error = str(e)
-                self.logger.error(f"Ошибка в главном цикле: {e}")
+                self._health_status = f"ERROR: {str(e)[:50]}"
+                self.logger.error(f"❌ Ошибка главного цикла: {e}")
                 await asyncio.sleep(10)
 
     async def _update_balance(self):
@@ -174,10 +197,11 @@ class TradingEngine:
                         entry_price = float(p.get("avgPrice", p.get("entryPrice", 0)))
                         leverage = int(p.get("leverage", 1))
                         if entry_price <= 0:
-                            self.logger.warning(f"⚠️ {symbol}: entry_price=0 при восстановлении, пропускаем")
+                            self.logger.warning(f"⚠️ {symbol}: entry_price=0, пропуск")
                             continue
                         try:
-                            pos = Position(symbol=symbol, side=side, quantity=qty, entry_price=entry_price, leverage=leverage)
+                            pos = Position(symbol=symbol, side=side, quantity=qty,
+                                           entry_price=entry_price, leverage=leverage)
                             self.positions[symbol] = pos
                             self.risk_manager.register_position_open(pos)
                             self.risk_controller.register_position_open(symbol)
@@ -200,12 +224,13 @@ class TradingEngine:
                     if mark_price > 0:
                         pos.update_market_price(mark_price)
             except Exception as e:
-                self.logger.debug(f"Ошибка обновления PnL {symbol}: {e}")
+                self.logger.debug(f"Ошибка PnL {symbol}: {e}")
 
     def _on_position_closed(self, pos: Position):
         with self._lock:
             self._record_closed_position(pos, pos.exit_reason.value if pos.exit_reason else "UNKNOWN")
             self.risk_manager.update_pnl(pos.realized_pnl)
+            self.risk_controller.add_pnl(pos.realized_pnl)
             if pos.realized_pnl > 0:
                 self._winning_trades += 1
             self._total_trades += 1
@@ -215,19 +240,21 @@ class TradingEngine:
         self.closed_positions.append({
             "symbol": pos.symbol, "side": pos.side.value,
             "entry_price": pos.entry_price, "exit_price": pos.exit_price,
-            "quantity": pos.quantity, "leverage": pos.leverage,
+            "quantity": pos.quantity if pos.quantity > 0 else pos.initial_quantity,
+            "leverage": pos.leverage,
             "realized_pnl": pos.realized_pnl,
             "realized_pnl_percent": getattr(pos, "realized_pnl_percent", 0.0),
             "exit_reason": reason,
             "entry_time": pos.entry_time.isoformat() if pos.entry_time else None,
             "exit_time": pos.exit_time.isoformat() if pos.exit_time else None,
             "strategy": pos.strategy,
+            "partial_closes": pos.partial_closes,
         })
-        if len(self.closed_positions) > 200:
-            self.closed_positions = self.closed_positions[-200:]
+        if len(self.closed_positions) > 300:
+            self.closed_positions = self.closed_positions[-300:]
 
     async def _scan_and_trade(self):
-        self.logger.info("🔍 Запуск сканирования рынка...")
+        self.logger.info("🔍 Запуск сканирования...")
         self.logger.log_decision("scan_start", None, {"balance": self.balance, "positions": len(self.positions)})
 
         ok, reason = self.risk_manager.can_open_position(len(self.positions), self.balance)
@@ -243,7 +270,7 @@ class TradingEngine:
             self._last_scan_result = candidates
 
         if not candidates:
-            self.logger.info("📭 Подходящих сигналов не найдено")
+            self.logger.info("📭 Сигналов не найдено")
             self.logger.log_decision("scan_empty", None, {"filters": "adx/atr/volume/signal"})
             return
 
@@ -264,7 +291,7 @@ class TradingEngine:
                 if pos:
                     with self._lock:
                         self.positions[pos.symbol] = pos
-                    self.risk_controller.register_position_open(pos.symbol)
+                        self.risk_controller.register_position_open(pos.symbol)
             except Exception as e:
                 self.logger.error(f"Ошибка исполнения сделки: {e}")
 
@@ -272,6 +299,7 @@ class TradingEngine:
         with self._lock:
             total_pnl = sum(p["realized_pnl"] for p in self.closed_positions)
             win_rate = (self._winning_trades / self._total_trades * 100) if self._total_trades > 0 else 0
+            uptime = time.time() - self._start_time
             return {
                 "balance": self.balance,
                 "start_balance": self.start_balance,
@@ -284,10 +312,15 @@ class TradingEngine:
                 "total_pnl": total_pnl,
                 "api_latency_ms": self._api_latency_ms,
                 "last_error": self._last_error,
+                "health_status": self._health_status,
+                "uptime_seconds": uptime,
+                "loop_count": self._loop_count,
                 "risk_stats": self.risk_manager.get_daily_stats(),
                 "risk_controller_stats": self.risk_controller.get_stats(),
                 "strategy_stats": self.strategy_engine.get_recent_performance(),
                 "scan_result_count": len(self._last_scan_result),
+                "scan_stats": self.market_scanner.get_scan_stats(),
+                "fetch_health": self.data_fetcher.get_fetch_health(),
                 "positions_hash": hash(tuple(p.to_dict().get("current_price", 0) for p in self.positions.values())),
                 "history_hash": hash(tuple(h.get("exit_time", "") for h in self.closed_positions[-10:])),
                 "signals_hash": hash(tuple(s.get("symbol", "") for s in self._last_scan_result)),
@@ -304,3 +337,13 @@ class TradingEngine:
     def get_last_scan_signals(self) -> List[Dict]:
         with self._lock:
             return list(self._last_scan_result)
+
+    def get_health(self) -> Dict[str, Any]:
+        return {
+            "status": self._health_status,
+            "running": self.running,
+            "uptime": time.time() - self._start_time,
+            "loop_count": self._loop_count,
+            "balance_failures": self._balance_fetch_failures,
+            "positions": len(self.positions),
+        }

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AsyncBingXClient — исправленный клиент BingX API.
-Корректная подпись HMAC-SHA256 + робастный парсинг + отдельные SL/TP ордера.
+AsyncBingXClient v3.0 — улучшенный клиент BingX API.
 """
 import aiohttp
 import asyncio
@@ -21,14 +20,13 @@ class AsyncBingXClient:
     DEMO_URL = "https://open-api-vst.bingx.com"
 
     ERROR_CODES = {
-        100001: "API key не действителен или подпись неверна",
-        100002: "Ошибка подписи", 100003: "Неверный timestamp",
-        100004: "Нет разрешения", 100005: "Слишком много запросов",
-        100100: "Недостаточно средств", 100101: "Недостаточно маржи",
-        100112: "Неверный символ", 100114: "Неверный размер позиции",
-        100115: "Превышен лимит позиций", 100116: "Неверное плечо",
-        100117: "Неверный тип ордера", 100400: "Неверные параметры",
-        100412: "Неверный символ или параметры контракта",
+        100001: "API key не действителен", 100002: "Ошибка подписи",
+        100003: "Неверный timestamp", 100004: "Нет разрешения",
+        100005: "Слишком много запросов", 100100: "Недостаточно средств",
+        100101: "Недостаточно маржи", 100112: "Неверный символ",
+        100114: "Неверный размер позиции", 100115: "Превышен лимит позиций",
+        100116: "Неверное плечо", 100117: "Неверный тип ордера",
+        100400: "Неверные параметры", 100412: "Неверный символ",
         100413: "Контракт не существует", 100414: "Неверный объём",
         100415: "Неверная цена", 100416: "Недостаточно баланса",
         100417: "Позиция не существует", 100418: "Ордер не существует",
@@ -52,6 +50,8 @@ class AsyncBingXClient:
         self._last_symbol_info_update = 0
         self._last_request_time = 0
         self._rate_limit_delay = 0.05
+        self._request_count = 0
+        self._error_count = 0
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -88,7 +88,8 @@ class AsyncBingXClient:
     def _sign(self, query_string: str) -> str:
         return hmac.new(self.api_secret.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
 
-    async def _request(self, method: str, path: str, params: dict = None, signed: bool = False, retries: int = 3, retry_delay: float = 1.0) -> Optional[Dict]:
+    async def _request(self, method: str, path: str, params: dict = None, signed: bool = False,
+                        retries: int = 3, retry_delay: float = 1.0) -> Optional[Dict]:
         session = await self._get_session()
         params = params or {}
         headers = {"X-BX-APIKEY": self.api_key}
@@ -141,16 +142,18 @@ class AsyncBingXClient:
                     logger.error(f"Невалидный JSON: {text[:200]}")
                     return None
 
+                self._request_count += 1
                 if data and data.get("code") != 0:
                     code = data.get("code")
                     msg = data.get("msg", "Unknown")
                     desc = self.ERROR_CODES.get(code, "Unknown")
                     logger.warning(f"BingX API Error {code}: {msg} ({desc})")
+                    self._error_count += 1
                     if code in (100001, 100002, 100003, 100005, 80001) and attempt < retries - 1:
                         await self._sync_server_time(force=True)
                         await asyncio.sleep(retry_delay * (attempt + 1))
                         continue
-                    return data  # Возвращаем даже ошибку, чтобы caller видел msg
+                    return data
                 return data
             except aiohttp.ClientError as e:
                 last_error = e
@@ -199,7 +202,7 @@ class AsyncBingXClient:
             "asset": str(obj.get("asset", "USDT")),
         }
 
-    # ========== PUBLIC ==========
+    # Public methods
     async def get_server_time(self) -> Optional[Dict]:
         return await self._request("GET", "/openApi/swap/v2/server/time", signed=False)
 
@@ -267,15 +270,20 @@ class AsyncBingXClient:
         return tickers
 
     async def get_klines(self, symbol: str, interval: str = "15m", limit: int = 100) -> List[Dict]:
-        result = await self._request("GET", "/openApi/swap/v3/quote/klines", params={"symbol": symbol, "interval": interval, "limit": limit}, signed=False)
+        result = await self._request("GET", "/openApi/swap/v3/quote/klines",
+                                      params={"symbol": symbol, "interval": interval, "limit": limit}, signed=False)
         if result and result.get("code") == 0:
             data = result.get("data", [])
             klines = []
             for k in data:
                 if isinstance(k, list) and len(k) >= 6:
-                    klines.append({"timestamp": int(k[0]), "open": float(k[1]), "high": float(k[2]), "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])})
+                    klines.append({"timestamp": int(k[0]), "open": float(k[1]), "high": float(k[2]),
+                                   "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])})
                 elif isinstance(k, dict):
-                    klines.append({"timestamp": int(k.get("time", k.get("timestamp", 0))), "open": float(k.get("open", 0)), "high": float(k.get("high", 0)), "low": float(k.get("low", 0)), "close": float(k.get("close", 0)), "volume": float(k.get("volume", 0))})
+                    klines.append({"timestamp": int(k.get("time", k.get("timestamp", 0))),
+                                   "open": float(k.get("open", 0)), "high": float(k.get("high", 0)),
+                                   "low": float(k.get("low", 0)), "close": float(k.get("close", 0)),
+                                   "volume": float(k.get("volume", 0))})
             return klines
         return []
 
@@ -288,7 +296,7 @@ class AsyncBingXClient:
             return {"fundingRate": self._safe_float(data.get("lastFundingRate") or data.get("fundingRate"))}
         return {"fundingRate": 0.0}
 
-    # ========== PRIVATE ==========
+    # Private methods
     async def get_account_info(self) -> Optional[Dict]:
         result = await self._request("GET", "/openApi/swap/v2/user/balance", signed=True)
         if not result or result.get("code") != 0:
@@ -309,10 +317,10 @@ class AsyncBingXClient:
                 extracted = self._extract_balance(bal)
                 if extracted and extracted["asset"].upper() == "USDT":
                     return extracted
-            if balance_data:
-                extracted = self._extract_balance(balance_data[0])
-                if extracted:
-                    return extracted
+        if balance_data:
+            extracted = self._extract_balance(balance_data[0])
+            if extracted:
+                return extracted
         if isinstance(data, dict):
             extracted = self._extract_balance(data)
             if extracted and extracted["balance"] > 0:
@@ -356,7 +364,8 @@ class AsyncBingXClient:
         return positions
 
     async def set_leverage(self, symbol: str, leverage: int) -> bool:
-        result = await self._request("POST", "/openApi/swap/v2/trade/leverage", params={"symbol": symbol, "leverage": str(leverage), "side": "BOTH"}, signed=True)
+        result = await self._request("POST", "/openApi/swap/v2/trade/leverage",
+                                      params={"symbol": symbol, "leverage": str(leverage), "side": "BOTH"}, signed=True)
         if result and result.get("code") == 0:
             logger.info(f"Плечо {leverage}x для {symbol} установлено")
             return True
@@ -365,7 +374,8 @@ class AsyncBingXClient:
         return False
 
     async def set_margin_mode(self, symbol: str, margin_mode: str = "CROSSED") -> bool:
-        result = await self._request("POST", "/openApi/swap/v2/trade/marginType", params={"symbol": symbol, "marginType": margin_mode}, signed=True)
+        result = await self._request("POST", "/openApi/swap/v2/trade/marginType",
+                                      params={"symbol": symbol, "marginType": margin_mode}, signed=True)
         if result and result.get("code") == 0:
             logger.info(f"Режим маржи {margin_mode} для {symbol} установлен")
             return True
@@ -376,9 +386,8 @@ class AsyncBingXClient:
         return False
 
     async def place_order(self, symbol: str, side: str, quantity: float, order_type: str = "MARKET",
-                          price: float = None, stop_price: float = None, leverage: int = None,
-                          position_side: str = "BOTH", client_order_id: str = None) -> Optional[Dict]:
-        """Чистый ордер без SL/TP. Возвращает полный ответ API."""
+                           price: float = None, stop_price: float = None, leverage: int = None,
+                           position_side: str = "BOTH", client_order_id: str = None) -> Optional[Dict]:
         params = {
             "symbol": symbol,
             "side": side.upper(),
@@ -394,34 +403,27 @@ class AsyncBingXClient:
             params["newClientOrderId"] = client_order_id
 
         result = await self._request("POST", "/openApi/swap/v2/trade/order", params=params, signed=True)
-
         if result is None:
-            logger.error(f"Ордер {symbol} {side}: нет ответа от сервера (сеть/таймаут)")
+            logger.error(f"Ордер {symbol} {side}: нет ответа")
             return None
-
         if result.get("code") != 0:
             code = result.get("code", -1)
             msg = result.get("msg", "Unknown")
             logger.error(f"Ордер отклонён {symbol} {side}: [{code}] {msg}")
             return {"error": True, "code": code, "msg": msg}
-
         data = result.get("data", {})
-        logger.info(f"Ордер размещён: {symbol} {side} {quantity} @ {order_type}, ID: {data.get('orderId')}")
         return {
             "orderId": data.get("orderId", client_order_id or ""),
             "clientOrderId": data.get("clientOrderId", client_order_id or ""),
-            "symbol": symbol,
-            "side": side,
-            "quantity": quantity,
+            "symbol": symbol, "side": side, "quantity": quantity,
             "price": self._safe_float(data.get("avgPrice") or price),
             "avgPrice": self._safe_float(data.get("avgPrice") or price),
             "status": data.get("status", "FILLED"),
         }
 
-    async def place_stop_order(self, symbol: str, side: str, stop_price: float, quantity: float,
-                               order_type: str = "STOP_MARKET", position_side: str = "BOTH",
-                               close_position: bool = False) -> Optional[Dict]:
-        """Ордер SL/TP. close_position=true закрывает всю позицию."""
+    async def place_stop_order(self, symbol: str, side: str, stop_price: float, quantity: float = None,
+                                order_type: str = "STOP_MARKET", position_side: str = "BOTH",
+                                close_position: bool = False) -> Optional[Dict]:
         params = {
             "symbol": symbol,
             "side": side.upper(),
@@ -431,32 +433,28 @@ class AsyncBingXClient:
         }
         if close_position:
             params["closePosition"] = "true"
-        else:
+        elif quantity is not None:
             params["quantity"] = str(quantity)
 
         result = await self._request("POST", "/openApi/swap/v2/trade/order", params=params, signed=True)
-
         if result is None:
-            logger.error(f"Стоп-ордер {symbol}: нет ответа от сервера")
+            logger.error(f"Стоп-ордер {symbol}: нет ответа")
             return None
         if result.get("code") != 0:
             code = result.get("code", -1)
             msg = result.get("msg", "Unknown")
             logger.error(f"Стоп-ордер отклонён {symbol}: [{code}] {msg}")
             return {"error": True, "code": code, "msg": msg}
-
         data = result.get("data", {})
-        logger.info(f"Стоп-ордер размещён: {symbol} {side} @ {stop_price}, ID: {data.get('orderId')}")
         return {
             "orderId": data.get("orderId", ""),
-            "symbol": symbol,
-            "side": side,
-            "stopPrice": stop_price,
+            "symbol": symbol, "side": side, "stopPrice": stop_price,
             "status": data.get("status", "NEW"),
         }
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
-        result = await self._request("DELETE", "/openApi/swap/v2/trade/order", params={"symbol": symbol, "orderId": order_id}, signed=True)
+        result = await self._request("DELETE", "/openApi/swap/v2/trade/order",
+                                      params={"symbol": symbol, "orderId": order_id}, signed=True)
         if result and result.get("code") == 0:
             logger.info(f"Ордер {order_id} отменён")
             return True
@@ -486,7 +484,8 @@ class AsyncBingXClient:
                 amt = abs(float(pos.get("positionAmt", 0)))
                 if amt > 0:
                     close_side = "SELL" if pos_side == "LONG" else "BUY"
-                    result = await self.place_order(symbol=symbol, side=close_side, quantity=amt, order_type="MARKET", position_side=pos_side)
+                    result = await self.place_order(symbol=symbol, side=close_side, quantity=amt,
+                                                     order_type="MARKET", position_side=pos_side)
                     if result and not result.get("error") and result.get("orderId"):
                         logger.info(f"Позиция {symbol} закрыта")
                         return True
@@ -511,3 +510,11 @@ class AsyncBingXClient:
                 "contractSize": self._safe_float(info.get("size"), 1.0),
             }
         return None
+
+    def get_health(self) -> Dict[str, Any]:
+        return {
+            "requests": self._request_count,
+            "errors": self._error_count,
+            "error_rate": (self._error_count / max(self._request_count, 1)) * 100,
+            "demo_mode": self.demo_mode,
+        }

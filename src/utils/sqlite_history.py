@@ -1,59 +1,32 @@
-import sqlite3
-import os
+#!/usr/bin/env python3
+import sqlite3, os
+from datetime import datetime
 
-class SQLiteTradeHistory:
-    def __init__(self, db_path="data/trades.db"):
-        self.db_path = db_path
-        os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-        self._init_db()
-
+class SQLiteHistory:
+    def __init__(self, db_path="data/history/trades.db"):
+        self.db_path = db_path; os.makedirs(os.path.dirname(db_path), exist_ok=True); self._init_db()
     def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                side TEXT,
-                quantity REAL,
-                entry_price REAL,
-                exit_price REAL,
-                leverage INTEGER,
-                pnl REAL,
-                pnl_percent REAL,
-                exit_reason TEXT,
-                strategy TEXT,
-                entry_time TEXT,
-                exit_time TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
-
-    def record_trade(self, trade_data: dict):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO trades (symbol, side, quantity, entry_price, exit_price,
-                              leverage, pnl, pnl_percent, exit_reason, strategy,
-                              entry_time, exit_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            trade_data.get("symbol"),
-            trade_data.get("side"),
-            trade_data.get("quantity"),
-            trade_data.get("entry_price"),
-            trade_data.get("exit_price", 0),
-            trade_data.get("leverage"),
-            trade_data.get("realized_pnl", 0),
-            trade_data.get("realized_pnl_percent", 0),
-            trade_data.get("exit_reason"),
-            trade_data.get("strategy"),
-            trade_data.get("entry_time"),
-            trade_data.get("exit_time"),
-        ))
-        conn.commit()
-        conn.close()
-
-    def close(self):
-        pass
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, side TEXT,
+                    entry_price REAL, exit_price REAL, quantity REAL, leverage INTEGER,
+                    pnl REAL, pnl_percent REAL, exit_reason TEXT, entry_time TEXT,
+                    exit_time TEXT, strategy TEXT
+                )
+            """)
+            conn.commit()
+    def add_trade(self, trade):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT INTO trades (symbol, side, entry_price, exit_price, quantity, leverage, pnl, pnl_percent, exit_reason, entry_time, exit_time, strategy)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (trade.get("symbol"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"),
+                  trade.get("quantity"), trade.get("leverage"), trade.get("realized_pnl"),
+                  trade.get("realized_pnl_percent"), trade.get("exit_reason"), trade.get("entry_time"),
+                  trade.get("exit_time"), trade.get("strategy")))
+            conn.commit()
+    def get_trades(self, limit=100):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT * FROM trades ORDER BY exit_time DESC LIMIT ?", (limit,))
+            return [dict(row) for row in cursor.fetchall()]

@@ -1,7 +1,4 @@
+#!/usr/bin/env python3
 class Profiler:
-    def __init__(self, logger, settings):
-        self.logger = logger
-        self.settings = settings
-
-    def record_system_metrics(self):
-        pass
+    def __init__(self): pass
+    def profile(self, fn): return fn
