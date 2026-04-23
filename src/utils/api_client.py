@@ -2,7 +2,7 @@
 """
 BingX Native API Client (без CCXT)
 Полностью асинхронный, с синхронизацией времени, корректной подписью и rate limiting.
-Добавлена поддержка DELETE-запросов для отмены ордеров.
+Исправлено: get_all_contracts всегда возвращает список, даже если ответ упакован иначе.
 """
 import time
 import hmac
@@ -26,7 +26,7 @@ class AsyncBingXClient:
         self._time_offset = 0
         self._semaphore = asyncio.Semaphore(5)
         self._last_request_time = 0
-        self._min_interval = 0.05  # 50ms
+        self._min_interval = 0.05
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -67,7 +67,6 @@ class AsyncBingXClient:
         if params is None:
             params = {}
 
-        # Rate limiting
         async with self._semaphore:
             now = time.time()
             elapsed = now - self._last_request_time
@@ -75,7 +74,6 @@ class AsyncBingXClient:
                 await asyncio.sleep(self._min_interval - elapsed)
             self._last_request_time = time.time()
 
-        # Подпись для приватных запросов
         if signed:
             if self._time_offset == 0:
                 await self._sync_time()
@@ -92,10 +90,9 @@ class AsyncBingXClient:
                 async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     data = await resp.json()
             elif method == 'DELETE':
-                # BingX принимает DELETE с теми же параметрами, что и GET/POST (query string)
                 async with session.delete(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     data = await resp.json()
-            else:  # POST и всё остальное
+            else:
                 async with session.post(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     data = await resp.json()
 
@@ -126,8 +123,19 @@ class AsyncBingXClient:
         return await self._request('/openApi/swap/v2/quote/premiumIndex', {'symbol': symbol}, signed=False)
 
     async def get_all_contracts(self) -> list:
+        """
+        Получить список всех фьючерсных контрактов.
+        Устойчиво извлекает список независимо от того, упакован ли ответ в data/contracts.
+        """
         data = await self._request('/openApi/swap/v2/quote/contracts', {}, signed=False)
-        return data if isinstance(data, list) else []
+        # data может быть списком или словарём с ключом 'contracts' или 'data'
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ('contracts', 'data', 'symbols'):
+                if key in data and isinstance(data[key], list):
+                    return data[key]
+        return []
 
     # ---------- Приватные методы ----------
     async def get_account_info(self) -> Dict:
@@ -160,7 +168,6 @@ class AsyncBingXClient:
         return await self._request('/openApi/swap/v2/trade/order', params, method='POST', signed=True)
 
     async def cancel_order(self, symbol: str, order_id: str) -> Dict:
-        """Отмена ордера. Использует DELETE на /openApi/swap/v2/trade/order."""
         symbol = symbol.replace('/', '-')
         params = {
             'symbol': symbol,
@@ -169,7 +176,6 @@ class AsyncBingXClient:
         return await self._request('/openApi/swap/v2/trade/order', params, method='DELETE', signed=True)
 
     async def get_all_tickers(self) -> Dict[str, Dict]:
-        """Возвращает словарь {symbol: ticker_data} для всех активных контрактов."""
         contracts = await self.get_all_contracts()
 
         async def fetch_one(contract):

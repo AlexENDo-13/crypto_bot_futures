@@ -5,11 +5,10 @@ import threading
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
-    QStatusBar, QLabel, QPushButton, QMessageBox, QApplication,
-    QSplitter
+    QStatusBar, QLabel, QPushButton, QMessageBox, QApplication
 )
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QMetaObject, Q_ARG
-from PyQt5.QtGui import QFont, QIcon
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt5.QtGui import QFont, QColor, QPalette
 from src.ui.pages.dashboard import DashboardPage
 from src.ui.pages.positions import PositionsPage
 from src.ui.pages.trades_history import TradesHistoryPage
@@ -22,7 +21,6 @@ from src.core.logger import BotLogger
 
 
 class EngineInitWorker(QThread):
-    """Поток для асинхронной инициализации движка"""
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
@@ -78,7 +76,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Crypto Trading Bot - BingX Futures")
         self.setMinimumSize(1200, 800)
         self._init_ui()
-        self._init_menu()
         self._init_statusbar()
         self.tray = SystemTray(QApplication.instance(), self, self.logger)
         self.tray.show()
@@ -92,24 +89,29 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(5, 5, 5, 5)
+
         top_panel = QHBoxLayout()
         self.btn_start = QPushButton("▶ Запустить")
         self.btn_start.setEnabled(False)
         self.btn_start.clicked.connect(self._toggle_engine)
         top_panel.addWidget(self.btn_start)
+
         self.btn_pause = QPushButton("⏸ Пауза")
         self.btn_pause.setEnabled(False)
         self.btn_pause.clicked.connect(self._toggle_pause)
         top_panel.addWidget(self.btn_pause)
+
         self.btn_stop = QPushButton("⏹ Стоп")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._stop_engine)
         top_panel.addWidget(self.btn_stop)
+
         top_panel.addStretch()
         self.lbl_status = QLabel("⚪ Движок не инициализирован")
-        self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold;")
+        self.lbl_status.setStyleSheet("font-size: 13px; font-weight: bold; color: #E0E0E0;")
         top_panel.addWidget(self.lbl_status)
         main_layout.addLayout(top_panel)
+
         self.tabs = QTabWidget()
         self.dashboard_page = DashboardPage()
         self.tabs.addTab(self.dashboard_page, "📊 Дашборд")
@@ -125,17 +127,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.monitor_page, "🖥 Система")
         main_layout.addWidget(self.tabs)
 
-    def _init_menu(self):
-        pass
-
     def _init_statusbar(self):
         self.statusbar = self.statusBar()
         self.lbl_balance = QLabel("💰 Баланс: --")
-        self.statusbar.addPermanentWidget(self.lbl_balance)
         self.lbl_pnl = QLabel("📊 PnL: --")
-        self.statusbar.addPermanentWidget(self.lbl_pnl)
         self.lbl_positions = QLabel("📈 Позиций: 0")
-        self.statusbar.addPermanentWidget(self.lbl_positions)
+        for lbl in [self.lbl_balance, self.lbl_pnl, self.lbl_positions]:
+            lbl.setStyleSheet("color: #E0E0E0;")
+            self.statusbar.addPermanentWidget(lbl)
 
     def _start_engine_init(self):
         self.lbl_status.setText("🔄 Инициализация движка...")
@@ -225,3 +224,34 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         event.accept()
+
+
+# Глобальная тёмная тема (вызывается один раз при запуске)
+def apply_dark_theme(app: QApplication):
+    dark_palette = QPalette()
+    dark_palette.setColor(QPalette.Window, QColor(45, 45, 45))
+    dark_palette.setColor(QPalette.WindowText, QColor(224, 224, 224))
+    dark_palette.setColor(QPalette.Base, QColor(30, 30, 30))
+    dark_palette.setColor(QPalette.AlternateBase, QColor(45, 45, 45))
+    dark_palette.setColor(QPalette.ToolTipBase, QColor(224, 224, 224))
+    dark_palette.setColor(QPalette.ToolTipText, QColor(224, 224, 224))
+    dark_palette.setColor(QPalette.Text, QColor(224, 224, 224))
+    dark_palette.setColor(QPalette.Button, QColor(45, 45, 45))
+    dark_palette.setColor(QPalette.ButtonText, QColor(224, 224, 224))
+    dark_palette.setColor(QPalette.BrightText, Qt.red)
+    dark_palette.setColor(QPalette.Link, QColor(42, 130, 218))
+    dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+    dark_palette.setColor(QPalette.HighlightedText, Qt.black)
+    app.setPalette(dark_palette)
+    app.setStyleSheet("""
+        QToolTip { color: #E0E0E0; background-color: #2d2d2d; border: 1px solid #555; }
+        QTabWidget::pane { border: 1px solid #555; background: #2e2e2e; }
+        QTabBar::tab { background: #3c3c3c; color: #E0E0E0; padding: 8px; }
+        QTabBar::tab:selected { background: #505050; }
+        QPushButton { background-color: #3c3c3c; color: #E0E0E0; border: 1px solid #555; padding: 5px; border-radius: 3px; }
+        QPushButton:hover { background-color: #505050; }
+        QPushButton:disabled { background-color: #2e2e2e; color: #888; }
+        QStatusBar { background: #2e2e2e; color: #E0E0E0; }
+        QTableWidget { background-color: #2b2b2b; color: #E0E0E0; gridline-color: #555; }
+        QHeaderView::section { background-color: #3c3c3c; color: #E0E0E0; padding: 4px; }
+    """)
