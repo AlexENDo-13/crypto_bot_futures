@@ -1,179 +1,90 @@
 """
-Страница логов бота
+Страница отображения логов в GUI
 """
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, 
-    QPushButton, QComboBox, QLabel, QLineEdit
-)
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QTextCursor, QColor
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QHBoxLayout, QPushButton, QComboBox
+from PyQt5.QtCore import Qt, pyqtSignal, QThread
+from PyQt5.QtGui import QFont, QColor, QTextCursor
+import logging
 
-from src.core.logger import BotLogger
 
 class LogsPage(QWidget):
+    """Виджет для отображения логов с фильтрацией по уровням"""
+
+    # Сигнал для безопасного добавления лога из другого потока
+    log_signal = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
-        self.logger = BotLogger("LogsUI")
         self.init_ui()
-
-        # Таймер обновления логов
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self._update_logs)
-        self.update_timer.start(1000)  # каждую секунду
-
-        self._last_count = 0
+        # Подключаем сигнал к слоту, чтобы обновлять GUI из любого потока
+        self.log_signal.connect(self._append_log)
 
     def init_ui(self):
         layout = QVBoxLayout()
 
         # Панель управления
-        controls = QHBoxLayout()
+        control_layout = QHBoxLayout()
 
-        self.level_filter = QComboBox()
-        self.level_filter.addItems(["ALL", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
-        self.level_filter.currentTextChanged.connect(self._filter_logs)
-        controls.addWidget(QLabel("Уровень:"))
-        controls.addWidget(self.level_filter)
+        # Кнопка очистки
+        self.btn_clear = QPushButton("Очистить")
+        self.btn_clear.clicked.connect(self.clear_logs)
+        control_layout.addWidget(self.btn_clear)
 
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Поиск в логах...")
-        self.search_input.textChanged.connect(self._filter_logs)
-        controls.addWidget(self.search_input)
+        # Фильтр уровня логов
+        self.combo_level = QComboBox()
+        self.combo_level.addItems(["ALL", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+        self.combo_level.setCurrentText("INFO")
+        control_layout.addWidget(self.combo_level)
+        control_layout.addStretch()
+        layout.addLayout(control_layout)
 
-        self.btn_clear = QPushButton("🗑️ Очистить")
-        self.btn_clear.clicked.connect(self._clear_logs)
-        controls.addWidget(self.btn_clear)
-
-        self.btn_pause = QPushButton("⏸ Пауза")
-        self.btn_pause.setCheckable(True)
-        self.btn_pause.clicked.connect(self._toggle_pause)
-        controls.addWidget(self.btn_pause)
-
-        controls.addStretch()
-        layout.addLayout(controls)
-
-        # Текстовое поле логов
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setLineWrapMode(QTextEdit.WidgetWidth)
-        self.log_text.setStyleSheet("""
-            QTextEdit {
-                background-color: #1e1e1e;
-                color: #d4d4d4;
-                font-family: 'Consolas', 'Courier New', monospace;
-                font-size: 12px;
-                border: 1px solid #3c3c3c;
-            }
-        """)
-        layout.addWidget(self.log_text)
-
-        # Статус
-        self.status_label = QLabel("Логи: 0 записей")
-        layout.addWidget(self.status_label)
+        # Текстовое поле для логов
+        self.text_log = QTextEdit()
+        self.text_log.setReadOnly(True)
+        font = QFont("Courier New", 9)
+        self.text_log.setFont(font)
+        self.text_log.setStyleSheet("background-color: #1e1e1e; color: #cccccc;")
+        layout.addWidget(self.text_log)
 
         self.setLayout(layout)
 
-    def _update_logs(self):
-        """Обновляет отображение логов из очереди BotLogger"""
-        if self.btn_pause.isChecked():
+    def add_log(self, message: str):
+        """
+        Основной метод для добавления лога.
+        Безопасно вызывается из любого потока (использует сигнал).
+        """
+        self.log_signal.emit(message)
+
+    def _append_log(self, message: str):
+        """Реальное добавление текста в виджет (выполняется в основном потоке)"""
+        # Определяем цвет по уровню (можно расширить)
+        color_map = {
+            "DEBUG": "#888888",
+            "INFO": "#cccccc",
+            "WARNING": "#e6b800",
+            "ERROR": "#ff4444",
+            "CRITICAL": "#ff0000",
+        }
+
+        # Определяем уровень из сообщения (ожидаем формат как у BotLogger)
+        level = "INFO"
+        for lvl in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
+            if lvl in message:
+                level = lvl
+                break
+
+        # Применяем фильтр
+        selected = self.combo_level.currentText()
+        if selected != "ALL" and selected != level:
             return
 
-        try:
-            queue = self.logger.get_queue()
-            current_count = queue.qsize()
+        # Добавляем цветной текст
+        color = color_map.get(level, "#cccccc")
+        self.text_log.setTextColor(QColor(color))
+        self.text_log.append(message)
+        # Прокручиваем вниз
+        self.text_log.moveCursor(QTextCursor.End)
 
-            if current_count == self._last_count:
-                return
-
-            # Получаем новые сообщения
-            messages = []
-            temp = []
-            while not queue.empty():
-                try:
-                    item = queue.get_nowait()
-                    messages.append(item)
-                    temp.append(item)
-                except:
-                    break
-
-            # Возвращаем обратно в очередь
-            for item in temp:
-                queue.put(item)
-
-            self._last_count = current_count
-            self._filter_logs()
-
-        except Exception as e:
-            pass  # Тихо игнорируем ошибки обновления
-
-    def _filter_logs(self):
-        """Фильтрует логи по уровню и поиску"""
-        level = self.level_filter.currentText()
-        search = self.search_input.text().lower()
-
-        try:
-            queue = self.logger.get_queue()
-
-            # Собираем все сообщения
-            all_messages = []
-            temp = []
-            while not queue.empty():
-                try:
-                    item = queue.get_nowait()
-                    all_messages.append(item)
-                    temp.append(item)
-                except:
-                    break
-
-            # Возвращаем обратно
-            for item in temp:
-                queue.put(item)
-
-            # Фильтруем
-            filtered = []
-            for level_name, msg in all_messages:
-                if level != "ALL" and level_name != level:
-                    continue
-                if search and search not in msg.lower():
-                    continue
-                filtered.append((level_name, msg))
-
-            # Отображаем
-            self.log_text.clear()
-            for level_name, msg in filtered[-500:]:  # Последние 500
-                self._append_colored_log(level_name, msg)
-
-            self.status_label.setText(f"Логи: {len(filtered)} записей (всего: {len(all_messages)})")
-
-        except Exception:
-            pass
-
-    def _append_colored_log(self, level, msg):
-        """Добавляет цветную строку лога"""
-        colors = {
-            "DEBUG": "#808080",
-            "INFO": "#4FC1FF",
-            "WARNING": "#FFCC00",
-            "ERROR": "#F44336",
-            "CRITICAL": "#FF1744",
-        }
-        color = colors.get(level, "#d4d4d4")
-
-        self.log_text.append(f'<span style="color: {color}">[{level}]</span> {msg}')
-
-        # Автоскролл вниз
-        scrollbar = self.log_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
-
-    def _clear_logs(self):
-        """Очищает отображение (не очередь)"""
-        self.log_text.clear()
-        self.status_label.setText("Логи: очищено")
-
-    def _toggle_pause(self, checked):
-        """Пауза/возобновление обновления"""
-        if checked:
-            self.btn_pause.setText("▶ Продолжить")
-        else:
-            self.btn_pause.setText("⏸ Пауза")
-            self._update_logs()
+    def clear_logs(self):
+        """Очистка всех логов"""
+        self.text_log.clear()

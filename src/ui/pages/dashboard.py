@@ -1,164 +1,163 @@
 """
-Dashboard Page – общая информация: баланс, PnL, график, кнопки управления.
-Добавлен переключатель демо-режима.
+Страница дашборда — основная панель с балансом, PnL, сигналами
 """
-
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
-                             QPushButton, QFrame, QSplitter, QGridLayout, QCheckBox)
-from PyQt5.QtCore import pyqtSignal, Qt
-from PyQt5.QtGui import QFont
-from src.ui.widgets.realtime_chart import RealtimeChart
-from src.ui.widgets.pie_chart import PieChart
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QTableWidget,
+    QTableWidgetItem, QHeaderView, QTextEdit
+)
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont
 
 
 class DashboardPage(QWidget):
-    start_signal = pyqtSignal()
-    stop_signal = pyqtSignal()
-    scan_signal = pyqtSignal()
-    toggle_demo_signal = pyqtSignal(bool)  # True = demo mode ON
+    """Главная страница: баланс, PnL, сигналы"""
+
+    signal_update = pyqtSignal(dict)  # сигнал для безопасного обновления из другого потока
 
     def __init__(self):
         super().__init__()
-        self.setup_ui()
-        self.pnl_history = []
+        self.signal_update.connect(self._apply_update)
+        self.init_ui()
 
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(15)
+    def init_ui(self):
+        # Главный layout
+        main_layout = QHBoxLayout()
 
-        # Карточки с использованием QGridLayout для равномерного распределения
-        cards_widget = QWidget()
-        cards_layout = QGridLayout(cards_widget)
-        cards_layout.setContentsMargins(0, 0, 0, 0)
-        cards_layout.setSpacing(10)
+        # Левая панель — статус
+        left_layout = QVBoxLayout()
 
-        self.balance_label = self._create_card("💰 Виртуальный баланс", "0.00 USDT")
-        self.real_balance_label = self._create_card("💳 Реальный баланс", "— USDT")
-        self.pnl_label = self._create_card("📈 P&L (нереализ.)", "0.00 USDT (0.00%)")
-        self.positions_label = self._create_card("📌 Открыто позиций", "0")
+        # Баланс и PnL
+        group_status = QGroupBox("💰 Состояние счёта")
+        status_layout = QVBoxLayout()
+        self.lbl_balance = QLabel("Баланс: -- USDT")
+        self.lbl_pnl = QLabel("PnL: -- USDT")
+        self.lbl_pnl_pct = QLabel("PnL %: --")
+        self.lbl_positions = QLabel("Открытых позиций: 0")
+        self.lbl_mode = QLabel("Режим: --")
 
-        # Карточка режима с переключателем
-        mode_card = QFrame()
-        mode_card.setObjectName("card")
-        mode_layout = QVBoxLayout(mode_card)
-        mode_layout.setContentsMargins(12, 12, 12, 12)
-        mode_title = QLabel("⚙️ Режим")
-        mode_title.setStyleSheet("color: #8B949E; font-size: 10pt;")
-        mode_layout.addWidget(mode_title)
+        for lbl in [self.lbl_balance, self.lbl_pnl, self.lbl_pnl_pct, self.lbl_positions, self.lbl_mode]:
+            lbl.setStyleSheet("color: #E0E0E0; font-size: 14px;")
+            status_layout.addWidget(lbl)
 
-        mode_switch_layout = QHBoxLayout()
-        self.mode_label = QLabel("Демо")
-        self.mode_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        self.mode_label.setStyleSheet("color: #C9D1D9;")
-        mode_switch_layout.addWidget(self.mode_label)
-        mode_switch_layout.addStretch()
-        self.demo_checkbox = QCheckBox("Демо-режим")
-        self.demo_checkbox.setChecked(True)
-        self.demo_checkbox.stateChanged.connect(self._on_demo_toggled)
-        mode_switch_layout.addWidget(self.demo_checkbox)
-        mode_layout.addLayout(mode_switch_layout)
-        mode_layout.addStretch()
+        group_status.setLayout(status_layout)
+        left_layout.addWidget(group_status)
 
-        cards_layout.addWidget(self.balance_label, 0, 0)
-        cards_layout.addWidget(self.real_balance_label, 0, 1)
-        cards_layout.addWidget(self.pnl_label, 0, 2)
-        cards_layout.addWidget(self.positions_label, 1, 0)
-        cards_layout.addWidget(mode_card, 1, 1)
+        # Таблица последних сигналов
+        group_signals = QGroupBox("📡 Сигналы (последние)")
+        signals_layout = QVBoxLayout()
 
-        # Растягиваем столбцы равномерно
-        for i in range(3):
-            cards_layout.setColumnStretch(i, 1)
+        self.table_signals = QTableWidget()
+        self.table_signals.setColumnCount(4)
+        self.table_signals.setHorizontalHeaderLabels(["Символ", "Направление", "Сила", "Цена"])
+        self.table_signals.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_signals.setStyleSheet("""
+            QTableWidget {
+                background-color: #2b2b2b;
+                color: #E0E0E0;
+                gridline-color: #555;
+            }
+            QHeaderView::section {
+                background-color: #3c3c3c;
+                color: #E0E0E0;
+                padding: 4px;
+            }
+        """)
+        signals_layout.addWidget(self.table_signals)
+        group_signals.setLayout(signals_layout)
+        left_layout.addWidget(group_signals)
 
-        layout.addWidget(cards_widget)
+        main_layout.addLayout(left_layout)
 
-        # Кнопки управления
-        btn_layout = QHBoxLayout()
-        self.start_btn = QPushButton("▶ ЗАПУСТИТЬ БОТА")
-        self.start_btn.setObjectName("primaryButton")
-        self.start_btn.clicked.connect(self.start_signal.emit)
+        # Правая панель — лог движка (можно выводить важные события)
+        right_layout = QVBoxLayout()
+        group_log = QGroupBox("📜 События движка")
+        log_layout = QVBoxLayout()
+        self.text_log = QTextEdit()
+        self.text_log.setReadOnly(True)
+        self.text_log.setStyleSheet("background-color: #1e1e1e; color: #cccccc;")
+        log_layout.addWidget(self.text_log)
+        group_log.setLayout(log_layout)
+        right_layout.addWidget(group_log)
 
-        self.stop_btn = QPushButton("⏹ ОСТАНОВИТЬ")
-        self.stop_btn.setObjectName("dangerButton")
-        self.stop_btn.clicked.connect(self.stop_signal.emit)
-        self.stop_btn.setEnabled(False)
+        main_layout.addLayout(right_layout)
+        self.setLayout(main_layout)
 
-        self.scan_btn = QPushButton("🔍 Сканировать сейчас")
-        self.scan_btn.clicked.connect(self.scan_signal.emit)
-        self.scan_btn.setEnabled(False)
+        # Общий тёмный стиль виджета
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #2e2e2e;
+                color: #E0E0E0;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #555;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
 
-        btn_layout.addWidget(self.start_btn)
-        btn_layout.addWidget(self.stop_btn)
-        btn_layout.addWidget(self.scan_btn)
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+    def update_status(self, status_data: dict):
+        """
+        Обновление блока состояния счёта.
+        Ожидает словарь с ключами:
+        - balance (float)
+        - pnl (float)
+        - pnl_percent (float, опционально)
+        - positions (int)
+        - mode (str, опционально)
+        """
+        # Для потокобезопасности используем сигнал
+        self.signal_update.emit(status_data)
 
-        # Графики
-        charts_splitter = QSplitter(Qt.Horizontal)
+    def _apply_update(self, status_data: dict):
+        """Реальное обновление GUI (вызывается в главном потоке)"""
+        balance = status_data.get("balance", 0.0)
+        pnl = status_data.get("pnl", 0.0)
+        pnl_percent = status_data.get("pnl_percent", 0.0)
+        positions = status_data.get("positions", 0)
+        mode = status_data.get("mode", "demo" if getattr(self, "settings", None) and getattr(self.settings, "demo_mode", True) else "real")
 
-        chart_group = QGroupBox("📉 График PnL")
-        chart_layout = QVBoxLayout()
-        self.chart = RealtimeChart()
-        chart_layout.addWidget(self.chart)
-        chart_group.setLayout(chart_layout)
-        charts_splitter.addWidget(chart_group)
+        self.lbl_balance.setText(f"Баланс: {balance:.2f} USDT")
+        self.lbl_pnl.setText(f"PnL: {pnl:+.2f} USDT")
+        self.lbl_pnl_pct.setText(f"PnL %: {pnl_percent:+.2f}%")
+        self.lbl_positions.setText(f"Открытых позиций: {positions}")
+        self.lbl_mode.setText(f"Режим: {mode}")
 
-        weights_group = QGroupBox("🧠 Веса стратегии")
-        weights_layout = QVBoxLayout()
-        self.pie_chart = PieChart()
-        weights_layout.addWidget(self.pie_chart)
-        weights_group.setLayout(weights_layout)
-        charts_splitter.addWidget(weights_group)
+        # Добавляем запись в лог дашборда
+        self.text_log.append(f"Обновление: баланс={balance:.2f}, PnL={pnl:+.2f}, позиций={positions}")
 
-        charts_splitter.setSizes([600, 300])
-        layout.addWidget(charts_splitter)
-        layout.addStretch()
+    def update_signals(self, signals: list):
+        """
+        Обновление списка сигналов.
+        signals: список словарей с ключами symbol, direction, score, price и т.д.
+        """
+        self.table_signals.setRowCount(0)
+        if not signals:
+            return
+        self.table_signals.setRowCount(len(signals))
+        for row, sig in enumerate(signals):
+            symbol = sig.get("symbol", "?")
+            direction = sig.get("direction", "?")
+            score = sig.get("score", 0)
+            price = sig.get("price", 0.0)
 
-    def _create_card(self, title, default_text):
-        card = QFrame()
-        card.setObjectName("card")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 12, 12, 12)
-        title_label = QLabel(title)
-        title_label.setStyleSheet("color: #8B949E; font-size: 10pt;")
-        value_label = QLabel(default_text)
-        value_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
-        value_label.setStyleSheet("color: #C9D1D9;")
-        value_label.setWordWrap(True)
-        card_layout.addWidget(title_label)
-        card_layout.addWidget(value_label)
-        card_layout.addStretch()
-        return card
+            items = [
+                QTableWidgetItem(symbol),
+                QTableWidgetItem(direction),
+                QTableWidgetItem(f"{score:.1f}"),
+                QTableWidgetItem(f"{price:.4f}"),
+            ]
+            for col, item in enumerate(items):
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setForeground(QColor("#E0E0E0"))
+                self.table_signals.setItem(row, col, item)
 
-    def _on_demo_toggled(self, state):
-        is_demo = state == Qt.Checked
-        self.toggle_demo_signal.emit(is_demo)
-
-    def update_status(self, balance, real_balance, pnl, pnl_percent, mode, positions_count, weights=None):
-        self.balance_label.findChild(QLabel).setText(f"{balance:.2f} USDT")
-        real_text = f"{real_balance:.2f} USDT" if real_balance > 0 else "— USDT"
-        self.real_balance_label.findChild(QLabel).setText(real_text)
-
-        color = "#3FB950" if pnl >= 0 else "#F85149"
-        pnl_text = f'<span style="color:{color};">{pnl:+.2f} USDT ({pnl_percent:+.2f}%)</span>'
-        self.pnl_label.findChild(QLabel).setText(pnl_text)
-        self.pnl_label.findChild(QLabel).setTextFormat(Qt.RichText)
-
-        self.positions_label.findChild(QLabel).setText(str(positions_count))
-        self.mode_label.setText(mode)
-        # Обновляем чекбокс в соответствии с текущим режимом
-        self.demo_checkbox.blockSignals(True)
-        self.demo_checkbox.setChecked(mode == "Демо")
-        self.demo_checkbox.blockSignals(False)
-
-        self.pnl_history.append(pnl)
-        if len(self.pnl_history) > 200:
-            self.pnl_history = self.pnl_history[-200:]
-        self.chart.update_data(pnl)
-
-        if weights:
-            self.pie_chart.set_weights(weights)
-
-    def set_buttons_state(self, running: bool):
-        self.start_btn.setEnabled(not running)
-        self.stop_btn.setEnabled(running)
-        self.scan_btn.setEnabled(running)
+    def add_log_message(self, message: str):
+        """Добавить сообщение в лог дашборда (опционально)"""
+        self.text_log.append(message)
