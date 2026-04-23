@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+"""
+TradeExecutor — полноценный исполнитель торговых приказов.
+Корректный расчёт qty, обработка minNotional, установка плеча и маржи.
+"""
 import logging
 import math
 import time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
 from src.config.settings import Settings
 from src.core.logger import BotLogger
-from src.core.trading.position import Position
-from src.config.constants import OrderSide
+from src.core.trading.position import Position, OrderSide
 
 logger = logging.getLogger(__name__)
 
+
 class TradeExecutor:
-    """
-    Исполнитель торговых приказов.
-    Отвечает за открытие позиций, расчет размера лота и начальные стопы.
-    """
-    MIN_NOTIONAL = 5.0  # минимальная стоимость позиции в USDT на BingX Futures
+    """Исполнитель торговых приказов с адаптивным расчётом позиций."""
 
     def __init__(self, settings: Settings, logger: BotLogger, order_manager, risk_manager, risk_controller):
         self.settings = settings
@@ -28,19 +27,30 @@ class TradeExecutor:
         self.risk_controller = risk_controller
         self.client = order_manager.client
 
-    def _round_quantity(self, symbol: str, quantity: float) -> float:
-        """Округляет количество монеты до допустимого шага (stepSize)."""
-        step = 0.001 # Базовый шаг, если нет информации с биржи
+    def _round_quantity(self, symbol: str, quantity: float, symbol_specs: dict = None) -> float:
+        """Округляет количество до допустимого шага."""
+        if symbol_specs:
+            step = float(symbol_specs.get("stepSize", 0.001))
+        else:
+            step = 0.001
+
+        if step <= 0:
+            step = 0.001
+
         qty = math.floor(quantity / step) * step
         return max(qty, step)
 
-    def _check_min_notional(self, quantity: float, price: float) -> bool:
-        """Проверяет, что стоимость позиции >= MIN_NOTIONAL (5 USDT)."""
-        return (quantity * price) >= self.MIN_NOTIONAL
+    def _check_min_notional(self, quantity: float, price: float, symbol_specs: dict = None) -> bool:
+        """Проверяет минимальную стоимость позиции."""
+        if symbol_specs:
+            min_notional = float(symbol_specs.get("minNotional", 5.0))
+        else:
+            min_notional = 5.0
+        return (quantity * price) >= min_notional
 
     async def execute_trade_async(
         self,
-        candidate: Dict,
+        candidate: Dict[str, Any],
         balance: float,
         open_positions: Dict[str, Position],
         trailing_enabled: bool,
@@ -48,27 +58,40 @@ class TradeExecutor:
         telegram,
         daily_pnl: float,
         weekly_pnl: float,
-        start_balance: float
+        start_balance: float,
     ) -> Optional[Position]:
-        """
-        Асинхронная попытка открыть сделку на основе кандидата от сканера.
-        """
-        symbol = candidate.get('symbol')
-        indicators = candidate.get('indicators', {})
-        direction = indicators.get('signal_direction', 'NEUTRAL')
-        current_price = indicators.get('close_price', 0.0)
-        atr = indicators.get('atr_percent', 1.0)
+        """Асинхронная попытка открыть сделку."""
+        symbol = candidate.get("symbol")
+        indicators = candidate.get("indicators", {})
+        direction = indicators.get("signal_direction", "NEUTRAL")
+        current_price = indicators.get("close_price", 0.0)
+        atr = indicators.get("atr_percent", 1.0)
+        atr_value = indicators.get("atr", current_price * atr / 100)
 
-        if not symbol or current_price <= 0 or direction == 'NEUTRAL':
+        if not symbol or current_price <= 0 or direction == "NEUTRAL":
             return None
 
-        # Определяем сторону
-        side = OrderSide.BUY if direction == 'LONG' else OrderSide.SELL
+        # Determine side
+        side = OrderSide.BUY if direction == "LONG" else OrderSide.SELL
 
-        # Расчет риска и размера позиции
-        risk_percent = self.settings.get("max_risk_per_trade", 1.0)
-        leverage = self.settings.get("max_leverage", 3)
-        stop_distance_pct = max(1.0, min(1.5 * atr, 10.0))
+        # Get symbol specs from exchange
+        symbol_specs = self.client.get_symbol_specs(symbol.replace("/", "-"))
+        if not symbol_specs:
+            # Try to fetch if not cached
+            try:
+                await self.client.get_symbol_info(symbol.replace("/", "-"))
+                symbol_specs = self.client.get_symbol_specs(symbol.replace("/", "-"))
+            except Exception:
+                pass
+
+        # Risk and position sizing
+        risk_percent = float(self.settings.get("max_risk_per_trade", 1.0))
+        leverage = int(self.settings.get("max_leverage", 3))
+        if symbol_specs:
+            max_lev = symbol_specs.get("maxLeverage", leverage)
+            leverage = min(leverage, max_lev)
+
+        stop_distance_pct = max(0.5, min(1.5 * atr, 10.0))
 
         quantity = self.risk_manager.calculate_position_size(
             symbol=symbol,
@@ -76,41 +99,64 @@ class TradeExecutor:
             risk_percent=risk_percent,
             stop_distance_pct=stop_distance_pct,
             leverage=leverage,
-            atr=atr,
-            current_price=current_price
+            atr=atr_value,
+            current_price=current_price,
+            symbol_specs=symbol_specs,
         )
 
         if quantity <= 0:
-            self.logger.warning(f"⚠️ {symbol}: Рассчитанный объем равен 0")
+            self.logger.warning(f"⚠️ {symbol}: Рассчитанный объём равен 0")
             return None
 
-        # Округление и проверка минимального объема (5 USDT)
-        qty = self._round_quantity(symbol, quantity)
-        if not self._check_min_notional(qty, current_price):
-            qty = self._round_quantity(symbol, (self.MIN_NOTIONAL * 1.05) / current_price)
-            if not self._check_min_notional(qty, current_price):
-                self.logger.warning(f"⚠️ {symbol}: Не проходит минимальный лот BingX (5 USDT). Пропуск.")
+        # Round and check minimum
+        qty = self._round_quantity(symbol, quantity, symbol_specs)
+        if not self._check_min_notional(qty, current_price, symbol_specs):
+            # Try to increase to minimum
+            min_notional = float(symbol_specs.get("minNotional", 5.0)) if symbol_specs else 5.0
+            qty = self._round_quantity(symbol, (min_notional * 1.05) / current_price, symbol_specs)
+            if not self._check_min_notional(qty, current_price, symbol_specs):
+                self.logger.warning(f"⚠️ {symbol}: Не проходит минимальный лот ({min_notional} USDT). Пропуск.")
                 return None
 
-        self.logger.info(f"🚀 Попытка входа {side.value} по {symbol}. Объем: {qty}, Цена: ~{current_price}")
+        self.logger.info(f"🚀 Попытка входа {side.value} по {symbol}. Объём: {qty:.6f}, Цена: ~{current_price:.4f}")
 
-        # Отправляем ордер через order_manager
-        order_side_str = "BUY" if side == OrderSide.BUY else "SELL"
-        
-        # Для асинхронного вызова (если order_manager использует AsyncBingXClient)
+        # Set leverage first
+        bingx_symbol = symbol.replace("/", "-")
         try:
-            result = await self.order_manager.client.place_order(
-                symbol=symbol.replace('/', '-'),
+            await self.client.set_leverage(bingx_symbol, leverage)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Не удалось установить плечо {symbol}: {e}")
+
+        # Set margin mode
+        try:
+            await self.client.set_margin_mode(bingx_symbol, "CROSSED")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Не удалось установить маржу {symbol}: {e}")
+
+        # Calculate SL/TP before placing order
+        temp_pos = Position(
+            symbol=symbol, side=side, quantity=qty,
+            entry_price=current_price, leverage=leverage
+        )
+        sl_price, tp_price = self.risk_manager.calculate_sl_tp(temp_pos, atr_value)
+
+        # Place order
+        order_side_str = "BUY" if side == OrderSide.BUY else "SELL"
+        try:
+            result = await self.client.place_order(
+                symbol=bingx_symbol,
                 side=order_side_str,
                 quantity=qty,
                 leverage=leverage,
-                order_type="MARKET"
+                order_type="MARKET",
+                position_side="BOTH",
+                stop_loss=sl_price,
+                take_profit=tp_price,
             )
         except Exception as e:
             self.logger.error(f"❌ Ошибка отправки ордера {symbol}: {e}")
             return None
 
-        # Если ордер не прошел
         if not result or not result.get("orderId"):
             self.logger.error(f"❌ Биржа отклонила ордер по {symbol}: {result}")
             return None
@@ -119,51 +165,60 @@ class TradeExecutor:
         if avg_price <= 0:
             avg_price = current_price
 
-        # Создаем объект позиции
+        # Create position object
         pos = Position(
             symbol=symbol,
             side=side,
             quantity=qty,
             entry_price=avg_price,
             leverage=leverage,
-            stop_loss_price=0.0,
-            take_profit_price=0.0
+            stop_loss_price=sl_price,
+            take_profit_price=tp_price,
+            strategy=indicators.get("entry_type", "macd_rsi"),
         )
 
-        # Выставляем начальные стопы
-        sl_price, tp_price = self.risk_manager.calculate_sl_tp(pos, atr)
-        pos.stop_loss_price = sl_price
-        pos.take_profit_price = tp_price
+        self.risk_manager.register_position_open(pos)
 
-        self.logger.info(f"✅ Успешный вход: {symbol} {side.value} | Цена: {avg_price:.4f} | SL: {sl_price:.4f} | TP: {tp_price:.4f}")
+        self.logger.info(
+            f"✅ Успешный вход: {symbol} {side.value} | "
+            f"Цена: {avg_price:.4f} | SL: {sl_price:.4f} | TP: {tp_price:.4f} | "
+            f"Qty: {qty:.6f} | Value: ${qty*avg_price:.2f}"
+        )
 
         if telegram:
             msg = (
-                f"🟢 <b>ОТКРЫТА ПОЗИЦИЯ</b> 🟢\n"
+                f"🟢 **ОТКРЫТА ПОЗИЦИЯ** 🟢\n"
                 f"Пара: {symbol}\n"
-                f"Направление: <b>{side.value}</b> 📈\n"
+                f"Направление: **{side.value}** 📈\n"
                 f"Вход: {avg_price:.4f}\n"
                 f"Плечо: {leverage}x\n"
+                f"Объём: {qty:.6f} (${qty*avg_price:.2f})\n"
                 f"SL: {sl_price:.4f} | TP: {tp_price:.4f}\n"
+                f"Риск: {self.risk_manager.risk_per_trade:.1f}%"
             )
-            telegram.send_sync(msg)
+            try:
+                telegram.send_sync(msg)
+            except Exception:
+                pass
 
         return pos
 
     async def close_position_async(self, symbol: str, side: OrderSide, quantity: float) -> bool:
-        """Асинхронно закрывает позицию на бирже."""
-        order_side_str = "SELL" if side == OrderSide.BUY else "BUY" # Обратный ордер
+        """Асинхронно закрывает позицию."""
+        bingx_symbol = symbol.replace("/", "-")
+        order_side_str = "SELL" if side == OrderSide.BUY else "BUY"
         try:
-            res = await self.order_manager.client.place_order(
-                symbol=symbol.replace('/', '-'),
+            res = await self.client.place_order(
+                symbol=bingx_symbol,
                 side=order_side_str,
                 quantity=quantity,
-                leverage=1, # Плечо при закрытии не важно
-                order_type="MARKET"
+                order_type="MARKET",
+                position_side="BOTH",
             )
             if res and res.get("orderId"):
+                self.logger.info(f"✅ Позиция {symbol} закрыта")
                 return True
             return False
         except Exception as e:
-            self.logger.error(f"Ошибка закрытия {symbol}: {e}")
+            self.logger.error(f"❌ Ошибка закрытия {symbol}: {e}")
             return False

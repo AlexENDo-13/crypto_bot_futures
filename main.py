@@ -7,27 +7,26 @@
 import sys
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
+
 from src.config.settings import Settings
 from src.ui.main_window import MainWindow, apply_dark_theme
 
 
 def main():
-    # Создаём приложение
     app = QApplication(sys.argv)
-    app.setAttribute(Qt.AA_DisableWindowContextHelpButton)  # убираем знак вопроса в окнах
+    app.setAttribute(Qt.AA_DisableWindowContextHelpButton)
 
-    # Применяем глобальную тёмную тему
+    # Apply dark theme
     apply_dark_theme(app)
 
-    # Загружаем настройки
+    # Load settings
     settings = Settings()
-    # Если файл конфига не найден, будет создан стандартный (демо‑режим)
 
-    # Создаём и показываем главное окно
+    # Create and show main window
     window = MainWindow(settings)
     window.show()
 
-    # Запускаем главный цикл
+    # Run main loop
     sys.exit(app.exec_())
 
 

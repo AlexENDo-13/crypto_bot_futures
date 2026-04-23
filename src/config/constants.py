@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Constants — перечисления и константы
+Constants — перечисления и константы.
 """
 from enum import Enum
 
 
-class TimeFrame(Enum):
+class OrderSide(str, Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class ExitReason(str, Enum):
+    STOP_LOSS = "STOP_LOSS"
+    TAKE_PROFIT = "TAKE_PROFIT"
+    TRAILING_STOP = "TRAILING_STOP"
+    TIME_EXIT = "TIME_EXIT"
+    EMERGENCY = "EMERGENCY"
+    MANUAL = "MANUAL"
+    EXCHANGE_CLOSE = "EXCHANGE_CLOSE"
+
+
+class TimeFrame(str, Enum):
     M1 = "1m"
     M5 = "5m"
     M15 = "15m"
@@ -23,5 +38,5 @@ TIMEFRAME_TO_MINUTES = {
     "30m": 30,
     "1h": 60,
     "4h": 240,
-    "1d": 1440
+    "1d": 1440,
 }
