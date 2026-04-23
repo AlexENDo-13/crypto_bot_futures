@@ -84,15 +84,15 @@ class MarketScanner:
             self.logger.info(f"📭 Сигналов не найдено (пустых подряд: {self.empty_scans_count})")
         else:
             self.empty_scans_count = 0; self.successful_scans_count += 1
-        candidates.sort(key=lambda x: x["indicators"].get("signal_strength", 0) * x["indicators"].get("adx", 0) * x["indicators"].get("atr_percent", 0), reverse=True)
-        top = candidates[:5]
-        if top:
-            self.logger.info(f"✅ Найдено {len(candidates)} сигналов, топ-{len(top)}")
-            for i, c in enumerate(top[:3], 1):
-                ind = c["indicators"]
-                self.logger.info(f" #{i} {c['symbol']}: {ind.get('signal_direction')} [{ind.get('market_regime')}] | ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | Type={ind.get('entry_type','unknown')}")
+            candidates.sort(key=lambda x: x["indicators"].get("signal_strength", 0) * x["indicators"].get("adx", 0) * x["indicators"].get("atr_percent", 0), reverse=True)
+            top = candidates[:5]
+            if top:
+                self.logger.info(f"✅ Найдено {len(candidates)} сигналов, топ-{len(top)}")
+                for i, c in enumerate(top[:3], 1):
+                    ind = c["indicators"]
+                    self.logger.info(f" #{i} {c['symbol']}: {ind.get('signal_direction')} [{ind.get('market_regime')}] | ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | Type={ind.get('entry_type','unknown')}")
         self._scan_stats = {"total": filtered_count["total"], "passed": filtered_count["passed"], "by_filter": filtered_count}
-        return top
+        return top if candidates else []
 
     async def _analyze_symbol(self, symbol, filtered_count):
         tf = self.settings.get("timeframe", "15m")

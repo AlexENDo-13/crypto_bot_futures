@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-AsyncBingXClient v3.0 — улучшенный клиент BingX API.
-"""
-import aiohttp
-import asyncio
-import time
-import hashlib
-import hmac
-import json
-import logging
+"""AsyncBingXClient v4.0 — улучшенный клиент BingX API с защитой от ошибок."""
+import aiohttp, asyncio, time, hashlib, hmac, json, logging
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlencode
 
@@ -68,8 +60,7 @@ class AsyncBingXClient:
             self._session = None
 
     async def _sync_server_time(self, force: bool = False):
-        if not force and self._server_time_offset != 0:
-            return
+        if not force and self._server_time_offset != 0: return
         try:
             session = await self._get_session()
             async with session.get(f"{self.base_url}/openApi/swap/v2/server/time") as resp:
@@ -89,17 +80,15 @@ class AsyncBingXClient:
         return hmac.new(self.api_secret.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
 
     async def _request(self, method: str, path: str, params: dict = None, signed: bool = False,
-                        retries: int = 3, retry_delay: float = 1.0) -> Optional[Dict]:
+                       retries: int = 3, retry_delay: float = 1.0) -> Optional[Dict]:
         session = await self._get_session()
         params = params or {}
         headers = {"X-BX-APIKEY": self.api_key}
-
         now = time.time()
         elapsed = now - self._last_request_time
         if elapsed < self._rate_limit_delay:
             await asyncio.sleep(self._rate_limit_delay - elapsed)
         self._last_request_time = time.time()
-
         last_error = None
         for attempt in range(retries):
             try:
@@ -112,36 +101,25 @@ class AsyncBingXClient:
                     full_query = f"{query_string}&signature={signature}"
                     request_url = f"{self.base_url}{path}?{full_query}"
                     if method.upper() == "GET":
-                        async with session.get(request_url, headers=headers) as resp:
-                            text = await resp.text()
+                        async with session.get(request_url, headers=headers) as resp: text = await resp.text()
                     elif method.upper() == "POST":
-                        async with session.post(request_url, headers=headers) as resp:
-                            text = await resp.text()
+                        async with session.post(request_url, headers=headers) as resp: text = await resp.text()
                     elif method.upper() == "DELETE":
-                        async with session.delete(request_url, headers=headers) as resp:
-                            text = await resp.text()
-                    else:
-                        raise ValueError(f"Unsupported method: {method}")
+                        async with session.delete(request_url, headers=headers) as resp: text = await resp.text()
+                    else: raise ValueError(f"Unsupported method: {method}")
                 else:
                     request_url = f"{self.base_url}{path}"
                     if method.upper() == "GET":
-                        async with session.get(request_url, params=params, headers=headers) as resp:
-                            text = await resp.text()
+                        async with session.get(request_url, params=params, headers=headers) as resp: text = await resp.text()
                     elif method.upper() == "POST":
-                        async with session.post(request_url, data=params, headers=headers) as resp:
-                            text = await resp.text()
+                        async with session.post(request_url, data=params, headers=headers) as resp: text = await resp.text()
                     elif method.upper() == "DELETE":
-                        async with session.delete(request_url, params=params, headers=headers) as resp:
-                            text = await resp.text()
-                    else:
-                        raise ValueError(f"Unsupported method: {method}")
-
-                try:
-                    data = json.loads(text)
+                        async with session.delete(request_url, params=params, headers=headers) as resp: text = await resp.text()
+                    else: raise ValueError(f"Unsupported method: {method}")
+                try: data = json.loads(text)
                 except json.JSONDecodeError:
                     logger.error(f"Невалидный JSON: {text[:200]}")
                     return None
-
                 self._request_count += 1
                 if data and data.get("code") != 0:
                     code = data.get("code")
@@ -158,40 +136,31 @@ class AsyncBingXClient:
             except aiohttp.ClientError as e:
                 last_error = e
                 logger.warning(f"Сетевой сбой ({attempt+1}/{retries}): {e}")
-                if attempt < retries - 1:
-                    await asyncio.sleep(retry_delay * (attempt + 1))
+                if attempt < retries - 1: await asyncio.sleep(retry_delay * (attempt + 1))
             except asyncio.TimeoutError:
                 last_error = "Timeout"
                 logger.warning(f"Таймаут ({attempt+1}/{retries})")
-                if attempt < retries - 1:
-                    await asyncio.sleep(retry_delay * (attempt + 1))
+                if attempt < retries - 1: await asyncio.sleep(retry_delay * (attempt + 1))
             except Exception as e:
                 last_error = e
                 logger.error(f"Ошибка запроса: {e}")
-                if attempt < retries - 1:
-                    await asyncio.sleep(retry_delay * (attempt + 1))
-
+                if attempt < retries - 1: await asyncio.sleep(retry_delay * (attempt + 1))
         logger.error(f"Все попытки исчерпаны: {last_error}")
         return None
 
     def _safe_float(self, val, default=0.0):
         try:
-            if val is None:
-                return default
-            if isinstance(val, (int, float)):
-                return float(val)
+            if val is None: return default
+            if isinstance(val, (int, float)): return float(val)
             if isinstance(val, str):
                 val = val.strip()
-                if val == "" or val.lower() == "null":
-                    return default
+                if val == "" or val.lower() == "null": return default
                 return float(val)
             return default
-        except (TypeError, ValueError):
-            return default
+        except (TypeError, ValueError): return default
 
     def _extract_balance(self, obj: Any) -> Optional[Dict]:
-        if not isinstance(obj, dict):
-            return None
+        if not isinstance(obj, dict): return None
         return {
             "balance": self._safe_float(obj.get("balance")),
             "available": self._safe_float(obj.get("availableMargin") or obj.get("available") or obj.get("balance")),
@@ -202,7 +171,6 @@ class AsyncBingXClient:
             "asset": str(obj.get("asset", "USDT")),
         }
 
-    # Public methods
     async def get_server_time(self) -> Optional[Dict]:
         return await self._request("GET", "/openApi/swap/v2/server/time", signed=False)
 
@@ -213,16 +181,15 @@ class AsyncBingXClient:
             if now - self._last_symbol_info_update < cache_ttl:
                 return {"code": 0, "data": [self._symbol_info_cache[symbol]]}
         params = {}
-        if symbol:
-            params["symbol"] = symbol
+        if symbol: params["symbol"] = symbol
         result = await self._request("GET", "/openApi/swap/v2/quote/contracts", params=params, signed=False)
         if result and result.get("code") == 0:
             self._last_symbol_info_update = now
             for contract in result.get("data", []):
                 sym = contract.get("symbol", "")
-                if sym:
-                    self._symbol_info_cache[sym] = contract
-        return result
+                if sym: self._symbol_info_cache[sym] = contract
+            return result
+        return None
 
     async def get_ticker(self, symbol: str) -> Optional[Dict]:
         result = await self._request("GET", "/openApi/swap/v2/quote/ticker", params={"symbol": symbol}, signed=False)
@@ -231,10 +198,8 @@ class AsyncBingXClient:
             if data:
                 ticker = data[0] if isinstance(data, list) else data
                 def sf(val, d=0.0):
-                    try:
-                        return float(val) if val is not None else d
-                    except:
-                        return d
+                    try: return float(val) if val is not None else d
+                    except: return d
                 return {
                     "symbol": ticker.get("symbol", symbol),
                     "lastPrice": sf(ticker.get("lastPrice") or ticker.get("close")),
@@ -254,10 +219,8 @@ class AsyncBingXClient:
         if result and result.get("code") == 0:
             data = result.get("data", [])
             def sf(val, d=0.0):
-                try:
-                    return float(val) if val is not None else d
-                except:
-                    return d
+                try: return float(val) if val is not None else d
+                except: return d
             for t in (data if isinstance(data, list) else [data]):
                 if t:
                     tickers.append({
@@ -271,7 +234,7 @@ class AsyncBingXClient:
 
     async def get_klines(self, symbol: str, interval: str = "15m", limit: int = 100) -> List[Dict]:
         result = await self._request("GET", "/openApi/swap/v3/quote/klines",
-                                      params={"symbol": symbol, "interval": interval, "limit": limit}, signed=False)
+            params={"symbol": symbol, "interval": interval, "limit": limit}, signed=False)
         if result and result.get("code") == 0:
             data = result.get("data", [])
             klines = []
@@ -291,65 +254,52 @@ class AsyncBingXClient:
         result = await self._request("GET", "/openApi/swap/v2/quote/premiumIndex", params={"symbol": symbol}, signed=False)
         if result and result.get("code") == 0:
             data = result.get("data", {})
-            if isinstance(data, list) and data:
-                data = data[0]
+            if isinstance(data, list) and data: data = data[0]
             return {"fundingRate": self._safe_float(data.get("lastFundingRate") or data.get("fundingRate"))}
         return {"fundingRate": 0.0}
 
-    # Private methods
     async def get_account_info(self) -> Optional[Dict]:
         result = await self._request("GET", "/openApi/swap/v2/user/balance", signed=True)
-        if not result or result.get("code") != 0:
-            return None
+        if not result or result.get("code") != 0: return None
         data = result.get("data", {})
         balance_data = data.get("balance")
         if isinstance(balance_data, dict):
             extracted = self._extract_balance(balance_data)
-            if extracted and extracted["balance"] > 0:
-                return extracted
+            if extracted and extracted["balance"] > 0: return extracted
             for key, val in balance_data.items():
                 if isinstance(val, dict):
                     extracted = self._extract_balance(val)
-                    if extracted and extracted["asset"].upper() == "USDT":
-                        return extracted
+                    if extracted and extracted["asset"].upper() == "USDT": return extracted
         if isinstance(balance_data, list):
             for bal in balance_data:
                 extracted = self._extract_balance(bal)
-                if extracted and extracted["asset"].upper() == "USDT":
-                    return extracted
-        if balance_data:
-            extracted = self._extract_balance(balance_data[0])
-            if extracted:
-                return extracted
+                if extracted and extracted["asset"].upper() == "USDT": return extracted
+            if balance_data:
+                extracted = self._extract_balance(balance_data[0])
+                if extracted: return extracted
         if isinstance(data, dict):
             extracted = self._extract_balance(data)
-            if extracted and extracted["balance"] > 0:
-                return extracted
-        assets = data.get("assets") or data.get("balances")
-        if isinstance(assets, list):
-            for asset in assets:
-                extracted = self._extract_balance(asset)
-                if extracted and extracted["asset"].upper() == "USDT":
-                    return extracted
+            if extracted and extracted["balance"] > 0: return extracted
+            assets = data.get("assets") or data.get("balances")
+            if isinstance(assets, list):
+                for asset in assets:
+                    extracted = self._extract_balance(asset)
+                    if extracted and extracted["asset"].upper() == "USDT": return extracted
         logger.error(f"❌ Не удалось распарсить баланс: {json.dumps(result, ensure_ascii=False)[:500]}")
         return None
 
     async def get_positions(self, symbol: str = None) -> List[Dict]:
         params = {}
-        if symbol:
-            params["symbol"] = symbol
+        if symbol: params["symbol"] = symbol
         result = await self._request("GET", "/openApi/swap/v2/user/positions", params=params, signed=True)
         positions = []
         if result and result.get("code") == 0:
             data = result.get("data", [])
-            if isinstance(data, dict):
-                data = data.get("positions", [data])
+            if isinstance(data, dict): data = data.get("positions", [data])
             for p in (data if isinstance(data, list) else [data]):
-                if not p:
-                    continue
+                if not p: continue
                 amt = self._safe_float(p.get("positionAmt"))
-                if amt == 0:
-                    continue
+                if amt == 0: continue
                 positions.append({
                     "symbol": str(p.get("symbol", "")),
                     "positionAmt": amt,
@@ -365,7 +315,7 @@ class AsyncBingXClient:
 
     async def set_leverage(self, symbol: str, leverage: int) -> bool:
         result = await self._request("POST", "/openApi/swap/v2/trade/leverage",
-                                      params={"symbol": symbol, "leverage": str(leverage), "side": "BOTH"}, signed=True)
+            params={"symbol": symbol, "leverage": str(leverage), "side": "BOTH"}, signed=True)
         if result and result.get("code") == 0:
             logger.info(f"Плечо {leverage}x для {symbol} установлено")
             return True
@@ -375,40 +325,31 @@ class AsyncBingXClient:
 
     async def set_margin_mode(self, symbol: str, margin_mode: str = "CROSSED") -> bool:
         result = await self._request("POST", "/openApi/swap/v2/trade/marginType",
-                                      params={"symbol": symbol, "marginType": margin_mode}, signed=True)
+            params={"symbol": symbol, "marginType": margin_mode}, signed=True)
         if result and result.get("code") == 0:
             logger.info(f"Режим маржи {margin_mode} для {symbol} установлен")
             return True
         msg = result.get("msg", "") if result else ""
-        if "already" in msg.lower() or "repeat" in msg.lower():
-            return True
+        if "already" in msg.lower() or "repeat" in msg.lower(): return True
         logger.warning(f"Ошибка установки маржи {margin_mode} для {symbol}: {msg}")
         return False
 
     async def place_order(self, symbol: str, side: str, quantity: float, order_type: str = "MARKET",
-                           price: float = None, stop_price: float = None, leverage: int = None,
-                           position_side: str = "BOTH", client_order_id: str = None) -> Optional[Dict]:
+                          price: float = None, stop_price: float = None, leverage: int = None,
+                          position_side: str = "BOTH", client_order_id: str = None) -> Optional[Dict]:
         params = {
-            "symbol": symbol,
-            "side": side.upper(),
-            "type": order_type.upper(),
-            "positionSide": position_side.upper(),
-            "quantity": str(quantity),
+            "symbol": symbol, "side": side.upper(), "type": order_type.upper(),
+            "positionSide": position_side.upper(), "quantity": str(quantity),
         }
-        if price is not None and order_type.upper() != "MARKET":
-            params["price"] = str(price)
-        if stop_price is not None:
-            params["stopPrice"] = str(stop_price)
-        if client_order_id:
-            params["newClientOrderId"] = client_order_id
-
+        if price is not None and order_type.upper() != "MARKET": params["price"] = str(price)
+        if stop_price is not None: params["stopPrice"] = str(stop_price)
+        if client_order_id: params["newClientOrderId"] = client_order_id
         result = await self._request("POST", "/openApi/swap/v2/trade/order", params=params, signed=True)
         if result is None:
             logger.error(f"Ордер {symbol} {side}: нет ответа")
             return None
         if result.get("code") != 0:
-            code = result.get("code", -1)
-            msg = result.get("msg", "Unknown")
+            code = result.get("code", -1); msg = result.get("msg", "Unknown")
             logger.error(f"Ордер отклонён {symbol} {side}: [{code}] {msg}")
             return {"error": True, "code": code, "msg": msg}
         data = result.get("data", {})
@@ -422,52 +363,39 @@ class AsyncBingXClient:
         }
 
     async def place_stop_order(self, symbol: str, side: str, stop_price: float, quantity: float = None,
-                                order_type: str = "STOP_MARKET", position_side: str = "BOTH",
-                                close_position: bool = False) -> Optional[Dict]:
+                               order_type: str = "STOP_MARKET", position_side: str = "BOTH",
+                               close_position: bool = False) -> Optional[Dict]:
         params = {
-            "symbol": symbol,
-            "side": side.upper(),
-            "type": order_type.upper(),
-            "positionSide": position_side.upper(),
-            "stopPrice": str(stop_price),
+            "symbol": symbol, "side": side.upper(), "type": order_type.upper(),
+            "positionSide": position_side.upper(), "stopPrice": str(stop_price),
         }
-        if close_position:
-            params["closePosition"] = "true"
-        elif quantity is not None:
-            params["quantity"] = str(quantity)
-
+        if close_position: params["closePosition"] = "true"
+        elif quantity is not None: params["quantity"] = str(quantity)
         result = await self._request("POST", "/openApi/swap/v2/trade/order", params=params, signed=True)
         if result is None:
             logger.error(f"Стоп-ордер {symbol}: нет ответа")
             return None
         if result.get("code") != 0:
-            code = result.get("code", -1)
-            msg = result.get("msg", "Unknown")
+            code = result.get("code", -1); msg = result.get("msg", "Unknown")
             logger.error(f"Стоп-ордер отклонён {symbol}: [{code}] {msg}")
             return {"error": True, "code": code, "msg": msg}
         data = result.get("data", {})
-        return {
-            "orderId": data.get("orderId", ""),
-            "symbol": symbol, "side": side, "stopPrice": stop_price,
-            "status": data.get("status", "NEW"),
-        }
+        return {"orderId": data.get("orderId", ""), "symbol": symbol, "side": side, "stopPrice": stop_price, "status": data.get("status", "NEW")}
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         result = await self._request("DELETE", "/openApi/swap/v2/trade/order",
-                                      params={"symbol": symbol, "orderId": order_id}, signed=True)
+            params={"symbol": symbol, "orderId": order_id}, signed=True)
         if result and result.get("code") == 0:
             logger.info(f"Ордер {order_id} отменён")
             return True
         msg = result.get("msg", "") if result else ""
-        if "not exist" in msg.lower() or "cancelled" in msg.lower():
-            return True
+        if "not exist" in msg.lower() or "cancelled" in msg.lower(): return True
         logger.error(f"Ошибка отмены ордера {order_id}: {msg}")
         return False
 
     async def cancel_all_orders(self, symbol: str = None) -> bool:
         params = {}
-        if symbol:
-            params["symbol"] = symbol
+        if symbol: params["symbol"] = symbol
         result = await self._request("DELETE", "/openApi/swap/v2/trade/allOpenOrders", params=params, signed=True)
         if result and result.get("code") == 0:
             logger.info(f"Все ордера отменены{' для ' + symbol if symbol else ''}")
@@ -479,21 +407,18 @@ class AsyncBingXClient:
         for pos in positions:
             if pos.get("symbol") == symbol:
                 pos_side = pos.get("positionSide", "LONG")
-                if position_side != "BOTH" and pos_side != position_side:
-                    continue
+                if position_side != "BOTH" and pos_side != position_side: continue
                 amt = abs(float(pos.get("positionAmt", 0)))
                 if amt > 0:
                     close_side = "SELL" if pos_side == "LONG" else "BUY"
-                    result = await self.place_order(symbol=symbol, side=close_side, quantity=amt,
-                                                     order_type="MARKET", position_side=pos_side)
+                    result = await self.place_order(symbol=symbol, side=close_side, quantity=amt, order_type="MARKET", position_side=pos_side)
                     if result and not result.get("error") and result.get("orderId"):
                         logger.info(f"Позиция {symbol} закрыта")
                         return True
         return False
 
     def set_demo_mode(self, demo_mode: bool):
-        if self.demo_mode == demo_mode:
-            return
+        if self.demo_mode == demo_mode: return
         self.demo_mode = demo_mode
         self.base_url = self.DEMO_URL if demo_mode else self.BASE_URL
         logger.info(f"Режим переключён на {'демо' if demo_mode else 'реальный'}")
@@ -513,8 +438,7 @@ class AsyncBingXClient:
 
     def get_health(self) -> Dict[str, Any]:
         return {
-            "requests": self._request_count,
-            "errors": self._error_count,
+            "requests": self._request_count, "errors": self._error_count,
             "error_rate": (self._error_count / max(self._request_count, 1)) * 100,
             "demo_mode": self.demo_mode,
         }

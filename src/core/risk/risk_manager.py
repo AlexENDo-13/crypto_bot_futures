@@ -87,10 +87,10 @@ class RiskManager:
         risk_amount = max(balance * (risk_percent / 100), 0.5)
         stop_distance_pct = max(0.3, min(stop_distance_pct, 10.0))
         position_value = risk_amount / (stop_distance_pct / 100)
-        margin_required = position_value / leverage
+        margin_required = position_value / leverage if leverage > 0 else position_value
         max_margin = balance * 0.5
-        if margin_required > max_margin: margin_required = max_margin; position_value = margin_required * leverage
-        quantity = position_value / current_price
+        if margin_required > max_margin: margin_required = max_margin; position_value = margin_required * leverage if leverage > 0 else margin_required
+        quantity = position_value / current_price if current_price > 0 else 0
         if symbol_specs:
             step = float(symbol_specs.get("stepSize", 0.001)); min_notional = float(symbol_specs.get("minNotional", 5.0))
             quantity = math.floor(quantity / step) * step
@@ -100,7 +100,7 @@ class RiskManager:
             step = 0.001; quantity = math.floor(quantity / step) * step
             if quantity * current_price < 5.0: quantity = math.ceil(5.0 / current_price / step) * step
         if quantity <= 0: return 0.0
-        total_risk_pct = (self.total_risk_exposure + risk_amount) / balance * 100
+        total_risk_pct = (self.total_risk_exposure + risk_amount) / balance * 100 if balance > 0 else 0
         if total_risk_pct > self.max_total_risk:
             logger.warning(f"Превышен общий риск ({total_risk_pct:.1f}% > {self.max_total_risk}%)")
             return 0.0
@@ -108,13 +108,14 @@ class RiskManager:
         return quantity
 
     def calculate_sl_tp(self, position, atr=None):
-        if atr is None: atr = position.entry_price * (self.default_sl_pct / 100)
+        if atr is None: atr = position.entry_price * (self.default_sl_pct / 100) if position.entry_price > 0 else 0.01
         atr_mult_sl = 1.5; atr_mult_tp = 3.0
         if position.side == OrderSide.BUY:
             sl = position.entry_price - (atr * atr_mult_sl); tp = position.entry_price + (atr * atr_mult_tp)
         else:
             sl = position.entry_price + (atr * atr_mult_sl); tp = position.entry_price - (atr * atr_mult_tp)
-        min_sl = position.entry_price * (self.default_sl_pct / 100); min_tp = position.entry_price * (self.default_tp_pct / 100)
+        min_sl = position.entry_price * (self.default_sl_pct / 100) if position.entry_price > 0 else 0.01
+        min_tp = position.entry_price * (self.default_tp_pct / 100) if position.entry_price > 0 else 0.01
         if position.side == OrderSide.BUY:
             sl = min(sl, position.entry_price - min_sl); tp = max(tp, position.entry_price + min_tp)
         else:

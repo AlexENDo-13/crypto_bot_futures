@@ -53,10 +53,10 @@ class RiskController:
             if entry_price <= 0: continue
             if quantity <= 0:
                 risk_pct = float(self.settings.get("max_risk_per_trade", 1.0))
-                quantity = (balance * (risk_pct / 100)) / (entry_price * sl_distance)
-            risk = quantity * entry_price * sl_distance
-            if (total_risk + risk) / balance > max_total_risk: self.logger.info("Превышен общий риск"); break
-            if risk / balance > max_risk_per_trade: self.logger.info(f"Превышен риск на сделку {symbol}"); continue
+                quantity = (balance * (risk_pct / 100)) / (entry_price * sl_distance) if sl_distance > 0 and balance > 0 else 0
+            risk = quantity * entry_price * sl_distance if sl_distance > 0 else 0
+            if balance > 0 and (total_risk + risk) / balance > max_total_risk: self.logger.info("Превышен общий риск"); break
+            if balance > 0 and risk / balance > max_risk_per_trade: self.logger.info(f"Превышен риск на сделку {symbol}"); continue
             filtered.append(signal); total_risk += risk
             if len(positions) + len(filtered) >= max_positions: break
         return filtered

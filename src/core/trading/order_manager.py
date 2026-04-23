@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import logging
 from typing import Optional, Dict, Any
+
 logger = logging.getLogger("OrderManager")
 
 class OrderManager:
