@@ -20,7 +20,6 @@ from src.ui.main_window import MainWindow
 from src.config.settings import Settings
 from src.core.logger import BotLogger
 
-
 def main():
     # Включаем High DPI scaling для чёткого интерфейса
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
@@ -35,12 +34,11 @@ def main():
     logger = BotLogger(level=settings.get("log_level", "INFO"))
 
     # Создаём и показываем главное окно
-    window = MainWindow()
+    window = MainWindow(settings)
     window.show()
 
     logger.info("🚀 GUI запущен")
     sys.exit(app.exec_())
-
 
 if __name__ == "__main__":
     main()

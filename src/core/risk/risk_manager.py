@@ -3,7 +3,6 @@ from typing import Optional, Dict, Any, Tuple
 from src.utils.api_client import AsyncBingXClient
 from src.config.settings import Settings
 
-
 class RiskManager:
     MIN_NOTIONAL = 5.0
 
@@ -20,8 +19,8 @@ class RiskManager:
             return {"total_equity": balance, "available_balance": balance}
         except Exception:
             return {
-                "total_equity": self.settings.virtual_balance,
-                "available_balance": self.settings.virtual_balance,
+                "total_equity": self.settings.get("virtual_balance", 100.0),
+                "available_balance": self.settings.get("virtual_balance", 100.0),
             }
 
     async def check_new_position_allowed(
@@ -39,8 +38,11 @@ class RiskManager:
         balance_info = await self.get_account_balance()
         balance = balance_info["available_balance"]
         risk_percent = getattr(self.settings, "max_risk_per_trade", 1.0)
+        leverage = getattr(self.settings, "max_leverage", 3)
         risk_amount = balance * (risk_percent / 100.0)
-        return round(risk_amount / price, 6) if price > 0 else 0.0
+        # Учитываем плечо: qty = (risk_amount * leverage) / price
+        qty = (risk_amount * leverage) / price if price > 0 else 0.0
+        return round(qty, 6)
 
     def calculate_position_size_sync(
         self,

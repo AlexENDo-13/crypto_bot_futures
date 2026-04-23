@@ -16,13 +16,12 @@ from PyQt5.QtGui import QFont, QIcon
 from src.ui.pages.dashboard import DashboardPage
 from src.ui.pages.positions import PositionsPage
 from src.ui.pages.trades_history import TradesHistoryPage
-from src.ui.pages.config import ConfigPanel          # ← исправлено: ConfigPanel
+from src.ui.pages.config import ConfigPanel
 from src.ui.pages.logs import LogsPage
 from src.ui.pages.system_monitor import SystemMonitorPage
 from src.ui.system_tray import SystemTray
 from src.config.settings import Settings
-from src.core.logger import Logger
-
+from src.core.logger import BotLogger
 
 class EngineInitWorker(QThread):
     """Поток для асинхронной инициализации движка"""
@@ -42,13 +41,13 @@ class EngineInitWorker(QThread):
             from src.core.risk.risk_manager import RiskManager
             from src.utils.api_client import AsyncBingXClient
 
-            logger = Logger("TradingBot")
+            logger = BotLogger("TradingBot")
             logger.info("Инициализация компонентов торгового движка...")
 
             api_client = AsyncBingXClient(
-                api_key=self.settings.api_key,
-                secret_key=self.settings.api_secret,
-                demo_mode=self.settings.demo_mode
+                api_key=self.settings.get("api_key", ""),
+                secret_key=self.settings.get("api_secret", ""),
+                demo_mode=self.settings.get("demo_mode", True)
             )
 
             data_fetcher = MarketDataFetcher(api_client, self.settings, logger)
@@ -72,12 +71,11 @@ class EngineInitWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings):
         super().__init__()
         self.settings = settings
-        self.logger = Logger("MainWindow")
+        self.logger = BotLogger("MainWindow")
         self.engine = None
         self.api_client = None
         self.data_fetcher = None
@@ -92,7 +90,7 @@ class MainWindow(QMainWindow):
         self._init_menu()
         self._init_statusbar()
 
-        self.tray = SystemTray(self)
+        self.tray = SystemTray(QApplication.instance(), self, self.logger)
         self.tray.show()
 
         self.status_timer = QTimer()
@@ -135,7 +133,7 @@ class MainWindow(QMainWindow):
         self.dashboard = DashboardPage()
         self.positions_page = PositionsPage()
         self.trades_page = TradesHistoryPage()
-        self.config_page = ConfigPanel(self.settings)   # ← ConfigPanel
+        self.config_page = ConfigPanel(self.settings)
         self.logs_page = LogsPage()
         self.monitor_page = SystemMonitorPage()
 
@@ -180,6 +178,9 @@ class MainWindow(QMainWindow):
         self.scanner = engine.scanner
         self.executor = engine.executor
         self.risk_manager = engine.risk_manager
+
+        self.tray.set_engine(engine)
+        self.monitor_page.set_engine(engine)
 
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
@@ -247,10 +248,20 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", f"Не удалось возобновить: {e}")
 
     def _on_engine_update(self, data):
-        QMetaObject.invokeMethod(
-            self.dashboard, "update_data",
-            Qt.QueuedConnection, Q_ARG(object, data)
-        )
+        """Обновление UI при получении данных от движка"""
+        if data.get("type") == "status":
+            status = data.get("data", {})
+            self.dashboard.update_status(
+                balance=status.get("balance", 0),
+                real_balance=0,
+                pnl=status.get("pnl", 0),
+                pnl_percent=0,
+                mode="Демо" if self.settings.get("demo_mode", True) else "Реальный",
+                positions_count=status.get("positions", 0)
+            )
+        elif data.get("type") == "signals":
+            # Можно добавить отображение сигналов
+            pass
 
     def _update_status(self):
         if self.engine:
@@ -270,7 +281,7 @@ class MainWindow(QMainWindow):
             "О программе",
             "<h3>Crypto Trading Bot</h3>"
             "<p>Версия 1.0.0</p>"
-            "<p>Торговый бот для BingX Futures с элементами ИИ.</p>"
+            "<p>Торговый бот для BingX Futures.</p>"
         )
 
     def closeEvent(self, event):

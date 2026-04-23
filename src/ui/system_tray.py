@@ -9,13 +9,11 @@ from PyQt5.QtWidgets import QSystemTrayIcon, QMenu, QAction, QApplication, QStyl
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject
 
-
 class TraySignals(QObject):
     start_bot = pyqtSignal()
     stop_bot = pyqtSignal()
     scan_now = pyqtSignal()
     show_window = pyqtSignal()
-
 
 class SystemTray(QSystemTrayIcon):
     def __init__(self, app: QApplication, main_window, logger):
@@ -98,17 +96,27 @@ class SystemTray(QSystemTrayIcon):
             self._show_window()
 
     def _update_tray_tooltip(self):
-        if not self.engine or not self.engine.running:
+        if not self.engine:
+            self.setToolTip("BingX Bot – Не инициализирован")
+            self.status_action.setText("⏹ Движок не загружен")
+            return
+
+        from src.core.engine.trading_engine import EngineState
+
+        if self.engine.state != EngineState.RUNNING:
             self.setToolTip("BingX Bot – Остановлен")
             self.status_action.setText("⏹ Бот остановлен")
             return
 
-        balance = self.engine.balance
-        positions = len(self.engine.open_positions)
+        balance = self.engine._stats.get("balance", 0)
+        positions = self.engine._stats.get("positions", 0)
         cpu = psutil.cpu_percent(interval=0.1)
         mem = psutil.virtual_memory().percent
 
-        self.setToolTip(f"BingX Bot\nБаланс: {balance:.2f} USDT\nПозиций: {positions}\nCPU: {cpu:.1f}% | RAM: {mem:.1f}%")
+        self.setToolTip(
+            f"BingX Bot\nБаланс: {balance:.2f} USDT\n"
+            f"Позиций: {positions}\nCPU: {cpu:.1f}% | RAM: {mem:.1f}%"
+        )
         self.status_action.setText(f"🟢 Бот работает | {balance:.0f} USDT | {positions} поз.")
 
     def show_toast(self, title: str, message: str, duration: int = 3):

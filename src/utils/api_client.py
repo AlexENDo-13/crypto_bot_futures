@@ -9,17 +9,20 @@ import hashlib
 import aiohttp
 import asyncio
 from typing import Dict, Any, Optional
+import json
 
 class AsyncBingXClient:
     BASE_URL = "https://open-api.bingx.com"
+    DEMO_URL = "https://open-api-vst.bingx.com"
 
     def __init__(self, api_key: str, api_secret: str, demo_mode: bool = True, settings: dict = None):
         self.api_key = api_key
         self.api_secret = api_secret
         self.demo_mode = demo_mode
+        self.base_url = self.DEMO_URL if demo_mode else self.BASE_URL
         self.settings = settings or {}
         self._session: Optional[aiohttp.ClientSession] = None
-        self._time_offset = 0  # коррекция времени в миллисекундах
+        self._time_offset = 0
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -34,9 +37,9 @@ class AsyncBingXClient:
         """Синхронизирует локальное время с сервером BingX."""
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.BASE_URL}/openApi/swap/v2/server/time") as resp:
+                async with session.get(f"{self.base_url}/openApi/swap/v2/server/time") as resp:
                     data = await resp.json()
-                    if data['code'] == 0:
+                    if data.get('code') == 0:
                         server_time = int(data['data']['serverTime'])
                         local_time = int(time.time() * 1000)
                         self._time_offset = server_time - local_time
@@ -47,7 +50,6 @@ class AsyncBingXClient:
         return int(time.time() * 1000) + self._time_offset
 
     def _sign(self, params: Dict[str, Any]) -> str:
-        # Сортируем ключи и формируем строку запроса
         query = '&'.join(f"{k}={v}" for k, v in sorted(params.items()))
         return hmac.new(
             self.api_secret.encode('utf-8'),
@@ -55,72 +57,99 @@ class AsyncBingXClient:
             hashlib.sha256
         ).hexdigest()
 
-    async def _request(self, endpoint: str, params: Dict[str, Any], method: str = 'GET') -> Dict:
-        if self._time_offset == 0:
-            await self._sync_time()
+    async def _request(self, endpoint: str, params: Dict[str, Any] = None, method: str = 'GET', signed: bool = True) -> Dict:
+        if params is None:
+            params = {}
 
-        params['timestamp'] = self._get_timestamp()
-        params['apiKey'] = self.api_key
-        params['sign'] = self._sign(params)
+        # Для приватных запросов добавляем timestamp и подпись
+        if signed:
+            if self._time_offset == 0:
+                await self._sync_time()
+            params['timestamp'] = self._get_timestamp()
+            params['apiKey'] = self.api_key
+            params['sign'] = self._sign(params)
 
         session = await self._get_session()
-        url = f"{self.BASE_URL}{endpoint}"
+        url = f"{self.base_url}{endpoint}"
 
-        if method == 'GET':
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                data = await resp.json()
-        else:
-            async with session.post(url, data=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                data = await resp.json()
+        try:
+            if method == 'GET':
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    data = await resp.json()
+            else:
+                headers = {'Content-Type': 'application/json'}
+                async with session.post(url, json=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    data = await resp.json()
 
-        if data.get('code') != 0:
-            raise Exception(f"API error {data.get('code')}: {data.get('msg')}")
-        return data.get('data', {})
+            if data.get('code') != 0:
+                raise Exception(f"API error {data.get('code')}: {data.get('msg')}")
+            return data.get('data', {})
+        except aiohttp.ClientError as e:
+            raise Exception(f"Network error: {e}")
 
-    # ---------- Публичные методы ----------
+    # ---------- Публичные методы (без подписи) ----------
     async def get_ticker(self, symbol: str) -> Dict:
         symbol = symbol.replace('/', '-')
-        return await self._request('/openApi/swap/v2/quote/ticker', {'symbol': symbol})
+        return await self._request('/openApi/swap/v2/quote/ticker', {'symbol': symbol}, signed=False)
 
     async def get_order_book(self, symbol: str, limit: int = 5) -> Dict:
         symbol = symbol.replace('/', '-')
-        return await self._request('/openApi/swap/v2/quote/depth', {'symbol': symbol, 'limit': limit})
+        return await self._request('/openApi/swap/v2/quote/depth', {'symbol': symbol, 'limit': limit}, signed=False)
 
     async def get_klines(self, symbol: str, interval: str, limit: int = 100) -> list:
         symbol = symbol.replace('/', '-')
         data = await self._request('/openApi/swap/v3/quote/klines', {
             'symbol': symbol, 'interval': interval, 'limit': limit
-        })
-        return data  # возвращает список свечей
+        }, signed=False)
+        return data if isinstance(data, list) else []
 
     async def get_funding_rate(self, symbol: str) -> Dict:
         symbol = symbol.replace('/', '-')
-        return await self._request('/openApi/swap/v2/quote/premiumIndex', {'symbol': symbol})
+        return await self._request('/openApi/swap/v2/quote/premiumIndex', {'symbol': symbol}, signed=False)
 
-    async def get_account_info(self) -> Dict:
-        return await self._request('/openApi/swap/v2/user/account', {})
-
-    async def get_positions(self) -> list:
-        data = await self._request('/openApi/swap/v2/user/positions', {})
+    async def get_all_contracts(self) -> list:
+        """Получить список всех фьючерсных контрактов."""
+        data = await self._request('/openApi/swap/v2/quote/contracts', {}, signed=False)
         return data if isinstance(data, list) else []
 
-    async def place_order(self, symbol: str, side: str, quantity: float, leverage: int = 3) -> Dict:
+    # ---------- Приватные методы (с подписью) ----------
+    async def get_account_info(self) -> Dict:
+        return await self._request('/openApi/swap/v2/user/account', {}, signed=True)
+
+    async def get_positions(self) -> list:
+        data = await self._request('/openApi/swap/v2/user/positions', {}, signed=True)
+        return data if isinstance(data, list) else []
+
+    async def place_order(self, symbol: str, side: str, quantity: float,
+                          leverage: int = 3, order_type: str = 'MARKET',
+                          price: float = None, position_side: str = None) -> Dict:
         symbol = symbol.replace('/', '-')
-        return await self._request('/openApi/swap/v2/trade/order', {
+
+        if position_side is None:
+            position_side = 'LONG' if side.upper() == 'BUY' else 'SHORT'
+
+        params = {
             'symbol': symbol,
             'side': side.upper(),
-            'positionSide': 'LONG' if side.upper() == 'BUY' else 'SHORT',
-            'type': 'MARKET',
+            'positionSide': position_side,
+            'type': order_type.upper(),
             'quantity': str(quantity),
             'leverage': str(leverage)
-        }, method='POST')
+        }
+
+        if price is not None and order_type.upper() == 'LIMIT':
+            params['price'] = str(price)
+
+        return await self._request('/openApi/swap/v2/trade/order', params, method='POST', signed=True)
 
     async def get_all_tickers(self) -> Dict[str, Dict]:
         """Возвращает словарь {symbol: ticker_data} для всех активных контрактов."""
-        contracts = await self._request('/openApi/swap/v2/quote/contracts', {})
+        contracts = await self.get_all_contracts()
         tickers = {}
         for c in contracts:
-            sym = c['symbol'].replace('-', '/')
+            sym = c.get('symbol', '').replace('-', '/')
+            if not sym:
+                continue
             try:
                 ticker = await self.get_ticker(sym)
                 tickers[sym] = ticker

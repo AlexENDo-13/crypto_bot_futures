@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Settings — конфигурация бота (словарь + dataclass совместимость)
+С поддержкой мультитаймфреймного анализа.
 """
 import os
 import json
@@ -10,7 +11,6 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field, asdict
 
-
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = {
@@ -18,16 +18,28 @@ DEFAULT_CONFIG = {
     "api_key": os.getenv("BINGX_API_KEY", ""),
     "api_secret": os.getenv("BINGX_API_SECRET", ""),
     "base_url": os.getenv("BINGX_BASE_URL", "https://open-api.bingx.com"),
-    
+
     # === Режим ===
     "demo_mode": os.getenv("PAPER_TRADING", "true").lower() == "true",
     "virtual_balance": 100.0,
-    
+
     # === Рынок ===
     "timeframe": os.getenv("TIMEFRAME", "15m"),
     "scan_interval_minutes": int(os.getenv("SCAN_INTERVAL", "5")),
     "max_positions": int(os.getenv("MAX_POSITIONS", "2")),
-    
+    "max_scan_symbols": 50,
+    "default_timeframe": "1h",
+
+    # === Мультитаймфрейм ===
+    "use_multi_timeframe": True,
+    "timeframes": ["15m", "1h", "4h"],
+    "timeframe_weights": {
+        "15m": 0.2,
+        "1h": 0.5,
+        "4h": 0.3
+    },
+    "min_timeframe_agreement": 2,
+
     # === Фильтры ===
     "min_adx": int(os.getenv("MIN_ADX", "10")),
     "min_atr_percent": float(os.getenv("MIN_ATR_PERCENT", "0.5")),
@@ -36,11 +48,12 @@ DEFAULT_CONFIG = {
     "max_funding_rate": 0.0,
     "use_spread_filter": True,
     "max_spread_percent": 0.3,
-    
+
     # === Сигналы ===
     "min_signal_strength": float(os.getenv("MIN_SIGNAL_STRENGTH", "0.35")),
     "min_trend_score": float(os.getenv("MIN_TREND_SCORE", "1.5")),
-    
+    "min_signal_score": 4,
+
     # === Риск-менеджмент ===
     "max_risk_per_trade": float(os.getenv("RISK_PER_TRADE_PCT", "1.0")),
     "max_total_risk_percent": float(os.getenv("MAX_RISK_PER_DAY_PCT", "5.0")),
@@ -50,49 +63,48 @@ DEFAULT_CONFIG = {
     "daily_loss_limit_percent": 8.0,
     "max_orders_per_hour": 6,
     "anti_chase_threshold_percent": 0.3,
-    
+
     # === Трейлинг-стоп ===
     "trailing_stop_enabled": os.getenv("USE_TRAILING_STOP", "true").lower() == "true",
     "trailing_stop_distance_percent": 2.0,
     "trailing_activation": float(os.getenv("TRAILING_ACTIVATION", "1.5")),
     "trailing_callback": float(os.getenv("TRAILING_CALLBACK", "0.5")),
-    
+
     # === Выходы ===
     "use_stepped_take_profit": True,
     "anti_chase_enabled": True,
     "dead_weight_exit_enabled": True,
     "adaptive_tp_enabled": True,
     "max_hold_time_minutes": int(os.getenv("MAX_HOLD_TIME_MINUTES", "240")),
-    
+
     # === Индикаторы ===
-    "use_multi_timeframe": True,
     "use_bollinger_filter": True,
     "use_candle_patterns": True,
     "use_macd_indicator": True,
     "use_ichimoku_indicator": True,
-    
+
     # === Предиктивные ===
     "trap_detector_enabled": True,
     "predictive_entry_enabled": True,
     "use_neural_filter": True,
     "use_neural_predictor": False,
-    
+
     # === Производительность ===
     "use_async_scan": True,
     "use_genetic_optimizer": True,
     "self_healing_enabled": True,
-    
+
     # === Данные ===
     "export_trades_csv": True,
     "json_logging_enabled": True,
-    
+
     # === Anti-martingale ===
     "anti_martingale_enabled": True,
     "anti_martingale_risk_reduction": 0.8,
     "reduce_risk_on_weekends": True,
     "weekend_risk_multiplier": 0.5,
     "correlation_limit_enabled": True,
-    
+
     # === Telegram ===
     "telegram_enabled": False,
     "telegram_bot_token": "",
@@ -101,20 +113,22 @@ DEFAULT_CONFIG = {
     "telegram_daily_report_enabled": False,
     "telegram_proxy_url": "",
     "telegram_proxy_auto_rotate": False,
-    
+
     # === Discord ===
     "discord_enabled": False,
     "discord_webhook_url": "",
-    
+
     # === Web ===
     "web_interface_enabled": False,
     "web_interface_port": 5000,
-    
+
     # === UI ===
     "sound_enabled": True,
     "voice_enabled": False,
     "dark_theme": True,
-    
+    "log_level": "INFO",
+    "log_file": "logs/trading_bot.log",
+
     # === Символы ===
     "symbols_whitelist": [
         "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT",
@@ -122,14 +136,14 @@ DEFAULT_CONFIG = {
         "LTC-USDT", "BCH-USDT", "ETC-USDT", "UNI-USDT", "ATOM-USDT"
     ],
     "blacklist": ["SHIB-USDT", "PEPE-USDT", "FLOKI-USDT", "BONK-USDT"],
-    
+
     # === Дополнительно ===
     "max_daily_trades": 10,
     "daily_profit_target_percent": 5.0,
     "stop_on_daily_target": True,
     "force_ignore_session": False,
+    "use_limit_orders": False,
 }
-
 
 CONFIG_FILE = Path("config/bot_config.json")
 
@@ -139,17 +153,17 @@ class Settings:
     Настройки бота — словарь с load/save/update.
     Совместим с ConfigPanel (data, update, load).
     """
-    
+
     def __init__(self, config_file: Optional[str] = None):
         self._config_file = Path(config_file) if config_file else CONFIG_FILE
         self._data: Dict[str, Any] = {}
         self.load()
-    
+
     @property
     def data(self) -> Dict[str, Any]:
         """Вернуть текущий конфиг (для ConfigPanel)"""
         return self._data.copy()
-    
+
     def load(self) -> Dict[str, Any]:
         """Загрузить конфиг из файла или создать дефолтный"""
         if self._config_file.exists():
@@ -165,9 +179,9 @@ class Settings:
             self._data = DEFAULT_CONFIG.copy()
             self.save()
             logger.info(f"Создан дефолтный конфиг: {self._config_file}")
-        
+
         return self._data.copy()
-    
+
     def save(self):
         """Сохранить конфиг в файл"""
         try:
@@ -177,29 +191,26 @@ class Settings:
             logger.info(f"Конфиг сохранён в {self._config_file}")
         except Exception as e:
             logger.error(f"Ошибка сохранения конфига: {e}")
-    
+
     def update(self, updates: Dict[str, Any]):
         """Обновить настройки (вызывается из ConfigPanel.save_settings)"""
         self._data.update(updates)
         self.save()
         logger.info("Настройки обновлены")
-    
+
     def get(self, key: str, default=None):
         """Получить значение по ключу"""
         return self._data.get(key, default)
-    
+
     def __getattr__(self, name: str):
         """
         Доступ к настройкам как к атрибутам (для совместимости с dataclass).
-        Например: settings.API_KEY → settings._data["api_key"]
         """
-        # Сначала проверить верхний регистр (старые имена)
         upper_name = name.upper()
         for key in self._data:
             if key.upper() == upper_name or key == name:
                 return self._data[key]
-        
-        # Дефолтные значения для старых имен
+
         mapping = {
             'TIMEFRAME': 'timeframe',
             'SCAN_INTERVAL': 'scan_interval_minutes',
@@ -227,13 +238,19 @@ class Settings:
             'API_SECRET': 'api_secret',
             'BASE_URL': 'base_url',
             'PAPER_TRADING': 'demo_mode',
+            'MAX_SCAN_SYMBOLS': 'max_scan_symbols',
+            'DEFAULT_TIMEFRAME': 'default_timeframe',
+            'USE_MULTI_TIMEFRAME': 'use_multi_timeframe',
+            'TIMEFRAMES': 'timeframes',
+            'TIMEFRAME_WEIGHTS': 'timeframe_weights',
+            'MIN_TIMEFRAME_AGREEMENT': 'min_timeframe_agreement',
         }
-        
+
         if name in mapping:
             return self._data.get(mapping[name], default)
-        
+
         raise AttributeError(f"'Settings' object has no attribute '{name}'")
-    
+
     @property
     def QTY_STEP(self) -> Dict[str, float]:
         """Совместимость с TradeExecutor"""
@@ -242,7 +259,7 @@ class Settings:
             "ETH-USDT": 0.001,
             "default": 0.001
         }
-    
+
     @property
     def MIN_QTY(self) -> Dict[str, float]:
         """Совместимость с TradeExecutor"""
@@ -297,3 +314,11 @@ class SettingsLegacy:
     })
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "logs/trading_bot.log"
+    MAX_SCAN_SYMBOLS: int = 50
+    DEFAULT_TIMEFRAME: str = "1h"
+    USE_MULTI_TIMEFRAME: bool = True
+    TIMEFRAMES: List[str] = field(default_factory=lambda: ["15m", "1h", "4h"])
+    TIMEFRAME_WEIGHTS: Dict[str, float] = field(default_factory=lambda: {
+        "15m": 0.2, "1h": 0.5, "4h": 0.3
+    })
+    MIN_TIMEFRAME_AGREEMENT: int = 2

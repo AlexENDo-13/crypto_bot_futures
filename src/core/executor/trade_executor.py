@@ -3,15 +3,14 @@ from typing import Optional, Dict, Any, List
 
 from src.utils.api_client import AsyncBingXClient
 from src.config.settings import Settings
-from src.core.logger import Logger
+from src.core.logger import BotLogger
 
 logger = logging.getLogger(__name__)
-
 
 class TradeExecutor:
     """Исполнитель торговых приказов (работает с AsyncBingXClient)."""
 
-    def __init__(self, client: AsyncBingXClient, settings: Settings, logger: Logger):
+    def __init__(self, client: AsyncBingXClient, settings: Settings, logger: BotLogger):
         self.client = client
         self.settings = settings
         self.logger = logger
@@ -30,24 +29,21 @@ class TradeExecutor:
 
         order_side = "BUY" if side.upper() == "LONG" else "SELL"
         order_type = "LIMIT" if price is not None else "MARKET"
+        leverage = getattr(self.settings, 'max_leverage', 3)
 
         try:
-            params = {
-                "symbol": normalized_symbol,
-                "side": order_side,
-                "type": order_type,
-                "quantity": str(quantity),
-            }
-            if price is not None:
-                params["price"] = str(price)
-
-            response = await self.client._request(
-                "POST", "/openApi/swap/v2/trade/order", params
+            result = await self.client.place_order(
+                symbol=normalized_symbol,
+                side=order_side,
+                quantity=quantity,
+                leverage=leverage,
+                order_type=order_type,
+                price=price
             )
             return {
                 "success": True,
-                "order_id": response.get("orderId"),
-                "avg_price": float(response.get("avgPrice", 0)),
+                "order_id": result.get("orderId"),
+                "avg_price": float(result.get("avgPrice", 0)),
             }
         except Exception as e:
             self.logger.error(f"Ошибка открытия позиции {symbol}: {e}")
@@ -56,10 +52,7 @@ class TradeExecutor:
     async def get_open_positions(self) -> List[Dict[str, Any]]:
         """Получить список открытых позиций."""
         try:
-            response = await self.client._request(
-                "GET", "/openApi/swap/v2/user/positions", {}
-            )
-            return response if isinstance(response, list) else []
+            return await self.client.get_positions()
         except Exception:
             return []
 
@@ -71,13 +64,12 @@ class TradeExecutor:
 
         order_side = "SELL" if side.upper() == "LONG" else "BUY"
         try:
-            params = {
-                "symbol": normalized_symbol,
-                "side": order_side,
-                "type": "MARKET",
-                "quantity": str(quantity),
-            }
-            await self.client._request("POST", "/openApi/swap/v2/trade/order", params)
+            await self.client.place_order(
+                symbol=normalized_symbol,
+                side=order_side,
+                quantity=quantity,
+                order_type="MARKET"
+            )
             return True
         except Exception as e:
             self.logger.error(f"Ошибка закрытия позиции {symbol}: {e}")
