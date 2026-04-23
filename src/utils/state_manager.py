@@ -1,8 +1,8 @@
-# src/utils/state_manager.py
 import json
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+
 
 class StateManager:
     """Управление состоянием бота (паттерны, кэш, настройки)."""
@@ -14,7 +14,6 @@ class StateManager:
         self._load()
 
     def _load(self) -> None:
-        """Загружает состояние из файла."""
         if not self.state_file.exists():
             return
         try:
@@ -24,7 +23,6 @@ class StateManager:
             pass
 
     def _save(self) -> None:
-        """Сохраняет состояние в файл."""
         self._state["last_update"] = time.time()
         try:
             with open(self.state_file, "w", encoding="utf-8") as f:

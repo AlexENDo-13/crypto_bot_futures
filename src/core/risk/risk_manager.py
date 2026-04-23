@@ -1,5 +1,5 @@
-# src/core/risk/risk_manager.py
 from typing import Optional, Dict, Any, Tuple
+
 from src.utils.api_client import AsyncBingXClient
 from src.config.settings import Settings
 
@@ -19,26 +19,49 @@ class RiskManager:
             self._cached_balance = balance
             return {"total_equity": balance, "available_balance": balance}
         except Exception:
-            return {"total_equity": self.settings.virtual_balance, "available_balance": self.settings.virtual_balance}
+            return {
+                "total_equity": self.settings.virtual_balance,
+                "available_balance": self.settings.virtual_balance,
+            }
 
-    async def check_new_position_allowed(self, symbol: str, direction: str, confidence: float) -> Tuple[bool, str]:
+    async def check_new_position_allowed(
+        self, symbol: str, direction: str, confidence: float
+    ) -> Tuple[bool, str]:
         positions = await self.client.get_positions()
-        if len(positions) >= getattr(self.settings, "max_positions", 3):
-            return False, "Достигнут лимит открытых позиций"
+        max_positions = getattr(self.settings, "max_positions", 3)
+        if len(positions) >= max_positions:
+            return False, f"Достигнут лимит открытых позиций ({max_positions})"
         return True, "OK"
 
-    async def calculate_position_size(self, symbol: str, price: float, confidence: float) -> float:
+    async def calculate_position_size(
+        self, symbol: str, price: float, confidence: float
+    ) -> float:
         balance_info = await self.get_account_balance()
         balance = balance_info["available_balance"]
         risk_percent = getattr(self.settings, "max_risk_per_trade", 1.0)
         risk_amount = balance * (risk_percent / 100.0)
         return round(risk_amount / price, 6) if price > 0 else 0.0
 
-    def calculate_position_size_sync(self, symbol: str, balance: float, risk_percent: float, stop_distance_pct: float, leverage: int, atr: float, current_price: float) -> float:
+    def calculate_position_size_sync(
+        self,
+        symbol: str,
+        balance: float,
+        risk_percent: float,
+        stop_distance_pct: float,
+        leverage: int,
+        atr: float,
+        current_price: float,
+    ) -> float:
         if stop_distance_pct <= 0 or current_price <= 0 or leverage <= 0:
             return 0.0
         risk_amount = balance * (risk_percent / 100.0)
         stop_loss_price = current_price * (1 - stop_distance_pct / 100.0)
         risk_per_unit = abs(current_price - stop_loss_price)
-        qty = risk_amount / risk_per_unit if risk_per_unit > 0 else 0.0
+        if risk_per_unit <= 0:
+            return 0.0
+        qty = risk_amount / risk_per_unit
         return round(qty * leverage, 6)
+
+    async def manage_position_risk(self, position: Dict[str, Any]) -> None:
+        """Заглушка для управления рисками позиции."""
+        pass

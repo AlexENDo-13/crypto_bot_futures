@@ -217,56 +217,42 @@ class TradingEngine:
             self.logger.error(f"Ошибка обновления информации о счёте: {e}")
 
     async def _process_signal(self, signal: Dict):
-        """Обработка одного торгового сигнала"""
-        symbol = signal.get("symbol")
-        direction = signal.get("direction")
-        confidence = signal.get("confidence", 0.5)
-        price = signal.get("price", 0.0)
+    symbol = signal.get("symbol")
+    direction = signal.get("direction")
+    confidence = signal.get("confidence", 0.5)
+    price = signal.get("price", 0.0)
 
-        if not symbol or not direction:
-            return
+    if not symbol or not direction:
+        return
 
-        # Проверка рисков перед открытием сделки
-        allowed, reason = await self.risk_manager.check_new_position_allowed(
-            symbol=symbol,
-            direction=direction,
-            confidence=confidence
-        )
-        if not allowed:
-            self.logger.info(f"Сигнал {symbol} {direction} отклонён риск-менеджером: {reason}")
-            return
+    allowed, reason = await self.risk_manager.check_new_position_allowed(
+        symbol=symbol, direction=direction, confidence=confidence
+    )
+    if not allowed:
+        self.logger.info(f"Сигнал {symbol} {direction} отклонён риск-менеджером: {reason}")
+        return
 
-        # Расчёт размера позиции
-        position_size = await self.risk_manager.calculate_position_size(
-            symbol=symbol,
-            price=price,
-            confidence=confidence
-        )
-        if position_size <= 0:
-            self.logger.warning(f"Нулевой размер позиции для {symbol}")
-            return
+    position_size = await self.risk_manager.calculate_position_size(
+        symbol=symbol, price=price, confidence=confidence
+    )
+    if position_size <= 0:
+        self.logger.warning(f"Нулевой размер позиции для {symbol}")
+        return
 
-        # Исполнение сделки
-        self.logger.info(f"Открытие позиции {direction} {symbol} размером {position_size}")
-        result = await self.executor.open_position(
-            symbol=symbol,
-            side=direction,
-            quantity=position_size,
-            price=price if getattr(self.settings, 'use_limit_orders', False) else None
-        )
+    self.logger.info(f"Открытие позиции {direction} {symbol} размером {position_size}")
+    result = await self.executor.open_position(
+        symbol=symbol,
+        side=direction,
+        quantity=position_size,
+        price=price if getattr(self.settings, "use_limit_orders", False) else None,
+    )
 
-        if result and result.get("success"):
-            self._stats["trades_executed"] += 1
-            self.logger.info(f"Позиция {symbol} {direction} открыта, ордер: {result.get('order_id')}")
-            # Установка стоп-лосса и тейк-профита
-            await self.executor.set_stop_loss_take_profit(
-                symbol=symbol,
-                position_side=direction,
-                entry_price=result.get("avg_price", price),
-                quantity=position_size
-            )
-        else:
-            self.logger.error(f"Не удалось открыть позицию {symbol}: {result}")
+    if result and result.get("success"):
+        self._stats["trades_executed"] += 1
+        self.logger.info(f"Позиция {symbol} {direction} открыта, ордер: {result.get('order_id')}")
+        # SL/TP будут добавлены позже
+    else:
+        self.logger.error(f"Не удалось открыть позицию {symbol}: {result}")
 
     async def _manage_positions(self):
         """Управление открытыми позициями (трейлинг-стопы, частичные фиксации)"""
