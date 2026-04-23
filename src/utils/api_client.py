@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BingX Native API Client (без CCXT)
-Полностью асинхронный, с синхронизацией времени и корректной подписью.
+Полностью асинхронный, с синхронизацией времени, корректной подписью и rate limiting.
 """
 import time
 import hmac
@@ -23,6 +23,11 @@ class AsyncBingXClient:
         self.settings = settings or {}
         self._session: Optional[aiohttp.ClientSession] = None
         self._time_offset = 0
+        # Rate limiter: макс 5 одновременных запросов к API
+        self._semaphore = asyncio.Semaphore(5)
+        # Последний запрос для rate limiting
+        self._last_request_time = 0
+        self._min_interval = 0.05  # 50ms между запросами
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -61,31 +66,39 @@ class AsyncBingXClient:
         if params is None:
             params = {}
 
-        # Для приватных запросов добавляем timestamp и подпись
-        if signed:
-            if self._time_offset == 0:
-                await self._sync_time()
-            params['timestamp'] = self._get_timestamp()
-            params['apiKey'] = self.api_key
-            params['sign'] = self._sign(params)
+        # Rate limiting: ждём минимальный интервал между запросами
+        async with self._semaphore:
+            now = time.time()
+            elapsed = now - self._last_request_time
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
+            self._last_request_time = time.time()
 
-        session = await self._get_session()
-        url = f"{self.base_url}{endpoint}"
+            # Для приватных запросов добавляем timestamp и подпись
+            if signed:
+                if self._time_offset == 0:
+                    await self._sync_time()
+                params['timestamp'] = self._get_timestamp()
+                params['apiKey'] = self.api_key
+                params['sign'] = self._sign(params)
 
-        try:
-            if method == 'GET':
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    data = await resp.json()
-            else:
-                headers = {'Content-Type': 'application/json'}
-                async with session.post(url, json=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    data = await resp.json()
+            session = await self._get_session()
+            url = f"{self.base_url}{endpoint}"
 
-            if data.get('code') != 0:
-                raise Exception(f"API error {data.get('code')}: {data.get('msg')}")
-            return data.get('data', {})
-        except aiohttp.ClientError as e:
-            raise Exception(f"Network error: {e}")
+            try:
+                if method == 'GET':
+                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        data = await resp.json()
+                else:
+                    headers = {'Content-Type': 'application/json'}
+                    async with session.post(url, json=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        data = await resp.json()
+
+                if data.get('code') != 0:
+                    raise Exception(f"API error {data.get('code')}: {data.get('msg')}")
+                return data.get('data', {})
+            except aiohttp.ClientError as e:
+                raise Exception(f"Network error: {e}")
 
     # ---------- Публичные методы (без подписи) ----------
     async def get_ticker(self, symbol: str) -> Dict:
@@ -120,7 +133,7 @@ class AsyncBingXClient:
         data = await self._request('/openApi/swap/v2/user/positions', {}, signed=True)
         return data if isinstance(data, list) else []
 
-    async def place_order(self, symbol: str, side: str, quantity: float,
+    async def place_order(self, symbol: str, side: str, quantity: float, 
                           leverage: int = 3, order_type: str = 'MARKET',
                           price: float = None, position_side: str = None) -> Dict:
         symbol = symbol.replace('/', '-')
@@ -143,16 +156,29 @@ class AsyncBingXClient:
         return await self._request('/openApi/swap/v2/trade/order', params, method='POST', signed=True)
 
     async def get_all_tickers(self) -> Dict[str, Dict]:
-        """Возвращает словарь {symbol: ticker_data} для всех активных контрактов."""
+        """
+        Возвращает словарь {symbol: ticker_data} для всех активных контрактов.
+        С rate limiting — макс 5 одновременных запросов.
+        """
         contracts = await self.get_all_contracts()
-        tickers = {}
-        for c in contracts:
-            sym = c.get('symbol', '').replace('-', '/')
+
+        async def fetch_one(contract):
+            sym = contract.get('symbol', '').replace('-', '/')
             if not sym:
-                continue
+                return None, None
             try:
                 ticker = await self.get_ticker(sym)
-                tickers[sym] = ticker
+                return sym, ticker
             except Exception:
-                continue
+                return None, None
+
+        # Используем gather с семафором (уже встроен в _request)
+        tasks = [fetch_one(c) for c in contracts[:50]]  # Ограничиваем 50 парами
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        tickers = {}
+        for result in results:
+            if isinstance(result, tuple) and result[0] is not None:
+                tickers[result[0]] = result[1]
+
         return tickers

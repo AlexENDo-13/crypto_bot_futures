@@ -1,5 +1,6 @@
 """
 Модуль сканирования рынка для поиска торговых сигналов
+С поддержкой мультитаймфреймного анализа
 """
 import asyncio
 from typing import List, Dict, Optional
@@ -33,17 +34,24 @@ class MarketScanner:
     async def scan_all(self) -> List[Dict]:
         """
         Сканирует все доступные пары и возвращает список сигналов.
+        Использует мультитаймфрейм если включен в настройках.
         """
         symbols = await self.get_active_symbols()
         if not symbols:
             self.logger.warning("Нет доступных символов для сканирования")
             return []
 
-        # Используем правильное имя настройки с дефолтом
         max_scan = getattr(self.settings, 'max_scan_symbols', 50)
         symbols_to_scan = symbols[:max_scan]
 
-        tasks = [self.analyze_symbol(sym) for sym in symbols_to_scan]
+        # Определяем использовать ли мультитаймфрейм
+        use_mtf = getattr(self.settings, 'use_multi_timeframe', False)
+
+        if use_mtf:
+            tasks = [self.analyze_symbol_multi_tf(sym) for sym in symbols_to_scan]
+        else:
+            tasks = [self.analyze_symbol(sym) for sym in symbols_to_scan]
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         signals = []
@@ -56,10 +64,12 @@ class MarketScanner:
         signals.sort(key=lambda x: x.get("score", 0), reverse=True)
         return signals
 
-    async def analyze_symbol(self, symbol: str) -> Optional[Dict]:
-        """Анализирует один символ на наличие сигнала."""
+    async def analyze_symbol(self, symbol: str, timeframe: str = None) -> Optional[Dict]:
+        """Анализирует один символ на наличие сигнала (один таймфрейм)."""
         try:
-            timeframe = getattr(self.settings, 'default_timeframe', '1h')
+            if timeframe is None:
+                timeframe = getattr(self.settings, 'default_timeframe', '1h')
+
             df = await self.data_fetcher.fetch_klines(symbol, timeframe, limit=100)
             if df is None or df.empty:
                 return None
@@ -76,6 +86,70 @@ class MarketScanner:
 
         except Exception as e:
             self.logger.error(f"Ошибка анализа {symbol}: {e}")
+            return None
+
+    async def analyze_symbol_multi_tf(self, symbol: str) -> Optional[Dict]:
+        """
+        Мультитаймфреймный анализ символа.
+        Агрегирует сигналы с нескольких таймфреймов с весами.
+        """
+        try:
+            timeframes = getattr(self.settings, 'timeframes', ['15m', '1h', '4h'])
+            weights = getattr(self.settings, 'timeframe_weights', {
+                '15m': 0.2, '1h': 0.5, '4h': 0.3
+            })
+            min_agreement = getattr(self.settings, 'min_timeframe_agreement', 2)
+
+            signals = []
+            for tf in timeframes:
+                signal = await self.analyze_symbol(symbol, timeframe=tf)
+                if signal and signal.get("signal"):
+                    signals.append({
+                        'timeframe': tf,
+                        'direction': signal['direction'],
+                        'score': signal['score'] * weights.get(tf, 0.33),
+                        'confidence': signal['confidence'],
+                        'price': signal['price'],
+                        'volume_24h': signal['volume_24h'],
+                    })
+
+            if len(signals) < min_agreement:
+                return None
+
+            # Проверяем согласие направлений
+            long_signals = [s for s in signals if s['direction'] == 'LONG']
+            short_signals = [s for s in signals if s['direction'] == 'SHORT']
+
+            if len(long_signals) >= min_agreement:
+                direction = 'LONG'
+                total_score = sum(s['score'] for s in long_signals)
+                avg_confidence = sum(s['confidence'] for s in long_signals) / len(long_signals)
+                agreeing_tfs = [s['timeframe'] for s in long_signals]
+            elif len(short_signals) >= min_agreement:
+                direction = 'SHORT'
+                total_score = sum(s['score'] for s in short_signals)
+                avg_confidence = sum(s['confidence'] for s in short_signals) / len(short_signals)
+                agreeing_tfs = [s['timeframe'] for s in short_signals]
+            else:
+                return None  # Нет согласия
+
+            # Берём цену и объём из основного таймфрейма (обычно 1h)
+            primary = signals[0]
+
+            return {
+                "symbol": symbol,
+                "direction": direction,
+                "score": round(total_score, 2),
+                "confidence": round(avg_confidence, 2),
+                "price": primary['price'],
+                "volume_24h": primary['volume_24h'],
+                "signal": True,
+                "timeframes": agreeing_tfs,
+                "multi_timeframe": True,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Ошибка мультитаймфреймного анализа {symbol}: {e}")
             return None
 
     def _evaluate_signals(self, symbol: str, df: pd.DataFrame, ticker: Dict) -> Optional[Dict]:
@@ -136,13 +210,13 @@ class MarketScanner:
                 if direction is None:
                     direction = 'SHORT'
 
-        # Фильтр по минимальному объёму — ИСПРАВЛЕННОЕ ИМЯ
+        # Фильтр по минимальному объёму
         min_volume = getattr(self.settings, 'min_volume_24h_usdt', 0)
         if ticker.get('volume_24h', 0) < min_volume:
             return None
 
-        # Проверяем минимальный счёт — ИСПРАВЛЕННОЕ ИМЯ
-        min_score = getattr(self.settings, 'min_signal_strength', 4)
+        # Проверяем минимальный счёт — ИСПРАВЛЕНО: используем min_signal_score
+        min_score = getattr(self.settings, 'min_signal_score', 4)
         if abs(score) >= min_score and direction is not None:
             confidence = min(abs(score) / 10.0, 1.0)
             return {
