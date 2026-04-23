@@ -1,57 +1,162 @@
 """
-Positions Page – таблица открытых позиций.
+Страница открытых позиций
 """
-
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
-                             QPushButton, QHeaderView, QAbstractItemView)
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
+    QHeaderView, QLabel, QPushButton, QMessageBox
+)
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
 
-
 class PositionsPage(QWidget):
-    close_position_signal = pyqtSignal(str)
-
     def __init__(self):
         super().__init__()
-        self.setup_ui()
+        self.init_ui()
 
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
+        # Таймер автообновления
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self._auto_update)
+        self.update_timer.start(5000)  # каждые 5 секунд
 
+    def init_ui(self):
+        layout = QVBoxLayout()
+
+        # Заголовок
+        header = QHBoxLayout()
+        self.title = QLabel("📊 Открытые позиции")
+        self.title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        header.addWidget(self.title)
+
+        self.btn_close_all = QPushButton("❌ Закрыть все")
+        self.btn_close_all.clicked.connect(self._close_all_positions)
+        self.btn_close_all.setEnabled(False)
+        header.addWidget(self.btn_close_all)
+        header.addStretch()
+
+        layout.addLayout(header)
+
+        # Таблица позиций
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["Символ", "Сторона", "Кол-во", "Вход", "Тек. цена", "P&L", ""])
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels([
+            "Символ", "Направление", "Кол-во", "Цена входа", 
+            "Текущая цена", "PnL", "PnL %", "Действия"
+        ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table)
 
-    def update_positions(self, positions: dict):
+        # Статус
+        self.status_label = QLabel("Нет открытых позиций")
+        layout.addWidget(self.status_label)
+
+        self.setLayout(layout)
+
+    def update_positions(self, positions):
+        """
+        Обновляет таблицу позиций.
+        Принимает list (от engine) или dict (старый формат).
+        """
+        # Нормализуем в list
+        if isinstance(positions, dict):
+            positions = list(positions.values())
+        elif not isinstance(positions, list):
+            positions = []
+
         self.table.setRowCount(len(positions))
-        row = 0
-        for symbol, pos in positions.items():
-            side = pos["side"]
-            qty = pos["qty"]
-            entry = pos["entry_price"]
-            current = pos["current_price"]
-            if side == "BUY":
-                pnl = (current - entry) * qty
+
+        total_pnl = 0.0
+
+        for row, pos in enumerate(positions):
+            # Поддержка разных форматов данных
+            symbol = pos.get("symbol", pos.get("Symbol", "UNKNOWN"))
+            side = pos.get("side", pos.get("positionSide", "UNKNOWN"))
+            qty = float(pos.get("quantity", pos.get("positionAmt", 0)))
+            entry_price = float(pos.get("entryPrice", pos.get("avgPrice", 0)))
+            current_price = float(pos.get("markPrice", pos.get("lastPrice", entry_price)))
+
+            # Расчёт PnL
+            if side.upper() == "LONG":
+                pnl = (current_price - entry_price) * qty
             else:
-                pnl = (entry - current) * qty
+                pnl = (entry_price - current_price) * qty
 
-            self.table.setItem(row, 0, QTableWidgetItem(symbol))
-            side_item = QTableWidgetItem(side)
-            side_item.setForeground(QColor("#3FB950") if side == "BUY" else QColor("#F85149"))
-            self.table.setItem(row, 1, side_item)
-            self.table.setItem(row, 2, QTableWidgetItem(f"{qty:.4f}"))
-            self.table.setItem(row, 3, QTableWidgetItem(f"{entry:.4f}"))
-            self.table.setItem(row, 4, QTableWidgetItem(f"{current:.4f}"))
-            pnl_item = QTableWidgetItem(f"{pnl:+.2f}")
-            pnl_item.setForeground(QColor("#3FB950") if pnl >= 0 else QColor("#F85149"))
-            self.table.setItem(row, 5, pnl_item)
+            pnl_percent = (pnl / (entry_price * qty) * 100) if entry_price > 0 and qty > 0 else 0
+            total_pnl += pnl
 
-            close_btn = QPushButton("❌ Закрыть")
-            close_btn.clicked.connect(lambda checked, s=symbol: self.close_position_signal.emit(s))
-            self.table.setCellWidget(row, 6, close_btn)
-            row += 1
+            # Заполняем таблицу
+            items = [
+                symbol,
+                side,
+                f"{qty:.6f}",
+                f"{entry_price:.4f}",
+                f"{current_price:.4f}",
+                f"{pnl:+.2f}",
+                f"{pnl_percent:+.2f}%",
+                "Закрыть"
+            ]
+
+            for col, text in enumerate(items):
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+
+                # Цвета для PnL
+                if col == 5:  # PnL
+                    if pnl > 0:
+                        item.setForeground(QColor("#4CAF50"))
+                    elif pnl < 0:
+                        item.setForeground(QColor("#F44336"))
+
+                if col == 6:  # PnL %
+                    if pnl_percent > 0:
+                        item.setForeground(QColor("#4CAF50"))
+                    elif pnl_percent < 0:
+                        item.setForeground(QColor("#F44336"))
+
+                self.table.setItem(row, col, item)
+
+            # Кнопка закрытия
+            btn = QPushButton("❌")
+            btn.setMaximumWidth(40)
+            btn.clicked.connect(lambda checked, s=symbol: self._close_position(s))
+            self.table.setCellWidget(row, 7, btn)
+
+        # Обновляем статус
+        if positions:
+            self.status_label.setText(f"Позиций: {len(positions)} | Общий PnL: {total_pnl:+.2f} USDT")
+            self.btn_close_all.setEnabled(True)
+        else:
+            self.status_label.setText("Нет открытых позиций")
+            self.btn_close_all.setEnabled(False)
+
+    def _auto_update(self):
+        """Заглушка для автообновления — вызывается из main_window"""
+        pass
+
+    def _close_position(self, symbol: str):
+        """Закрыть одну позицию"""
+        reply = QMessageBox.question(
+            self, "Закрытие позиции",
+            f"Закрыть позицию {symbol}?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            # Сигнал в main_window
+            main_window = self.window()
+            if main_window and hasattr(main_window, 'engine') and main_window.engine:
+                # TODO: реализовать закрытие через executor
+                pass
+
+    def _close_all_positions(self):
+        """Закрыть все позиции"""
+        reply = QMessageBox.question(
+            self, "Закрытие всех позиций",
+            "Закрыть ВСЕ открытые позиции?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            main_window = self.window()
+            if main_window and hasattr(main_window, 'engine') and main_window.engine:
+                # TODO: реализовать массовое закрытие
+                pass
