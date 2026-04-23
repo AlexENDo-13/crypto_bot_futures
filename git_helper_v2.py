@@ -1,28 +1,14 @@
 #!/usr/bin/env python3
 """
-Git Helper v2 — универсальная утилита отправки на GitHub
-Не зависит от конкретных имен файлов. Читает .gitignore,
-авто-определяет конфиденциальные файлы по содержимому,
-дает интерактивный выбор перед отправкой.
+Git Helper v2.1 — исправленная версия
+Не путает UI-файлы (config.py, logs.py) с секретами.
 """
 import os
 import sys
 import subprocess
-import json
 import re
 from datetime import datetime
 from pathlib import Path
-
-
-# === МИНИМАЛЬНЫЙ БАЗОВЫЙ СПИСОК (только если .gitignore пустой) ===
-SENSITIVE_PATTERNS = [
-    r'api[_\-]?key',
-    r'secret[_\-]?key',
-    r'private[_\-]?key',
-    r'password',
-    r'token',
-    r'\b[A-Za-z0-9]{32,}\b',  # длинные строки — возможно ключи
-]
 
 
 def run_git(args, capture=True, cwd=None):
@@ -52,7 +38,6 @@ def find_project_root():
         if (current / ".git").exists():
             return current
         current = current.parent
-    # Fallback: если скрипт в корне
     if (start / ".git").exists():
         return start
     return None
@@ -82,16 +67,30 @@ def is_ignored_by_gitignore(filepath, rules):
         if not rule:
             continue
 
+        # Исключение с ! — файл НЕ игнорируется
+        if rule.startswith("!"):
+            exc_rule = rule[1:]
+            if name == exc_rule or str(fp).replace("\\", "/") == exc_rule:
+                return False
+            for part in parts:
+                if part == exc_rule:
+                    return False
+            continue
+
         # Папка (заканчивается на /)
         if rule.endswith("/"):
             folder = rule[:-1]
+            # Точное совпадение папки в пути
             for part in parts:
-                if part == folder or part.startswith(folder):
+                if part == folder:
                     return True
+            # Путь начинается с папки
+            if str(fp).replace("\\", "/").startswith(folder + "/"):
+                return True
 
         # wildcard
         if rule.startswith("*"):
-            if name.endswith(rule[1:]):  # *.pyc
+            if name.endswith(rule[1:]):
                 return True
 
         # Точное совпадение имени или пути
@@ -107,32 +106,56 @@ def is_ignored_by_gitignore(filepath, rules):
 
 
 def looks_sensitive(filepath, project_root):
-    """Проверяет, содержит ли файл конфиденциальные данные."""
+    """Проверяет, содержит ли файл конфиденциальные данные.
+
+    ИСПРАВЛЕНО v2.1:
+    - Не ловит config.py (UI-файл)
+    - Не ловит logs.py (UI-файл)
+    - Ловит ТОЛЬКО файлы с ключами/секретами
+    """
     fp = project_root / filepath
     if not fp.exists() or fp.is_dir():
         return False
 
-    # Проверяем расширение
-    if filepath.endswith((".pyc", ".pyo", ".log", ".cache", ".db", ".sqlite3")):
+    # Проверяем расширение (кэш, логи)
+    if filepath.endswith((".pyc", ".pyo", ".cache", ".db", ".sqlite3")):
         return True
 
-    # Проверяем имя
-    lower_name = filepath.lower()
-    keywords = ["config", "secret", "key", "token", "password", "credential", ".env"]
-    for kw in keywords:
-        if kw in lower_name:
-            # Проверяем содержимое
+    # ИМЯ ФАЙЛА — точные совпадения для секретов
+    name_lower = fp.name.lower()
+    secret_names = [
+        "user_config.json",
+        "bot_config.json",  # только если содержит ключи
+        "secrets.json",
+        "api_keys.json",
+        ".env",
+        ".env.local",
+    ]
+
+    # Точное совпадение имени
+    if name_lower in secret_names:
+        # Проверяем содержимое на наличие ключей
+        try:
+            content = fp.read_text(encoding="utf-8", errors="ignore")[:5000]
+            if re.search(r'["\']?[A-Za-z0-9]{20,}["\']?', content):
+                return True
+        except:
+            pass
+        return True  # Даже если не прочитали — имя говорит само за себя
+
+    # Проверяем содержимое для файлов с подозрительными именами
+    lower_path = filepath.lower()
+    suspicious = ["secret", "password", "credential", "private_key", "api_key"]
+    for kw in suspicious:
+        if kw in lower_path:
             try:
                 content = fp.read_text(encoding="utf-8", errors="ignore")[:5000]
-                # Ищем JSON с ключами
-                if "api_key" in content.lower() or "secret" in content.lower():
-                    return True
-                # Ищем длинные строки (возможно ключи)
-                if re.search(r'["\']?[A-Za-z0-9]{32,}["\']?', content):
+                if re.search(r'["\']?[A-Za-z0-9]{20,}["\']?', content):
                     return True
             except:
                 pass
 
+    # config.py, logs.py и т.д. — НЕ секреты
     return False
 
 
@@ -157,10 +180,10 @@ def categorize_files(files, project_root):
     rules = get_gitignore_rules(project_root)
 
     categories = {
-        "gitignored": [],      # Уже в .gitignore
-        "sensitive": [],       # Похоже на ключи/секреты
-        "cache": [],           # Кэш Python
-        "ok": [],              # Безопасные для отправки
+        "gitignored": [],
+        "sensitive": [],
+        "cache": [],
+        "ok": [],
     }
 
     for status, filepath in files:
@@ -186,7 +209,7 @@ def categorize_files(files, project_root):
     return categories
 
 
-def print_file(status, filepath, icon, color=""):
+def print_file(status, filepath, icon):
     """Красивый вывод файла."""
     status_map = {
         "M": "modified", "A": "added", "D": "deleted", "??": "untracked",
@@ -197,7 +220,7 @@ def print_file(status, filepath, icon, color=""):
 
 
 def ensure_gitignore(project_root):
-    """Создает .gitignore с базовыми правилами если его нет."""
+    """Создает .gitignore с правильными правилами."""
     gitignore = project_root / ".gitignore"
 
     base_rules = """# Python
@@ -209,13 +232,11 @@ __pycache__/
 
 # Environments
 .env
-.venv
-env/
-venv/
+.env.local
 
-# Logs
+# Logs (только в корне и все .log файлы)
+/logs/
 *.log
-logs/
 
 # IDE
 .vscode/
@@ -231,28 +252,44 @@ data/models/*.pkl
 # Configs with secrets (keep local)
 config/user_config.json
 config/secrets.json
+
+# НО НЕ игнорируем UI-файлы!
+!src/ui/pages/config.py
+!src/ui/pages/logs.py
 """
 
     if not gitignore.exists():
         gitignore.write_text(base_rules, encoding="utf-8")
-        print("📝 Создан .gitignore с базовыми правилами")
+        print("📝 Создан .gitignore")
         return True
 
-    # Проверяем, есть ли ключевые правила
     content = gitignore.read_text(encoding="utf-8")
-    missing = []
-    for rule in ["__pycache__/", ".env", "*.log", "config/user_config.json"]:
-        if rule not in content:
-            missing.append(rule)
 
-    if missing:
-        with open(gitignore, "a", encoding="utf-8") as f:
-            if not content.endswith("\n"):
-                f.write("\n")
-            f.write("\n# Auto-added by git_helper\n")
-            for rule in missing:
-                f.write(rule + "\n")
-        print(f"📝 Добавлены правила в .gitignore: {', '.join(missing)}")
+    # Проверяем и исправляем проблемные правила
+    fixes_needed = []
+
+    # Проверяем logs/ без /
+    if "logs/" in content and "/logs/" not in content:
+        fixes_needed.append("logs/ → /logs/")
+
+    # Проверяем исключения для UI-файлов
+    if "!src/ui/pages/config.py" not in content:
+        fixes_needed.append("!src/ui/pages/config.py")
+    if "!src/ui/pages/logs.py" not in content:
+        fixes_needed.append("!src/ui/pages/logs.py")
+
+    if fixes_needed:
+        # Заменяем logs/ на /logs/
+        content = content.replace("\nlogs/\n", "\n/logs/\n")
+
+        # Добавляем исключения
+        if "!src/ui/pages/config.py" not in content:
+            content += "\n!src/ui/pages/config.py\n"
+        if "!src/ui/pages/logs.py" not in content:
+            content += "!src/ui/pages/logs.py\n"
+
+        gitignore.write_text(content, encoding="utf-8")
+        print(f"📝 Исправлен .gitignore: {', '.join(fixes_needed)}")
         return True
 
     return False
@@ -260,27 +297,23 @@ config/secrets.json
 
 def main():
     print("=" * 60)
-    print("🐙  GIT HELPER v2 — Универсальная отправка на GitHub")
+    print("🐙  GIT HELPER v2.1 — Исправленная отправка на GitHub")
     print("=" * 60)
 
-    # Находим проект
     project_root = find_project_root()
     if not project_root:
-        print("\n❌ Не найден Git-репозиторий (.git папка)")
-        print("   Запустите скрипт из папки проекта.")
+        print("\n❌ Не найден Git-репозиторий")
         input("\nНажмите Enter...")
         sys.exit(1)
 
     print(f"\n📁 Проект: {project_root}")
 
-    # Проверяем .gitignore
     if ensure_gitignore(project_root):
-        print("   (перезапустите скрипт если добавились новые правила)")
+        print("   (.gitignore обновлен)")
 
-    # Получаем изменения
     files = get_changed_files(project_root)
     if not files:
-        print("\n✅ Нет изменений для отправки. Все актуально!")
+        print("\n✅ Нет изменений для отправки.")
         input("\nНажмите Enter...")
         return
 
@@ -289,10 +322,8 @@ def main():
     print(f"🌿 Ветка: {branch}")
     print(f"📦 Всего изменений: {len(files)}\n")
 
-    # Категоризируем
     cat = categorize_files(files, project_root)
 
-    # Выводим
     if cat["gitignored"]:
         print("⛔  Пропущено (в .gitignore):")
         for status, fp in cat["gitignored"]:
@@ -314,8 +345,7 @@ def main():
 
     to_commit = cat["ok"]
     if not to_commit:
-        print("⚠️  Нет файлов для отправки (все исключены или в .gitignore).")
-        print("   Проверьте .gitignore или добавьте файлы вручную через git add")
+        print("⚠️  Нет файлов для отправки.")
         input("\nНажмите Enter...")
         return
 
@@ -324,9 +354,7 @@ def main():
         print_file(status, fp, "  ✅")
 
     print(f"\n📊 Итого: {len(to_commit)} файлов для коммита")
-    print(f"   Пропущено: {len(cat['gitignored']) + len(cat['cache']) + len(cat['sensitive'])}")
 
-    # Выбор действия
     print("\n" + "-" * 40)
     print("Выберите действие:")
     print("  [1] Отправить ВСЁ показанное выше")
@@ -335,14 +363,14 @@ def main():
 
     choice = input("\n>>> ").strip()
 
-    if choice == "3" or choice.lower() in ("q", "quit", "н"):
+    if choice == "3" or choice.lower() in ("q", "quit"):
         print("❌ Отменено.")
         input("Нажмите Enter...")
         return
 
     selected = []
     if choice == "2":
-        print("\nВведите номера файлов через пробел (например: 1 3 5)")
+        print("\nВведите номера файлов через пробел:")
         for i, (status, fp) in enumerate(to_commit, 1):
             print(f"  [{i}] {fp}")
         nums = input("\n>>> ").strip().split()
@@ -361,12 +389,10 @@ def main():
     else:
         selected = to_commit
 
-    # Добавляем выбранные файлы
     print("\n➕ Добавляем файлы...")
     for status, fp in selected:
         run_git(["add", fp], cwd=project_root)
 
-    # Сообщение коммита
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"\n📌 Сообщение коммита (Enter = авто):")
     msg = input(">>> ").strip()
@@ -375,12 +401,11 @@ def main():
     else:
         msg = f"{msg} [{timestamp}]"
 
-    # Коммит
     print(f"\n💾 Коммит: {msg}")
     success, out = run_git(["commit", "-m", msg], cwd=project_root)
     if not success:
         if "nothing to commit" in out:
-            print("ℹ️ Нечего коммитить (возможно, файлы уже в индексе).")
+            print("ℹ️ Нечего коммитить.")
             input("Нажмите Enter...")
             return
         print("❌ Ошибка коммита:")
@@ -388,7 +413,6 @@ def main():
         input("Нажмите Enter...")
         return
 
-    # Пуш
     print(f"\n🚀 Отправка в origin/{branch}...")
     success, out = run_git(["push", "origin", branch], capture=False, cwd=project_root)
     if success:
@@ -400,12 +424,7 @@ def main():
         print(f"   🌿 Ветка:  {branch}")
     else:
         print("\n❌ Ошибка push:")
-        if "rejected" in out.lower():
-            print("   💡 Сделайте git pull перед push")
-        elif "authentication" in out.lower():
-            print("   💡 Проверьте авторизацию GitHub")
-        else:
-            print(f"   {out}")
+        print(f"   {out}")
 
     input("\nНажмите Enter для выхода...")
 

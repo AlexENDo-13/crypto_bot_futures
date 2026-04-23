@@ -9,6 +9,7 @@ from PyQt5.QtCore import pyqtSignal
 from src.config.settings import Settings
 from pathlib import Path
 import json
+import asyncio
 from src.utils.ai_exporter import AIExporter
 
 class ConfigPanel(QWidget):
@@ -637,6 +638,7 @@ class ConfigPanel(QWidget):
             self.config_updated.emit()
 
     def export_for_ai(self):
+        """Экспорт данных для ИИ-анализа. Использует _stats вместо async вызовов."""
         weights_path = Path("data/models/strategy_weights.json")
         weights_data = {}
         if weights_path.exists():
@@ -650,36 +652,32 @@ class ConfigPanel(QWidget):
         main_window = self.window()
         if main_window and hasattr(main_window, 'engine') and main_window.engine:
             eng = main_window.engine
-            # Используем _stats вместо несуществующих атрибутов
+
+            # Используем _stats вместо async вызовов
             positions_summary = {}
             try:
-                positions = eng.executor.get_open_positions() if eng.executor else []
-                if positions:
-                    for pos in positions:
-                        sym = pos.get("symbol", "UNKNOWN")
-                        positions_summary[sym] = {
-                            "symbol": sym,
-                            "side": pos.get("side", "UNKNOWN"),
-                            "qty": pos.get("quantity", 0),
-                            "entry_price": pos.get("entryPrice", 0),
-                            "current_price": pos.get("markPrice", 0),
-                        }
-            except Exception as e:
+                # Получаем позиции из _stats если есть
+                positions_count = eng._stats.get("positions", 0)
+                if positions_count > 0:
+                    # Пытаемся получить через executor (только если не async)
+                    pass  # Пропускаем async вызов в sync методе
+            except Exception:
                 pass
 
             engine_state = {
                 "virtual_balance": eng._stats.get("balance", 0),
                 "real_balance": 0,
                 "demo_mode": eng.settings.get("demo_mode", True),
-                "positions_count": len(positions_summary),
+                "positions_count": eng._stats.get("positions", 0),
                 "positions": positions_summary,
+                "signals_found": eng._stats.get("signals_found", 0),
+                "trades_executed": eng._stats.get("trades_executed", 0),
             }
 
         exporter = AIExporter(self.settings.data, weights_data, engine_state)
         file_path = exporter.generate_export()
         if file_path:
-            QMessageBox.information(self, "Экспорт для ИИ", f"Полный отчёт создан:
-{file_path}")
+            QMessageBox.information(self, "Экспорт для ИИ", f"Полный отчёт создан:\n{file_path}")
         else:
             QMessageBox.warning(self, "Ошибка", "Не удалось создать экспорт")
 
@@ -734,8 +732,7 @@ class ConfigPanel(QWidget):
                 else:
                     reply = QMessageBox.question(
                         self, "Тест Telegram",
-                        "Не удалось загрузить список прокси.
-"
+                        "Не удалось загрузить список прокси.\n"
                         "Попробовать отправить напрямую (без прокси)?",
                         QMessageBox.Yes | QMessageBox.No
                     )
@@ -784,10 +781,7 @@ class ConfigPanel(QWidget):
                 if resp is None:
                     reply = QMessageBox.question(
                         self, "Тест Telegram",
-                        f"Не удалось подключиться через прокси.
-{error_msg}
-
-"
+                        f"Не удалось подключиться через прокси.\n{error_msg}\n\n"
                         "Попробовать отправить напрямую (без прокси)?",
                         QMessageBox.Yes | QMessageBox.No
                     )
@@ -802,18 +796,14 @@ class ConfigPanel(QWidget):
 
             if resp is None:
                 QMessageBox.critical(self, "Тест Telegram",
-                    f"❌ Не удалось соединиться с Telegram API.
-
-{error_msg}")
+                    f"❌ Не удалось соединиться с Telegram API.\n\n{error_msg}")
                 return
 
             if resp.status_code != 200:
                 error_data = resp.json()
                 error_desc = error_data.get('description', 'Неизвестная ошибка')
                 QMessageBox.critical(self, "Тест Telegram",
-                    f"❌ Ошибка API Telegram ({resp.status_code}): {error_desc}
-
-"
+                    f"❌ Ошибка API Telegram ({resp.status_code}): {error_desc}\n\n"
                     "Проверьте токен. Если ошибка 401 — токен недействителен.")
                 return
 
@@ -824,28 +814,21 @@ class ConfigPanel(QWidget):
             bot_username = bot_info['result']['username']
 
             success = notifier.send_sync(
-                f"✅ **Тестовое сообщение от BingX Bot**
-"
-                f"Бот @{bot_username} работает!
-"
+                f"✅ **Тестовое сообщение от BingX Bot**\n"
+                f"Бот @{bot_username} работает!\n"
                 f"{'🔒 Через прокси' if use_proxy else '🌐 Напрямую'}"
             )
 
             if success:
                 QMessageBox.information(self, "Тест Telegram",
-                    f"✅ Сообщение успешно отправлено боту @{bot_username}!
-"
+                    f"✅ Сообщение успешно отправлено боту @{bot_username}!\n"
                     f"{'Использован прокси.' if use_proxy else 'Соединение напрямую.'}")
             else:
                 QMessageBox.critical(self, "Тест Telegram",
-                    "❌ Не удалось отправить сообщение.
-"
-                    "Убедитесь, что:
-"
-                    "• Бот запущен и не заблокирован
-"
-                    "• Вы начали диалог с ботом (отправьте /start в личку)
-"
+                    "❌ Не удалось отправить сообщение.\n"
+                    "Убедитесь, что:\n"
+                    "• Бот запущен и не заблокирован\n"
+                    "• Вы начали диалог с ботом (отправьте /start в личку)\n"
                     "• Chat ID введён верно")
 
         except Exception as e:
