@@ -8,7 +8,6 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any
 
-
 def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     result = {}
     if len(df) < 30:
@@ -218,7 +217,7 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     # === SIDEWAYS MARKET SIGNALS (Bollinger Bounce) ===
     elif regime == "SIDEWAYS":
         long_conditions = []
-        if bb_pos < 0.15 and close[-1] > close[-2]:  # Price near lower band + bounce
+        if bb_pos < 0.15 and close[-1] > close[-2]:
             long_conditions.append("bb_bounce_up")
         if current_rsi < 45:
             long_conditions.append("rsi_oversold")
@@ -232,7 +231,7 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
             long_conditions.append("macd_rising")
 
         short_conditions = []
-        if bb_pos > 0.85 and close[-1] < close[-2]:  # Price near upper band + rejection
+        if bb_pos > 0.85 and close[-1] < close[-2]:
             short_conditions.append("bb_bounce_down")
         if current_rsi > 55:
             short_conditions.append("rsi_overbought")

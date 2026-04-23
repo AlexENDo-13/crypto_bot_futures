@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MarketScanner — полноценный адаптивный сканер с мультитаймфреймом.
+MarketScanner — исправленный адаптивный сканер с мультитаймфреймом.
+Исправления:
+- Адаптация MTF под микро-счета (<$100)
+- Fallback volume из свечей если ticker volume = 0
+- Улучшенное логирование причин отказа
 """
 import asyncio
 from typing import List, Dict, Any
@@ -10,7 +14,6 @@ import time
 
 from src.core.logger import BotLogger
 from src.config.settings import Settings
-
 
 class MarketScanner:
     """Адаптивный сканер рынка с полным набором фильтров, MTF и логированием."""
@@ -44,6 +47,17 @@ class MarketScanner:
         self.whitelist = settings.get("symbols_whitelist", [])
         self.blacklist = settings.get("blacklist", [])
 
+    def adapt_for_balance(self, balance: float):
+        """Адаптирует MTF и фильтры под размер депозита."""
+        if balance < 100:
+            self.mtf_required = 1
+            self.use_multi_timeframe = True
+            self.logger.info(f"🔧 MTF адаптирован для микро-счёта: требуется {self.mtf_required} согласие(ий)")
+        elif balance < 1000:
+            self.mtf_required = min(2, len(self.mtf_timeframes))
+        else:
+            self.mtf_required = int(self.settings.get("mtf_required_agreement", 2))
+
     async def scan_async(
         self,
         balance: float,
@@ -52,11 +66,13 @@ class MarketScanner:
         ignore_session_check: bool = False,
     ) -> List[Dict[str, Any]]:
         """Сканирует рынок и возвращает топ кандидатов."""
+        self.adapt_for_balance(balance)
+
         self.logger.info(
             f"🔎 Сканирование рынка (баланс: ${balance:.2f}, "
             f"ADX>={self.current_min_adx:.1f}, ATR>={self.current_min_atr:.2f}%, "
             f"Vol>={self.current_min_volume:,.0f}, Signal>={self.current_min_signal:.2f}, "
-            f"MTF={'ON' if self.use_multi_timeframe else 'OFF'})"
+            f"MTF={'ON' if self.use_multi_timeframe else 'OFF'} [req={self.mtf_required}])"
         )
 
         contracts = await self.data_fetcher.get_all_usdt_contracts()
@@ -66,7 +82,6 @@ class MarketScanner:
 
         self.logger.info(f"📋 Получено {len(contracts)} контрактов с биржи")
 
-        # Auto-adaptation after empty scans
         if self.empty_scans_count >= 2:
             old_adx = self.current_min_adx
             old_atr = self.current_min_atr
@@ -93,7 +108,6 @@ class MarketScanner:
             "signal": 0, "mtf_reject": 0, "passed": 0
         }
 
-        # Process in batches
         batch_size = 15
         for i in range(0, min(len(contracts), max_pairs), batch_size):
             batch = contracts[i:i+batch_size]
@@ -141,7 +155,6 @@ class MarketScanner:
             self.logger.info(f"📭 Сигналов не найдено (пустых сканов подряд: {self.empty_scans_count})")
         else:
             self.empty_scans_count = 0
-            # Tighten filters back
             base_adx = float(self.settings.get("min_adx", 10))
             base_atr = float(self.settings.get("min_atr_percent", 0.5))
             base_vol = float(self.settings.get("min_volume_24h_usdt", 50000))
@@ -151,31 +164,31 @@ class MarketScanner:
             self.current_min_volume = min(base_vol, self.current_min_volume * 1.05)
             self.current_min_signal = min(base_sig, self.current_min_signal * 1.05)
 
-        candidates.sort(
-            key=lambda x: x["indicators"].get("signal_strength", 0)
-            * x["indicators"].get("adx", 0)
-            * x["indicators"].get("atr_percent", 0),
-            reverse=True,
-        )
+            candidates.sort(
+                key=lambda x: x["indicators"].get("signal_strength", 0)
+                * x["indicators"].get("adx", 0)
+                * x["indicators"].get("atr_percent", 0),
+                reverse=True,
+            )
 
-        top = candidates[:5]
-        if top:
-            self.logger.info(f"✅ Найдено {len(candidates)} сигналов, топ-{len(top)} выбран")
-            for i, c in enumerate(top[:3], 1):
-                ind = c["indicators"]
-                self.logger.info(
-                    f"   #{i} {c['symbol']}: {ind.get('signal_direction')} [{ind.get('market_regime')}] | "
-                    f"ADX={ind.get('adx', 0):.1f} | ATR={ind.get('atr_percent', 0):.2f}% | "
-                    f"Signal={ind.get('signal_strength', 0):.2f} | RSI={ind.get('rsi', 0):.1f} | "
-                    f"Type={ind.get('entry_type', 'unknown')}"
-                )
-        return top
+            top = candidates[:5]
+            if top:
+                self.logger.info(f"✅ Найдено {len(candidates)} сигналов, топ-{len(top)} выбран")
+                for i, c in enumerate(top[:3], 1):
+                    ind = c["indicators"]
+                    self.logger.info(
+                        f" #{i} {c['symbol']}: {ind.get('signal_direction')} [{ind.get('market_regime')}] | "
+                        f"ADX={ind.get('adx', 0):.1f} | ATR={ind.get('atr_percent', 0):.2f}% | "
+                        f"Signal={ind.get('signal_strength', 0):.2f} | RSI={ind.get('rsi', 0):.1f} | "
+                        f"Type={ind.get('entry_type', 'unknown')}"
+                    )
+            return top
+        return []
 
     async def _analyze_symbol(self, symbol: str, filtered_count: dict) -> Dict[str, Any]:
         """Анализирует одну пару с MTF."""
         tf = self.settings.get("timeframe", "15m")
 
-        # Get ticker
         ticker = await self.data_fetcher.get_ticker_data(symbol)
         if not ticker:
             filtered_count["ticker_fail"] += 1
@@ -187,24 +200,32 @@ class MarketScanner:
         bid = ticker.get("bid", 0)
         ask = ticker.get("ask", 0)
 
-        # Volume filter
+        # Fallback: если volume_24h = 0, попробуем получить из свечей
+        if volume_24h <= 0:
+            try:
+                df_vol = await self.data_fetcher.fetch_klines_async(None, symbol, interval="1d", limit=2)
+                if df_vol is not None and not df_vol.empty and len(df_vol) >= 1:
+                    last_vol = float(df_vol["volume"].iloc[-1])
+                    last_close = float(df_vol["close"].iloc[-1])
+                    volume_24h = last_vol * last_close
+                    self.logger.debug(f"📊 {symbol}: volume_24h из свечей = {volume_24h:,.0f}")
+            except Exception as e:
+                self.logger.debug(f"⚠️ {symbol}: не удалось получить volume из свечей: {e}")
+
         if volume_24h < self.current_min_volume:
             filtered_count["volume"] += 1
             return {}
 
-        # Funding filter
         if abs(funding_rate) > abs(self.max_funding_rate) and self.max_funding_rate != 0:
             filtered_count["funding"] += 1
             return {}
 
-        # Spread filter
         if self.use_spread_filter and last_price > 0 and bid > 0 and ask > 0:
             spread_pct = (ask - bid) / last_price * 100
             if spread_pct > self.max_spread_pct:
                 filtered_count["spread"] += 1
                 return {}
 
-        # Fetch primary candles
         df = await self.data_fetcher.fetch_klines_async(None, symbol, interval=tf, limit=80)
         if df is None or df.empty:
             filtered_count["klines_fail"] += 1
@@ -223,7 +244,6 @@ class MarketScanner:
         regime = indicators.get("market_regime", "UNKNOWN")
         entry_type = indicators.get("entry_type", "none")
 
-        # Log regime for debugging
         self.logger.debug(
             f"📈 {symbol}: regime={regime}, dir={direction}, ADX={adx:.1f}, "
             f"ATR={atr_pct:.2f}%, RSI={rsi:.1f}, strength={signal_strength:.2f}, type={entry_type}"
@@ -231,10 +251,9 @@ class MarketScanner:
 
         if direction == "NEUTRAL":
             filtered_count["neutral"] += 1
-            self.logger.debug(f"⛔ {symbol}: NEUTRAL (regime={regime}, conditions={indicators.get('signal_conditions', [])})")
+            self.logger.debug(f"⛔ {symbol}: NEUTRAL (regime={regime})")
             return {}
 
-        # Threshold filters
         if adx < self.current_min_adx:
             filtered_count["adx"] += 1
             self.logger.debug(f"⛔ {symbol}: ADX {adx:.1f} < {self.current_min_adx:.1f}")
@@ -250,14 +269,13 @@ class MarketScanner:
             self.logger.debug(f"⛔ {symbol}: signal {signal_strength:.2f} < {self.current_min_signal:.2f}")
             return {}
 
-        # Multi-timeframe analysis
         if self.use_multi_timeframe:
             mtf_result = await self._check_multi_timeframe(symbol, direction)
             if not mtf_result["agreement"]:
                 filtered_count["mtf_reject"] += 1
                 self.logger.debug(
                     f"⛔ {symbol}: MTF отклонён (agree={mtf_result['agree_count']}/"
-                    f"{mtf_result['total']}, need={self.mtf_required}, details={mtf_result['details']})"
+                    f"{mtf_result['total']}, need={self.mtf_required})"
                 )
                 return {}
             indicators["mtf_agreement"] = mtf_result["agree_count"]
@@ -266,7 +284,6 @@ class MarketScanner:
                 f"✅ {symbol}: MTF подтверждён {mtf_result['agree_count']}/{mtf_result['total']}"
             )
 
-        # Add ticker data
         indicators["volume_24h"] = volume_24h
         indicators["funding_rate"] = funding_rate
         indicators["close_price"] = last_price
@@ -303,26 +320,23 @@ class MarketScanner:
 
                 total += 1
 
-                # Agreement: same direction or one is NEUTRAL (no conflict)
                 if dir_tf == primary_direction:
                     agree_count += 1
                     details[tf] = f"agree_{dir_tf}"
                 elif dir_tf == "NEUTRAL":
-                    # Neutral doesn't disagree — counts as weak agreement
                     agree_count += 0.5
                     details[tf] = f"neutral"
                 else:
                     details[tf] = f"conflict_{dir_tf}_vs_{primary_direction}"
 
                 self.logger.debug(
-                    f"   MTF {symbol} {tf}: dir={dir_tf}, regime={regime_tf}, ADX={adx_tf:.1f}"
+                    f" MTF {symbol} {tf}: dir={dir_tf}, regime={regime_tf}, ADX={adx_tf:.1f}"
                 )
 
             except Exception as e:
                 details[tf] = f"error:{str(e)[:30]}"
-                self.logger.debug(f"   MTF {symbol} {tf}: ошибка {e}")
+                self.logger.debug(f" MTF {symbol} {tf}: ошибка {e}")
 
-        # Require at least mtf_required agreements
         agreement = agree_count >= self.mtf_required and total > 0
 
         return {

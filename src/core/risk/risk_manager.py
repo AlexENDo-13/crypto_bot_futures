@@ -14,7 +14,6 @@ from src.core.trading.position import Position, OrderSide, ExitReason
 
 logger = logging.getLogger("RiskManager")
 
-
 class AntiChase:
     """Защита от погони за рынком — ограничение частоты сделок."""
 
@@ -47,7 +46,6 @@ class AntiChase:
         self._trade_times.append(now)
         self._last_trade_time = now
 
-
 class RiskManager:
     """Полноценный менеджер рисков с адаптивным расчётом позиций."""
 
@@ -57,7 +55,7 @@ class RiskManager:
         self.logger = logger
         self._cached_balance = 0.0
         self._balance_cache_time = 0
-        self._balance_cache_ttl = 30  # 30 seconds
+        self._balance_cache_ttl = 30
 
         # Risk parameters
         self.max_positions = int(settings.get("max_positions", 3))
@@ -90,7 +88,7 @@ class RiskManager:
         self._daily_reset_time = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
 
     def _reset_daily_if_needed(self):
-        """Сбрасывает дневную статистику при смене дня."""
+        """Сбрасывает дневную статистику."""
         now = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         if now > self._daily_reset_time:
             self.daily_pnl = 0.0
@@ -104,19 +102,37 @@ class RiskManager:
         """Получает баланс с кэшированием."""
         now = time.time()
         if now - self._balance_cache_time < self._balance_cache_ttl and self._cached_balance > 0:
-            return {"total_equity": self._cached_balance, "available_balance": self._cached_balance}
+            return {
+                "total_equity": self._cached_balance,
+                "available_balance": self._cached_balance,
+                "used": 0.0,
+                "equity": self._cached_balance,
+            }
 
         try:
             account = await self.client.get_account_info()
-            if account and "balance" in account:
+            if account and isinstance(account, dict) and "balance" in account:
                 balance = float(account["balance"])
                 self._cached_balance = balance
                 self._balance_cache_time = now
-                return {"total_equity": balance, "available_balance": balance}
+                return {
+                    "total_equity": balance,
+                    "available_balance": float(account.get("available", balance)),
+                    "used": float(account.get("used", 0)),
+                    "equity": float(account.get("equity", balance)),
+                    "unrealizedProfit": float(account.get("unrealizedProfit", 0)),
+                }
+            else:
+                self.logger.warning(f"⚠️ get_account_info() вернул невалидные данные: {account}")
         except Exception as e:
             self.logger.error(f"Ошибка получения баланса: {e}")
 
-        return {"total_equity": self._cached_balance, "available_balance": self._cached_balance}
+        return {
+            "total_equity": self._cached_balance,
+            "available_balance": self._cached_balance,
+            "used": 0.0,
+            "equity": self._cached_balance,
+        }
 
     def calculate_position_size(
         self,
@@ -136,6 +152,7 @@ class RiskManager:
         self._reset_daily_if_needed()
 
         if balance <= 0 or current_price <= 0:
+            self.logger.warning(f"⚠️ {symbol}: balance={balance}, price={current_price} — невозможно рассчитать позицию")
             return 0.0
 
         # Apply weekend reduction
@@ -191,18 +208,20 @@ class RiskManager:
                 quantity = math.ceil(min_notional / current_price / step_size) * step_size
         else:
             # Default rounding
-            quantity = math.floor(quantity / 0.001) * 0.001
+            step = 0.001
+            quantity = math.floor(quantity / step) * step
             if quantity * current_price < 5.0:
-                quantity = math.ceil(5.0 / current_price / 0.001) * 0.001
+                quantity = math.ceil(5.0 / current_price / step) * step
 
         # Final sanity checks
         if quantity <= 0:
+            self.logger.warning(f"⚠️ {symbol}: quantity={quantity} после округления — возвращаем 0")
             return 0.0
 
         # Check total risk exposure
         total_risk_pct = (self.total_risk_exposure + risk_amount) / balance * 100
         if total_risk_pct > self.max_total_risk:
-            self.logger.warning(f"Превышен общий риск ({total_risk_pct:.1f}% > {self.max_total_risk}%)")
+            self.logger.warning(f"Превышен общий риск ({total_risk_pct:.1f}% > {self.max_total_risk}%). total_risk_exposure={self.total_risk_exposure:.2f}")
             return 0.0
 
         self.logger.info(

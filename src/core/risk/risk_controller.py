@@ -11,7 +11,6 @@ import time
 from src.core.logger import BotLogger
 from src.core.trading.position import Position
 
-
 class RiskController:
     """Контроль рисков: лимиты, circuit breaker, фильтрация."""
 
@@ -46,16 +45,14 @@ class RiskController:
                 return False, "Circuit breaker активен"
             self._circuit_breaker_active = False
 
-        # Daily loss limit
         daily_loss_limit = float(self.settings.get("daily_loss_limit_percent", 8.0))
         if balance > 0 and self.daily_loss > 0:
             loss_pct = (self.daily_loss / balance) * 100
             if loss_pct >= daily_loss_limit:
                 self._circuit_breaker_active = True
-                self._circuit_breaker_until = time.time() + 3600  # 1 hour cooldown
+                self._circuit_breaker_until = time.time() + 3600
                 return False, f"Дневной лимит убытков достигнут ({loss_pct:.1f}%)"
 
-        # Max daily trades
         max_daily = int(self.settings.get("max_daily_trades", 10))
         if self._position_count >= max_daily:
             return False, f"Дневной лимит сделок ({max_daily})"
@@ -95,7 +92,6 @@ class RiskController:
                 continue
 
             if quantity <= 0:
-                # Estimate quantity
                 risk_pct = float(self.settings.get("max_risk_per_trade", 1.0))
                 risk_amount = balance * (risk_pct / 100)
                 quantity = risk_amount / (entry_price * sl_distance)

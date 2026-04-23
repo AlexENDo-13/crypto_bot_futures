@@ -13,7 +13,6 @@ import time
 from src.core.logger import BotLogger
 from src.core.market.indicators import compute_indicators
 
-
 class DataFetcher:
     """Класс для получения рыночных данных с BingX API."""
 
@@ -21,11 +20,11 @@ class DataFetcher:
         self.client = client
         self.logger = logger
         self.settings = settings
-        self._klines_cache: Dict[str, tuple] = {}  # (timestamp, data)
+        self._klines_cache: Dict[str, tuple] = {}
         self._contracts_cache: Optional[List[Dict]] = None
         self._contracts_cache_time = 0
-        self._cache_ttl = 60  # 60 seconds for klines
-        self._contracts_cache_ttl = 300  # 5 minutes for contracts
+        self._cache_ttl = 60
+        self._contracts_cache_ttl = 300
 
     async def get_all_usdt_contracts(self) -> List[Dict]:
         """Получает список всех USDT-фьючерсов с кэшированием."""
@@ -47,7 +46,6 @@ class DataFetcher:
         except Exception as e:
             self.logger.error(f"Ошибка получения списка контрактов: {e}")
 
-        # Fallback: return cached or empty
         return self._contracts_cache or []
 
     async def fetch_klines_async(
@@ -71,14 +69,12 @@ class DataFetcher:
             if df.empty:
                 return None
 
-            # Ensure required columns
             required_cols = ["timestamp", "open", "high", "low", "close", "volume"]
             for col in required_cols:
                 if col not in df.columns:
                     self.logger.warning(f"Отсутствует колонка {col} в данных {symbol}")
                     return None
 
-            # Convert types
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -91,7 +87,6 @@ class DataFetcher:
             df.sort_values("timestamp", inplace=True)
             df.reset_index(drop=True, inplace=True)
 
-            # Cache result
             self._klines_cache[cache_key] = (now, df)
             return df
 

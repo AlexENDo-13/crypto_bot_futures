@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 BotLogger — полноценный логгер: консоль, файл, JSON, UI callback.
-Каждый чих и кашель логируется для диагностики.
 """
 import logging
 import logging.handlers
@@ -14,10 +13,8 @@ from datetime import datetime
 from typing import List, Callable, Optional
 from queue import Queue
 
-
 class JSONFormatter(logging.Formatter):
     """Форматтер для JSON-логов."""
-
     def format(self, record):
         log_entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -34,10 +31,8 @@ class JSONFormatter(logging.Formatter):
             log_entry["extra"] = record.extra_data
         return json.dumps(log_entry, ensure_ascii=False)
 
-
 class QTextHandler(logging.Handler):
     """Handler для отправки логов в PyQt QTextEdit через callback."""
-
     def __init__(self, callback: Callable):
         super().__init__()
         self.callback = callback
@@ -45,7 +40,6 @@ class QTextHandler(logging.Handler):
             "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
             datefmt="%H:%M:%S"
         ))
-
     def emit(self, record):
         try:
             msg = self.format(record)
@@ -53,10 +47,8 @@ class QTextHandler(logging.Handler):
         except Exception:
             pass
 
-
 class BotLogger:
     """Полноценный логгер бота с мультиканальным выводом."""
-
     LEVEL_COLORS = {
         logging.DEBUG: "#888888",
         logging.INFO: "#E0E0E0",
@@ -64,19 +56,16 @@ class BotLogger:
         logging.ERROR: "#FF4444",
         logging.CRITICAL: "#FF0000",
     }
-
     def __init__(self, name: str = "BotLogger", level: str = "INFO",
                  log_dir: str = "logs", max_bytes: int = 5 * 1024 * 1024,
                  backup_count: int = 5):
         self.name = name
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
-
         self.logger = logging.getLogger(name)
         self.logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-        self.logger.handlers = []  # Clear existing
-
-        # 1. Console handler
+        self.logger.handlers = []
+        # Console
         console = logging.StreamHandler(sys.stdout)
         console.setLevel(logging.DEBUG)
         console_fmt = logging.Formatter(
@@ -85,36 +74,29 @@ class BotLogger:
         )
         console.setFormatter(console_fmt)
         self.logger.addHandler(console)
-
-        # 2. File handler (rotating)
+        # File
         log_file = os.path.join(log_dir, f"{name.lower()}.log")
         file_handler = logging.handlers.RotatingFileHandler(
-            log_file, maxBytes=max_bytes, backupCount=backup_count,
-            encoding="utf-8"
+            log_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
         )
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(console_fmt)
         self.logger.addHandler(file_handler)
-
-        # 3. JSON file handler
+        # JSON
         json_file = os.path.join(log_dir, f"{name.lower()}.jsonl")
         json_handler = logging.handlers.RotatingFileHandler(
-            json_file, maxBytes=max_bytes, backupCount=backup_count,
-            encoding="utf-8"
+            json_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
         )
         json_handler.setLevel(logging.DEBUG)
         json_handler.setFormatter(JSONFormatter())
         self.logger.addHandler(json_handler)
-
-        # 4. UI callback handler
+        # UI callback
         self._ui_callbacks: List[Callable] = []
         self._ui_handler = None
-
-        # 5. Decision log (separate file for bot decisions)
+        # Decision log
         decision_file = os.path.join(log_dir, "decisions.jsonl")
         self._decision_handler = logging.handlers.RotatingFileHandler(
-            decision_file, maxBytes=max_bytes, backupCount=backup_count,
-            encoding="utf-8"
+            decision_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
         )
         self._decision_handler.setLevel(logging.INFO)
         self._decision_handler.setFormatter(JSONFormatter())
@@ -122,61 +104,42 @@ class BotLogger:
         self._decision_logger.setLevel(logging.INFO)
         self._decision_logger.handlers = []
         self._decision_logger.addHandler(self._decision_handler)
-
         self.info(f"📝 Логгер инициализирован. Логи: {log_dir}/")
 
     def set_ui_callback(self, callback: Callable):
-        """Устанавливает callback для UI."""
         self._ui_callbacks.append(callback)
         if self._ui_handler is None:
             self._ui_handler = QTextHandler(callback)
             self._ui_handler.setLevel(logging.INFO)
             self.logger.addHandler(self._ui_handler)
 
-    def _notify_ui(self, msg: str, level: int = logging.INFO):
-        for cb in self._ui_callbacks:
-            try:
-                cb(msg, level)
-            except Exception:
-                pass
-
     def debug(self, msg: str, extra: dict = None):
         if extra:
-            extra_attr = {"extra_data": extra}
-            self.logger.debug(msg, extra=extra_attr)
+            self.logger.debug(msg, extra={"extra_data": extra})
         else:
             self.logger.debug(msg)
-
     def info(self, msg: str, extra: dict = None):
         if extra:
-            extra_attr = {"extra_data": extra}
-            self.logger.info(msg, extra=extra_attr)
+            self.logger.info(msg, extra={"extra_data": extra})
         else:
             self.logger.info(msg)
-
     def warning(self, msg: str, extra: dict = None):
         if extra:
-            extra_attr = {"extra_data": extra}
-            self.logger.warning(msg, extra=extra_attr)
+            self.logger.warning(msg, extra={"extra_data": extra})
         else:
             self.logger.warning(msg)
-
     def error(self, msg: str, exc_info: bool = False, extra: dict = None):
         if extra:
-            extra_attr = {"extra_data": extra}
-            self.logger.error(msg, exc_info=exc_info, extra=extra_attr)
+            self.logger.error(msg, exc_info=exc_info, extra={"extra_data": extra})
         else:
             self.logger.error(msg, exc_info=exc_info)
-
     def critical(self, msg: str, exc_info: bool = False, extra: dict = None):
         if extra:
-            extra_attr = {"extra_data": extra}
-            self.logger.critical(msg, exc_info=exc_info, extra=extra_attr)
+            self.logger.critical(msg, exc_info=exc_info, extra={"extra_data": extra})
         else:
             self.logger.critical(msg, exc_info=exc_info)
 
     def log_decision(self, decision_type: str, symbol: str = None, data: dict = None):
-        """Логирует решение бота (вход, выход, пропуск и т.д.)."""
         entry = {
             "type": decision_type,
             "symbol": symbol,
@@ -185,21 +148,7 @@ class BotLogger:
         }
         self._decision_logger.info(json.dumps(entry, ensure_ascii=False))
 
-    def log_api_call(self, endpoint: str, method: str, params: dict = None, response: dict = None, error: str = None):
-        """Логирует API вызов."""
-        entry = {
-            "type": "api_call",
-            "endpoint": endpoint,
-            "method": method,
-            "params": params,
-            "response": response,
-            "error": error,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-        }
-        self._decision_logger.info(json.dumps(entry, ensure_ascii=False))
-
     def log_state(self, component: str, state: dict):
-        """Логирует состояние компонента."""
         entry = {
             "type": "state",
             "component": component,

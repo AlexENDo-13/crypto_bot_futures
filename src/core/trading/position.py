@@ -7,11 +7,9 @@ import datetime
 from typing import Optional
 from enum import Enum
 
-
 class OrderSide(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
-
 
 class ExitReason(str, Enum):
     STOP_LOSS = "STOP_LOSS"
@@ -21,7 +19,6 @@ class ExitReason(str, Enum):
     EMERGENCY = "EMERGENCY"
     MANUAL = "MANUAL"
     EXCHANGE_CLOSE = "EXCHANGE_CLOSE"
-
 
 class Position:
     """Представляет открытую торговую позицию."""
@@ -40,18 +37,18 @@ class Position:
     ):
         self.symbol = symbol
         self.side = side
-        self.quantity = abs(quantity)
-        self.entry_price = entry(entry_price)
-        self.leverage = leverage
-        self.stop_loss_price = stop_loss_price
-        self.take_profit_price = take_profit_price
+        self.quantity = abs(float(quantity))
+        self.entry_price = float(entry_price)
+        self.leverage = int(leverage)
+        self.stop_loss_price = float(stop_loss_price)
+        self.take_profit_price = float(take_profit_price)
         self.strategy = strategy
         self.entry_time = entry_time or datetime.datetime.utcnow()
 
         # Runtime tracking
-        self.current_price = entry_price
-        self.max_price_seen = entry_price
-        self.min_price_seen = entry_price
+        self.current_price = float(entry_price)
+        self.max_price_seen = float(entry_price)
+        self.min_price_seen = float(entry_price)
         self.unrealized_pnl = 0.0
         self.unrealized_pnl_percent = 0.0
         self.closed = False
@@ -88,7 +85,7 @@ class Position:
 
     def close(self, exit_price: float, reason: ExitReason, commission: float = 0.0):
         """Закрывает позицию."""
-        self.exit_price = exit_price
+        self.exit_price = float(exit_price)
         self.exit_reason = reason
         self.exit_time = datetime.datetime.utcnow()
         self.closed = True

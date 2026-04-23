@@ -9,7 +9,6 @@ from typing import Dict, Any
 
 from src.config.settings import Settings
 
-
 class StrategyEngine:
     """Управление торговыми стратегиями."""
 
