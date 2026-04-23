@@ -1,114 +1,176 @@
-#!/usr/bin/env python3
 """
-Асинхронный сканер рынка (версия v5).
+Модуль сканирования рынка для поиска торговых сигналов
 """
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
+import pandas as pd
+
+from src.core.market.data_fetcher import MarketDataFetcher
+from src.utils.api_client import AsyncBingXClient
+from src.config.settings import Settings
+from src.core.logger import Logger
+
 
 class MarketScanner:
-    def __init__(self, data_fetcher, risk_manager, signal_evaluator, trap_detector, settings, logger):
-        self.data_fetcher = data_fetcher
-        self.risk_manager = risk_manager
-        self.signal_evaluator = signal_evaluator
-        self.trap_detector = trap_detector
+    """Сканер рынка: ищет сигналы на основе технического анализа"""
+
+    def __init__(self, client: AsyncBingXClient, settings: Settings, logger: Logger):
+        self.client = client
         self.settings = settings
         self.logger = logger
+        self.data_fetcher = MarketDataFetcher(client, settings, logger)
+        self.active_symbols: List[str] = []
+        self._symbols_last_update = 0
+        self._symbols_cache_ttl = 3600  # 1 час
 
-    async def scan_async(self, contracts: list, balance: float) -> list:
+    async def get_active_symbols(self) -> List[str]:
+        """Получить список активных USDT-фьючерсов"""
+        now = asyncio.get_event_loop().time()
+        if not self.active_symbols or (now - self._symbols_last_update) > self._symbols_cache_ttl:
+            self.active_symbols = await self.data_fetcher.get_all_usdt_contracts()
+            self._symbols_last_update = now
+        return self.active_symbols
+
+    async def scan_all(self) -> List[Dict]:
         """
-        Основной метод сканирования.
+        Сканирует все доступные пары и возвращает список сигналов.
+        Каждый сигнал - словарь с информацией о инструменте, направлении, уверенности и т.д.
         """
-        # 1. Выбираем топ по объёму
-        top_symbols = await self._select_top_by_volume(contracts)
-        self.logger.info(f"Selected top {len(top_symbols)} pairs")
+        symbols = await self.get_active_symbols()
+        if not symbols:
+            self.logger.warning("Нет доступных символов для сканирования")
+            return []
 
-        # 2. Параллельный анализ
-        semaphore = asyncio.Semaphore(self.settings.get('async_concurrency', 2))
-        async def analyze_with_sem(symbol):
-            async with semaphore:
-                return await self._analyze_pair_deep_async(symbol, balance)
+        # Ограничиваем количество сканируемых пар для производительности
+        max_scan = self.settings.max_scan_symbols or 50
+        symbols_to_scan = symbols[:max_scan]
 
-        tasks = [analyze_with_sem(sym) for sym in top_symbols]
+        tasks = [self.analyze_symbol(sym) for sym in symbols_to_scan]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        candidates = []
+        signals = []
         for res in results:
-            if isinstance(res, Exception):
-                self.logger.error(f"Scan error: {res}")
-            elif res:
-                candidates.append(res)
+            if isinstance(res, dict) and res.get("signal"):
+                signals.append(res)
+            elif isinstance(res, Exception):
+                self.logger.error(f"Ошибка при анализе: {res}")
 
-        self.logger.info(f"Scan complete: {len(candidates)} candidates")
-        return candidates
+        # Сортируем по уверенности (score)
+        signals.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return signals
 
-    async def _select_top_by_volume(self, contracts: list, limit: int = 50) -> list:
+    async def analyze_symbol(self, symbol: str) -> Optional[Dict]:
         """
-        Выбирает топ N символов по объёму за 24ч.
-        """
-        try:
-            tickers = await self.data_fetcher.client.get_all_tickers()
-        except Exception as e:
-            self.logger.warning(f"Failed to fetch tickers: {e}, using all contracts")
-            return [c['symbol'] for c in contracts[:limit]]
-
-        sorted_symbols = sorted(
-            tickers.items(),
-            key=lambda x: float(x[1].get('volume24h', 0)),
-            reverse=True
-        )
-        return [sym for sym, _ in sorted_symbols[:limit]]
-
-    async def _analyze_pair_deep_async(self, symbol: str, balance: float) -> Optional[Dict[str, Any]]:
-        """
-        Глубокий анализ одной пары.
+        Анализирует один символ на наличие сигнала.
+        Возвращает сигнал или None.
         """
         try:
-            # Загружаем свечи 1h
-            session = await self.data_fetcher.client._get_session()
-            df = await self.data_fetcher.fetch_klines_async(session, symbol, '1h', 100)
-            if df is None or len(df) < 50:
+            # Получаем свечи (таймфрейм берем из настроек, по умолчанию 1h)
+            timeframe = getattr(self.settings, 'default_timeframe', '1h')
+            df = await self.data_fetcher.fetch_klines(symbol, timeframe, limit=100)
+            if df is None or df.empty:
                 return None
 
-            indicators = self.data_fetcher.compute_indicators(df)
-            if not indicators:
+            # Добавляем индикаторы, если их ещё нет
+            if 'rsi' not in df.columns:
+                df = await self.data_fetcher.calculate_indicators(df)
+
+            # Получаем тикер для объема и текущей цены
+            ticker = await self.data_fetcher.fetch_ticker(symbol)
+            if not ticker:
                 return None
 
-            # Оценка сигнала
-            direction, strength, details = self.signal_evaluator.evaluate(indicators)
-            if direction.value == "NEUTRAL" or strength < self.settings.get('min_signal_strength', 0.5):
-                return None
+            last_row = df.iloc[-1]
+            prev_row = df.iloc[-2] if len(df) > 1 else last_row
 
-            # Проверка на ловушку
-            current_price = indicators['close_price']
-            if self.trap_detector.is_trap(symbol, indicators, current_price):
-                return None
+            signal = self._evaluate_signals(symbol, df, ticker)
+            return signal
 
-            # Расчёт размера позиции
-            risk_percent = self.settings.get('max_risk_per_trade', 2.0)
-            leverage = self.settings.get('max_leverage', 3)
-            stop_distance = self._calc_stop_distance(indicators)
-
-            qty = self.risk_manager.calculate_position_size(
-                symbol, balance, risk_percent, stop_distance,
-                leverage, indicators.get('atr_percent', 1.0), current_price
-            )
-
-            if qty <= 0:
-                return None
-
-            return {
-                'symbol': symbol,
-                'direction': direction.value,
-                'strength': strength,
-                'qty': qty,
-                'price': current_price,
-                'stop_loss': current_price * (1 - stop_distance / 100.0) if direction.value == 'LONG' else current_price * (1 + stop_distance / 100.0),
-                'indicators': indicators
-            }
         except Exception as e:
-            self.logger.error(f"Error analyzing {symbol}: {e}")
+            self.logger.error(f"Ошибка анализа {symbol}: {e}")
             return None
 
-    def _calc_stop_distance(self, indicators: dict) -> float:
-        atr = indicators.get('atr_percent', 1.5)
-        return max(1.5, min(1.5 * atr, 8.0))
+    def _evaluate_signals(self, symbol: str, df: pd.DataFrame, ticker: Dict) -> Optional[Dict]:
+        """Оценка сигналов на основе индикаторов"""
+        last = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) > 1 else last
+
+        score = 0
+        direction = None
+
+        # 1. RSI
+        rsi = last.get('rsi', 50)
+        if rsi < 30:
+            score += 2
+            direction = 'LONG'
+        elif rsi > 70:
+            score += -2
+            direction = 'SHORT'
+
+        # 2. MACD пересечение
+        macd = last.get('macd', 0)
+        macd_signal = last.get('macd_signal', 0)
+        prev_macd = prev.get('macd', 0)
+        prev_macd_signal = prev.get('macd_signal', 0)
+
+        if prev_macd <= prev_macd_signal and macd > macd_signal:
+            score += 3
+            direction = 'LONG'
+        elif prev_macd >= prev_macd_signal and macd < macd_signal:
+            score += -3
+            direction = 'SHORT'
+
+        # 3. Цена относительно Bollinger Bands
+        close = last['close']
+        bb_upper = last.get('bb_upper', float('inf'))
+        bb_lower = last.get('bb_lower', 0)
+        if close < bb_lower:
+            score += 1
+            if direction is None:
+                direction = 'LONG'
+        elif close > bb_upper:
+            score += -1
+            if direction is None:
+                direction = 'SHORT'
+
+        # 4. SMA 20/50 пересечение
+        sma20 = last.get('sma_20')
+        sma50 = last.get('sma_50')
+        prev_sma20 = prev.get('sma_20')
+        prev_sma50 = prev.get('sma_50')
+        if sma20 and sma50 and prev_sma20 and prev_sma50:
+            if prev_sma20 <= prev_sma50 and sma20 > sma50:
+                score += 2
+                if direction is None:
+                    direction = 'LONG'
+            elif prev_sma20 >= prev_sma50 and sma20 < sma50:
+                score += -2
+                if direction is None:
+                    direction = 'SHORT'
+
+        # Фильтр по минимальному объёму
+        min_volume = getattr(self.settings, 'min_volume_usdt', 0)
+        if ticker.get('volume_24h', 0) < min_volume:
+            return None
+
+        # Проверяем минимальный счёт
+        min_score = getattr(self.settings, 'min_signal_score', 4)
+        if abs(score) >= min_score and direction is not None:
+            # Нормализуем score для уверенности от 0 до 1
+            confidence = min(abs(score) / 10.0, 1.0)
+            return {
+                "symbol": symbol,
+                "direction": direction,
+                "score": score,
+                "confidence": confidence,
+                "price": ticker['last_price'],
+                "volume_24h": ticker['volume_24h'],
+                "indicators": {
+                    "rsi": rsi,
+                    "macd": macd,
+                    "macd_signal": macd_signal,
+                    "sma20": sma20,
+                    "sma50": sma50,
+                }
+            }
+        return None
