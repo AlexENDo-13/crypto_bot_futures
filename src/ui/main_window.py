@@ -16,7 +16,7 @@ from PyQt5.QtGui import QFont, QIcon
 from src.ui.pages.dashboard import DashboardPage
 from src.ui.pages.positions import PositionsPage
 from src.ui.pages.trades_history import TradesHistoryPage
-from src.ui.pages.config import ConfigPage
+from src.ui.pages.config import ConfigPanel          # ← исправлено: ConfigPanel
 from src.ui.pages.logs import LogsPage
 from src.ui.pages.system_monitor import SystemMonitorPage
 from src.ui.system_tray import SystemTray
@@ -45,20 +45,17 @@ class EngineInitWorker(QThread):
             logger = Logger("TradingBot")
             logger.info("Инициализация компонентов торгового движка...")
 
-            # Создаём клиента API
             api_client = AsyncBingXClient(
                 api_key=self.settings.api_key,
                 secret_key=self.settings.api_secret,
                 demo_mode=self.settings.demo_mode
             )
 
-            # Зависимые компоненты
             data_fetcher = MarketDataFetcher(api_client, self.settings, logger)
             scanner = MarketScanner(api_client, self.settings, logger)
             executor = TradeExecutor(api_client, self.settings, logger)
             risk_manager = RiskManager(api_client, self.settings)
 
-            # Создаём движок с ВСЕМИ обязательными аргументами
             engine = TradingEngine(
                 client=api_client,
                 data_fetcher=data_fetcher,
@@ -91,32 +88,26 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Crypto Trading Bot - BingX Futures")
         self.setMinimumSize(1200, 800)
 
-        # Инициализация UI
         self._init_ui()
         self._init_menu()
         self._init_statusbar()
 
-        # Системный трей
         self.tray = SystemTray(self)
         self.tray.show()
 
-        # Таймер обновления статуса
         self.status_timer = QTimer()
         self.status_timer.timeout.connect(self._update_status)
         self.status_timer.start(1000)
 
-        # Запуск инициализации движка в фоне
         self._start_engine_init()
 
     def _init_ui(self):
-        """Инициализация пользовательского интерфейса"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
-        # Верхняя панель с кнопками управления
         top_panel = QHBoxLayout()
         self.btn_start = QPushButton("▶ Запустить")
         self.btn_start.setEnabled(False)
@@ -140,12 +131,11 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(top_panel)
 
-        # Вкладки
         self.tab_widget = QTabWidget()
         self.dashboard = DashboardPage()
         self.positions_page = PositionsPage()
         self.trades_page = TradesHistoryPage()
-        self.config_page = ConfigPage(self.settings)
+        self.config_page = ConfigPanel(self.settings)   # ← ConfigPanel
         self.logs_page = LogsPage()
         self.monitor_page = SystemMonitorPage()
 
@@ -159,41 +149,32 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.tab_widget)
 
     def _init_menu(self):
-        """Инициализация меню"""
         menubar = self.menuBar()
-
-        # Файл
         file_menu = menubar.addMenu("Файл")
         exit_action = file_menu.addAction("Выход")
         exit_action.triggered.connect(self.close)
 
-        # Вид
         view_menu = menubar.addMenu("Вид")
         view_menu.addAction("Всегда поверх других").setCheckable(True)
 
-        # Помощь
         help_menu = menubar.addMenu("Помощь")
         help_menu.addAction("О программе", self._show_about)
 
     def _init_statusbar(self):
-        """Инициализация строки состояния"""
         self.statusbar = QStatusBar()
         self.setStatusBar(self.statusbar)
         self.statusbar.showMessage("Готов")
 
     def _start_engine_init(self):
-        """Запуск асинхронной инициализации движка"""
         self.worker = EngineInitWorker(self.settings)
         self.worker.finished.connect(self._on_engine_ready)
         self.worker.error.connect(self._on_engine_error)
         self.worker.start()
 
     def _on_engine_ready(self, engine):
-        """Обработчик успешной инициализации движка"""
         self.engine = engine
         self.engine.set_update_callback(self._on_engine_update)
 
-        # Сохраняем ссылки на компоненты для доступа
         self.api_client = engine.client
         self.data_fetcher = engine.data_fetcher
         self.scanner = engine.scanner
@@ -208,14 +189,12 @@ class MainWindow(QMainWindow):
         self.logger.info("Главное окно: движок готов к работе")
 
     def _on_engine_error(self, error_msg):
-        """Обработчик ошибки инициализации"""
         self.label_status.setText("Статус: Ошибка инициализации")
         self.statusbar.showMessage(f"Ошибка: {error_msg}")
         self.logger.error(f"Ошибка инициализации движка: {error_msg}")
         QMessageBox.critical(self, "Ошибка", f"Не удалось инициализировать торговый движок:\n{error_msg}")
 
     def start_engine(self):
-        """Запуск торгового движка"""
         if self.engine:
             try:
                 self.engine.start()
@@ -229,7 +208,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", f"Не удалось запустить движок: {e}")
 
     def stop_engine(self):
-        """Остановка торгового движка"""
         if self.engine:
             try:
                 self.engine.stop()
@@ -243,7 +221,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", f"Ошибка при остановке движка: {e}")
 
     def pause_engine(self):
-        """Пауза торгового движка"""
         if self.engine and hasattr(self.engine, 'pause'):
             try:
                 self.engine.pause()
@@ -257,7 +234,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", f"Не удалось поставить на паузу: {e}")
 
     def resume_engine(self):
-        """Возобновление работы после паузы"""
         if self.engine and hasattr(self.engine, 'resume'):
             try:
                 self.engine.resume()
@@ -271,15 +247,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", f"Не удалось возобновить: {e}")
 
     def _on_engine_update(self, data):
-        """Обновление данных от движка"""
-        # Обновление дашборда
         QMetaObject.invokeMethod(
             self.dashboard, "update_data",
             Qt.QueuedConnection, Q_ARG(object, data)
         )
 
     def _update_status(self):
-        """Периодическое обновление статусной строки"""
         if self.engine:
             try:
                 status = self.engine.get_status()
@@ -292,7 +265,6 @@ class MainWindow(QMainWindow):
                 pass
 
     def _show_about(self):
-        """Показать окно 'О программе'"""
         QMessageBox.about(
             self,
             "О программе",
@@ -302,7 +274,6 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):
-        """Обработчик закрытия окна"""
         if self.engine and self.engine.is_running():
             reply = QMessageBox.question(
                 self, 'Подтверждение',
