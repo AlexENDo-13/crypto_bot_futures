@@ -2,6 +2,7 @@
 """
 BingX Native API Client (без CCXT)
 Полностью асинхронный, с синхронизацией времени, корректной подписью и rate limiting.
+Добавлена поддержка DELETE-запросов для отмены ордеров.
 """
 import time
 import hmac
@@ -9,7 +10,6 @@ import hashlib
 import aiohttp
 import asyncio
 from typing import Dict, Any, Optional
-import json
 
 
 class AsyncBingXClient:
@@ -24,11 +24,9 @@ class AsyncBingXClient:
         self.settings = settings or {}
         self._session: Optional[aiohttp.ClientSession] = None
         self._time_offset = 0
-        # Rate limiter: макс 5 одновременных запросов к API
         self._semaphore = asyncio.Semaphore(5)
-        # Последний запрос для rate limiting
         self._last_request_time = 0
-        self._min_interval = 0.05  # 50ms между запросами
+        self._min_interval = 0.05  # 50ms
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -40,7 +38,6 @@ class AsyncBingXClient:
             await self._session.close()
 
     async def _sync_time(self):
-        """Синхронизирует локальное время с сервером BingX."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"{self.base_url}/openApi/swap/v2/server/time") as resp:
@@ -56,10 +53,6 @@ class AsyncBingXClient:
         return int(time.time() * 1000) + self._time_offset
 
     def _sign(self, params: Dict[str, Any]) -> str:
-        """
-        Создаёт HMAC-SHA256 подпись.
-        Параметры должны быть отсортированы и НЕ содержать 'sign'.
-        """
         query = '&'.join(f"{k}={v}" for k, v in sorted(params.items()))
         return hmac.new(
             self.api_secret.encode('utf-8'),
@@ -74,7 +67,7 @@ class AsyncBingXClient:
         if params is None:
             params = {}
 
-        # Rate limiting: ждём минимальный интервал между запросами
+        # Rate limiting
         async with self._semaphore:
             now = time.time()
             elapsed = now - self._last_request_time
@@ -82,13 +75,12 @@ class AsyncBingXClient:
                 await asyncio.sleep(self._min_interval - elapsed)
             self._last_request_time = time.time()
 
-        # Для приватных запросов добавляем timestamp и подпись
+        # Подпись для приватных запросов
         if signed:
             if self._time_offset == 0:
                 await self._sync_time()
             params['timestamp'] = self._get_timestamp()
             params['apiKey'] = self.api_key
-            # ИСПРАВЛЕНО: подпись вычисляется ДО добавления 'sign' в params
             sign = self._sign(params)
             params['sign'] = sign
 
@@ -97,17 +89,14 @@ class AsyncBingXClient:
 
         try:
             if method == 'GET':
-                async with session.get(
-                    url, params=params,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as resp:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     data = await resp.json()
-            else:
-                # ИСПРАВЛЕНО: POST запросы с query string, не JSON body
-                async with session.post(
-                    url, params=params,
-                    timeout=aiohttp.ClientTimeout(total=30)
-                ) as resp:
+            elif method == 'DELETE':
+                # BingX принимает DELETE с теми же параметрами, что и GET/POST (query string)
+                async with session.delete(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    data = await resp.json()
+            else:  # POST и всё остальное
+                async with session.post(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     data = await resp.json()
 
             if data.get('code') != 0:
@@ -116,7 +105,7 @@ class AsyncBingXClient:
         except aiohttp.ClientError as e:
             raise Exception(f"Network error: {e}")
 
-    # ---------- Публичные методы (без подписи) ----------
+    # ---------- Публичные методы ----------
     async def get_ticker(self, symbol: str) -> Dict:
         symbol = symbol.replace('/', '-')
         return await self._request('/openApi/swap/v2/quote/ticker', {'symbol': symbol}, signed=False)
@@ -137,11 +126,10 @@ class AsyncBingXClient:
         return await self._request('/openApi/swap/v2/quote/premiumIndex', {'symbol': symbol}, signed=False)
 
     async def get_all_contracts(self) -> list:
-        """Получить список всех фьючерсных контрактов."""
         data = await self._request('/openApi/swap/v2/quote/contracts', {}, signed=False)
         return data if isinstance(data, list) else []
 
-    # ---------- Приватные методы (с подписью) ----------
+    # ---------- Приватные методы ----------
     async def get_account_info(self) -> Dict:
         return await self._request('/openApi/swap/v2/user/account', {}, signed=True)
 
@@ -171,11 +159,17 @@ class AsyncBingXClient:
 
         return await self._request('/openApi/swap/v2/trade/order', params, method='POST', signed=True)
 
+    async def cancel_order(self, symbol: str, order_id: str) -> Dict:
+        """Отмена ордера. Использует DELETE на /openApi/swap/v2/trade/order."""
+        symbol = symbol.replace('/', '-')
+        params = {
+            'symbol': symbol,
+            'orderId': order_id,
+        }
+        return await self._request('/openApi/swap/v2/trade/order', params, method='DELETE', signed=True)
+
     async def get_all_tickers(self) -> Dict[str, Dict]:
-        """
-        Возвращает словарь {symbol: ticker_data} для всех активных контрактов.
-        С rate limiting — макс 5 одновременных запросов.
-        """
+        """Возвращает словарь {symbol: ticker_data} для всех активных контрактов."""
         contracts = await self.get_all_contracts()
 
         async def fetch_one(contract):

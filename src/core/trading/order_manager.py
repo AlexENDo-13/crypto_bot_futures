@@ -1,6 +1,6 @@
 """
 Менеджер ордеров для работы с BingX Futures через AsyncBingXClient.
-ИСПРАВЛЕНО: убрано прямое использование _request в обход place_order.
+Использует унифицированные методы клиента, в том числе cancel_order.
 """
 import asyncio
 import time
@@ -51,15 +51,11 @@ class OrderManager:
         position_side: PositionSide = PositionSide.BOTH,
         client_order_id: Optional[str] = None,
     ) -> Optional[Dict]:
-        """
-        Размещение ордера на BingX Futures.
-        ИСПРАВЛЕНО: использует client.place_order вместо прямого _request.
-        """
+        """Размещение ордера на BingX Futures."""
         if not client_order_id:
             client_order_id = f"bot_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
 
         try:
-            # Используем унифицированный метод клиента
             result = await self.client.place_order(
                 symbol=self._clean_symbol(symbol),
                 side=side.value,
@@ -91,16 +87,13 @@ class OrderManager:
             return None
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
-        """Отмена ордера"""
-        symbol_clean = self._clean_symbol(symbol)
+        """Отмена ордера (использует новый метод клиента)."""
         try:
-            # Для отмены используем прямой запрос, т.к. place_order не поддерживает cancel
-            response = await self.client._request(
-                "DELETE", "/api/v1/trade/cancel",
-                {"symbol": symbol_clean, "orderId": order_id},
-                signed=True
+            result = await self.client.cancel_order(
+                symbol=self._clean_symbol(symbol),
+                order_id=order_id,
             )
-            if response and response.get("code") == 0:
+            if result and result.get("orderId"):
                 self.logger.info(f"Ордер {order_id} отменён")
                 if order_id in self.active_orders:
                     del self.active_orders[order_id]
@@ -111,10 +104,10 @@ class OrderManager:
             return False
 
     async def get_order_status(self, symbol: str, order_id: str) -> Optional[Dict]:
-        """Получение статуса ордера"""
+        """Получение статуса ордера."""
         try:
             response = await self.client._request(
-                "GET", "/api/v1/trade/order",
+                "GET", "/openApi/swap/v2/trade/order",
                 {"symbol": self._clean_symbol(symbol), "orderId": order_id},
                 signed=True
             )
@@ -126,13 +119,13 @@ class OrderManager:
             return None
 
     async def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict]:
-        """Список открытых ордеров"""
+        """Список открытых ордеров."""
         try:
             params = {}
             if symbol:
                 params["symbol"] = self._clean_symbol(symbol)
             response = await self.client._request(
-                "GET", "/api/v1/trade/openOrders", params, signed=True
+                "GET", "/openApi/swap/v2/trade/openOrders", params, signed=True
             )
             if response and response.get("code") == 0:
                 return response.get("data", [])
@@ -142,13 +135,13 @@ class OrderManager:
             return []
 
     async def get_positions(self, symbol: Optional[str] = None) -> List[Dict]:
-        """Получение информации о позициях"""
+        """Получение информации о позициях."""
         try:
             params = {}
             if symbol:
                 params["symbol"] = self._clean_symbol(symbol)
             response = await self.client._request(
-                "GET", "/api/v1/trade/position", params, signed=True
+                "GET", "/openApi/swap/v2/trade/position", params, signed=True
             )
             if response and response.get("code") == 0:
                 return response.get("data", [])
@@ -158,10 +151,7 @@ class OrderManager:
             return []
 
     async def close_position(self, symbol: str, position_side: PositionSide = PositionSide.BOTH) -> bool:
-        """
-        Закрытие позиции рыночным ордером.
-        position_side: LONG или SHORT, если точно знаем какое направление.
-        """
+        """Закрытие позиции рыночным ордером."""
         try:
             positions = await self.get_positions(symbol)
             for pos in positions:
@@ -186,10 +176,10 @@ class OrderManager:
             return False
 
     async def _set_leverage(self, symbol: str, leverage: int) -> bool:
-        """Установка кредитного плеча для символа"""
+        """Установка кредитного плеча для символа."""
         try:
             response = await self.client._request(
-                "POST", "/api/v1/trade/leverage",
+                "POST", "/openApi/swap/v2/trade/leverage",
                 {"symbol": self._clean_symbol(symbol), "leverage": str(leverage)},
                 signed=True
             )

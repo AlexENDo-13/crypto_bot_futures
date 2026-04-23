@@ -1,6 +1,7 @@
 """
 Модуль сканирования рынка для поиска торговых сигналов
-С поддержкой мультитаймфреймного анализа
+С поддержкой мультитаймфреймного анализа.
+Теперь сканирует наиболее ликвидные пары (по объёму за 24ч).
 """
 import asyncio
 from typing import List, Dict, Optional
@@ -34,8 +35,8 @@ class MarketScanner:
 
     async def scan_all(self) -> List[Dict]:
         """
-        Сканирует все доступные пары и возвращает список сигналов.
-        Использует мультитаймфрейм если включен в настройках.
+        Сканирует все доступные пары, отбирая наиболее ликвидные по объёму,
+        и возвращает список сигналов.
         """
         symbols = await self.get_active_symbols()
         if not symbols:
@@ -43,7 +44,19 @@ class MarketScanner:
             return []
 
         max_scan = getattr(self.settings, 'max_scan_symbols', 50)
-        symbols_to_scan = symbols[:max_scan]
+
+        # Предварительно загружаем тикеры, чтобы отсортировать по объёму
+        try:
+            all_tickers = await self.client.get_all_tickers()
+            # Сортируем символы по убыванию объёма (quoteVolume), у кого нет – в конец
+            def get_volume(sym):
+                t = all_tickers.get(sym, {})
+                return float(t.get('quoteVolume', 0)) if t else 0
+            symbols_sorted = sorted(symbols, key=get_volume, reverse=True)
+            symbols_to_scan = symbols_sorted[:max_scan]
+        except Exception as e:
+            self.logger.warning(f"Не удалось отсортировать по объёму, используем первые {max_scan} символов: {e}")
+            symbols_to_scan = symbols[:max_scan]
 
         use_mtf = getattr(self.settings, 'use_multi_timeframe', False)
         if use_mtf:
@@ -85,10 +98,7 @@ class MarketScanner:
             return None
 
     async def analyze_symbol_multi_tf(self, symbol: str) -> Optional[Dict]:
-        """
-        Мультитаймфреймный анализ символа.
-        Агрегирует сигналы с нескольких таймфреймов с весами.
-        """
+        """Мультитаймфреймный анализ символа."""
         try:
             timeframes = getattr(self.settings, 'timeframes', ['15m', '1h', '4h'])
             weights = getattr(self.settings, 'timeframe_weights', {
@@ -154,27 +164,25 @@ class MarketScanner:
         score = 0
         direction = None
 
-        # 1. RSI с подтверждением разворота
+        # RSI с подтверждением разворота
         rsi = last.get('rsi', 50)
         ema_12 = last.get('ema_12', last.get('close', 0))
         close = last.get('close', 0)
 
         if rsi < 30:
-            # Требуется подтверждение: цена выше EMA (разворот вверх) или бычья свеча
             if close > ema_12 or (last.get('close', 0) > last.get('open', 0)):
                 score += 2
                 direction = 'LONG'
             else:
-                score += 1  # ослабленный сигнал без подтверждения
+                score += 1
         elif rsi > 70:
-            # Требуется подтверждение: цена ниже EMA (разворот вниз) или медвежья свеча
             if close < ema_12 or (last.get('close', 0) < last.get('open', 0)):
                 score += -2
                 direction = 'SHORT'
             else:
-                score += -1  # ослабленный сигнал без подтверждения
+                score += -1
 
-        # 2. MACD пересечение
+        # MACD пересечение
         macd = last.get('macd', 0)
         macd_signal = last.get('macd_signal', 0)
         prev_macd = prev.get('macd', 0)
@@ -186,7 +194,7 @@ class MarketScanner:
             score += -3
             direction = 'SHORT'
 
-        # 3. Цена относительно Bollinger Bands
+        # Bollinger Bands
         bb_upper = last.get('bb_upper', 0)
         bb_lower = last.get('bb_lower', 0)
         if close <= bb_lower:
@@ -198,7 +206,7 @@ class MarketScanner:
             if direction is None:
                 direction = 'SHORT'
 
-        # 4. Тренд (EMA пересечение)
+        # Тренд по EMA
         ema_26 = last.get('ema_26', 0)
         if ema_12 > ema_26:
             score += 1
@@ -209,13 +217,12 @@ class MarketScanner:
             if direction is None:
                 direction = 'SHORT'
 
-        # 5. Объём
+        # Объём
         volume_ratio = last.get('volume', 0) / (df['volume'].rolling(20).mean().iloc[-1] or 1)
         atr_percent = last.get('atr_percent', 0)
         if volume_ratio > 1.5 and atr_percent > 0.5:
             score += 1 if direction == 'LONG' else -1
 
-        # Проверка на достаточность сигнала
         if direction is None:
             return None
 
