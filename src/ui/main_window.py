@@ -430,6 +430,15 @@ class MainWindow(QMainWindow):
         self.chk_mtf.setStyleSheet("color: #e0e0e0;")
         strat_layout.addRow("", self.chk_mtf)
 
+        self.inp_mtf_required = QSpinBox()
+        self.inp_mtf_required.setRange(1, 3)
+        self.inp_mtf_required.setValue(self.settings.get("mtf_required_agreement", 2))
+        strat_layout.addRow("MTF согласие (мин. TF):", self.inp_mtf_required)
+
+        self.inp_mtf_frames = QLineEdit(",".join(self.settings.get("mtf_timeframes", ["1h", "4h"])))
+        self.inp_mtf_frames.setStyleSheet("QLineEdit { background: #2d2d2d; color: #e0e0e0; border: 1px solid #555; padding: 5px; }")
+        strat_layout.addRow("MTF таймфреймы:", self.inp_mtf_frames)
+
         self.chk_trailing = QCheckBox("Трейлинг-стоп")
         self.chk_trailing.setChecked(self.settings.get("trailing_stop_enabled", True))
         self.chk_trailing.setStyleSheet("color: #e0e0e0;")
@@ -867,6 +876,9 @@ class MainWindow(QMainWindow):
         self.settings.set("min_volume_24h_usdt", self.inp_min_volume.value())
         self.settings.set("min_signal_strength", self.inp_min_signal.value())
         self.settings.set("use_multi_timeframe", self.chk_mtf.isChecked())
+        self.settings.set("mtf_required_agreement", self.inp_mtf_required.value())
+        mtf_frames = [f.strip() for f in self.inp_mtf_frames.text().split(",") if f.strip()]
+        self.settings.set("mtf_timeframes", mtf_frames)
         self.settings.set("trailing_stop_enabled", self.chk_trailing.isChecked())
         self.settings.set("trailing_stop_distance_percent", self.inp_trailing_dist.value())
         self.settings.set("trailing_activation", self.inp_trailing_act.value())

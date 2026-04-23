@@ -227,15 +227,19 @@ class TradingEngine:
         await self._update_real_balance_async()
         self._adapt_to_balance()
 
-        if not self.settings.get("demo_mode") and self.real_balance <= 0:
-            self.logger.critical(
-                "❌ Реальный режим включен, но баланс 0 или ключи не работают. "
-                "Бот не будет торговать. Проверьте API ключи в настройках."
-            )
-            if self.telegram:
-                self.telegram.send_sync("🚨 Бот остановлен: API ключи не работают или баланс 0")
-            self._running = False
-            return
+        if not self.settings.get("demo_mode"):
+            if self.real_balance <= 0:
+                self.logger.critical(
+                    "❌ Реальный режим включен, но баланс фьючерсов = 0 USDT. "
+                    "Переведите USDT на фьючерсный счёт BingX. "
+                    "Бот не будет торговать."
+                )
+                if self.telegram:
+                    self.telegram.send_sync("🚨 Бот остановлен: баланс фьючерсов = 0 USDT. Переведите средства на фьючерсный счёт.")
+                self._running = False
+                return
+            else:
+                self.logger.info(f"✅ Реальный баланс фьючерсов: {self.real_balance:.4f} USDT. Бот готов к торговле.")
 
         self.risk_controller.daily_start_balance = self.balance
 
@@ -402,40 +406,65 @@ class TradingEngine:
 
         old_lev = self._adaptive_leverage
         old_risk = self._adaptive_risk
+        old_atr = getattr(self.scanner, "current_min_atr", 1.0)
 
         # Micro accounts (< $100)
         if balance < 100:
             self._adaptive_leverage = min(20, int(self.settings.get("max_leverage", 10)))
             self._adaptive_risk = min(2.0, float(self.settings.get("max_risk_per_trade", 1.0)))
             self._adaptive_scan_interval = max(60, self.scan_interval // 2)
+            # Lower ATR for micro accounts to find more opportunities
+            self.scanner.current_min_atr = max(0.15, float(self.settings.get("min_atr_percent", 0.5)) * 0.5)
+            self.scanner.current_min_adx = max(8.0, float(self.settings.get("min_adx", 10)) * 0.8)
+            self.scanner.current_min_signal = max(0.15, float(self.settings.get("min_signal_strength", 0.25)) * 0.7)
+            self.scanner.current_min_volume = max(20000, float(self.settings.get("min_volume_24h_usdt", 50000)) * 0.5)
         # Small accounts ($100 - $1000)
         elif balance < 1000:
             self._adaptive_leverage = min(15, int(self.settings.get("max_leverage", 10)))
             self._adaptive_risk = float(self.settings.get("max_risk_per_trade", 1.0))
             self._adaptive_scan_interval = self.scan_interval
+            self.scanner.current_min_atr = max(0.3, float(self.settings.get("min_atr_percent", 0.5)) * 0.8)
+            self.scanner.current_min_adx = max(10.0, float(self.settings.get("min_adx", 10)) * 0.9)
+            self.scanner.current_min_signal = max(0.2, float(self.settings.get("min_signal_strength", 0.25)) * 0.85)
+            self.scanner.current_min_volume = max(30000, float(self.settings.get("min_volume_24h_usdt", 50000)) * 0.7)
         # Medium accounts ($1000 - $10000)
         elif balance < 10000:
             self._adaptive_leverage = min(10, int(self.settings.get("max_leverage", 10)))
             self._adaptive_risk = min(1.5, float(self.settings.get("max_risk_per_trade", 1.0)))
             self._adaptive_scan_interval = self.scan_interval
+            self.scanner.current_min_atr = float(self.settings.get("min_atr_percent", 0.5))
+            self.scanner.current_min_adx = float(self.settings.get("min_adx", 10))
+            self.scanner.current_min_signal = float(self.settings.get("min_signal_strength", 0.25))
+            self.scanner.current_min_volume = float(self.settings.get("min_volume_24h_usdt", 50000))
         # Large accounts (>$10000)
         else:
             self._adaptive_leverage = min(5, int(self.settings.get("max_leverage", 10)))
             self._adaptive_risk = min(1.0, float(self.settings.get("max_risk_per_trade", 1.0)))
             self._adaptive_scan_interval = self.scan_interval * 2
+            self.scanner.current_min_atr = float(self.settings.get("min_atr_percent", 0.5)) * 1.2
+            self.scanner.current_min_adx = float(self.settings.get("min_adx", 10)) * 1.1
+            self.scanner.current_min_signal = float(self.settings.get("min_signal_strength", 0.25)) * 1.1
+            self.scanner.current_min_volume = float(self.settings.get("min_volume_24h_usdt", 50000)) * 1.5
 
-        if old_lev != self._adaptive_leverage or old_risk != self._adaptive_risk:
+        if (old_lev != self._adaptive_leverage or old_risk != self._adaptive_risk or 
+            old_atr != self.scanner.current_min_atr):
             self.logger.info(
                 f"🔄 Адаптация под депозит ${balance:.2f}: "
                 f"плечо {old_lev}x → {self._adaptive_leverage}x, "
                 f"риск {old_risk}% → {self._adaptive_risk}%, "
-                f"интервал сканирования {self._adaptive_scan_interval}с"
+                f"ATR {old_atr:.2f}% → {self.scanner.current_min_atr:.2f}%, "
+                f"ADX {self.scanner.current_min_adx:.1f}, "
+                f"Signal {self.scanner.current_min_signal:.2f}, "
+                f"Vol {self.scanner.current_min_volume:,.0f}"
             )
             self.logger.log_state("adaptive_params", {
                 "balance": balance,
                 "leverage": self._adaptive_leverage,
                 "risk": self._adaptive_risk,
-                "scan_interval": self._adaptive_scan_interval,
+                "atr": self.scanner.current_min_atr,
+                "adx": self.scanner.current_min_adx,
+                "signal": self.scanner.current_min_signal,
+                "volume": self.scanner.current_min_volume,
             })
 
     def _adapt_to_market(self):
@@ -454,7 +483,19 @@ class TradingEngine:
                 if not self.settings.get("demo_mode"):
                     self.balance = self.real_balance
                 self._last_balance_update = time.time()
-                self.logger.debug(f"Баланс обновлён: {self.real_balance:.2f} USDT")
+                self.logger.info(
+                    f"💰 Баланс обновлён: {self.real_balance:.4f} USDT "
+                    f"(available: {account.get('available', 0):.4f}, "
+                    f"used: {account.get('used', 0):.4f}, "
+                    f"equity: {account.get('equity', 0):.4f})"
+                )
+                self.logger.log_state("balance", {
+                    "total": self.real_balance,
+                    "available": account.get("available", 0),
+                    "used": account.get("used", 0),
+                    "equity": account.get("equity", 0),
+                    "unrealized": account.get("unrealizedProfit", 0),
+                })
             else:
                 if not self.settings.get("demo_mode"):
                     self.logger.warning(f"⚠️ Не удалось получить баланс: {account}")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Settings — расширенный менеджер настроек с полными дефолтами.
+Settings — расширенный менеджер настроек с адаптивными дефолтами.
 """
 import os
 import json
@@ -19,14 +19,14 @@ class Settings:
         "timeframe": "15m",
         "scan_interval_minutes": 5,
         "max_positions": 2,
-        "min_adx": 15,
-        "min_atr_percent": 1.0,
-        "min_volume_24h_usdt": 100000.0,
+        "min_adx": 10,
+        "min_atr_percent": 0.5,
+        "min_volume_24h_usdt": 50000.0,
         "min_volume_ratio": 0.8,
         "max_funding_rate": 0.0,
         "use_spread_filter": True,
-        "max_spread_percent": 0.3,
-        "min_signal_strength": 0.35,
+        "max_spread_percent": 0.5,
+        "min_signal_strength": 0.25,
         "min_trend_score": 1.5,
         "max_risk_per_trade": 1.0,
         "max_total_risk_percent": 5.0,
@@ -46,6 +46,8 @@ class Settings:
         "adaptive_tp_enabled": True,
         "max_hold_time_minutes": 240,
         "use_multi_timeframe": True,
+        "mtf_timeframes": ["1h", "4h"],
+        "mtf_required_agreement": 2,
         "use_bollinger_filter": True,
         "use_candle_patterns": True,
         "use_macd_indicator": True,
@@ -108,7 +110,6 @@ class Settings:
                     self._data.update(file_data)
                 except json.JSONDecodeError:
                     pass
-        # Ensure all defaults exist
         for key, val in self.DEFAULTS.items():
             if key not in self._data:
                 self._data[key] = val

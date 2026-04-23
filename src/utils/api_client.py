@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 AsyncBingXClient — исправленный клиент BingX API.
-Корректная подпись HMAC-SHA256 для v2 эндпоинтов.
+Корректная подпись HMAC-SHA256 + правильный парсинг баланса.
 """
 import aiohttp
 import asyncio
@@ -18,7 +18,7 @@ logger = logging.getLogger("AsyncBingXClient")
 
 
 class AsyncBingXClient:
-    """Асинхронный клиент BingX Futures API v2 с корректной подписью."""
+    """Асинхронный клиент BingX Futures API v2."""
 
     BASE_URL = "https://open-api.bingx.com"
     DEMO_URL = "https://open-api-vst.bingx.com"
@@ -89,7 +89,6 @@ class AsyncBingXClient:
             self._session = None
 
     async def _sync_server_time(self, force: bool = False):
-        """Синхронизация времени с сервером BingX."""
         if not force and self._server_time_offset != 0:
             return
         try:
@@ -107,11 +106,9 @@ class AsyncBingXClient:
             self._server_time_offset = 0
 
     def _get_timestamp(self) -> int:
-        """Возвращает timestamp с учётом смещения сервера."""
         return int(time.time() * 1000) + self._server_time_offset
 
     def _sign(self, query_string: str) -> str:
-        """Создаёт подпись HMAC-SHA256 из query string."""
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
             query_string.encode('utf-8'),
@@ -128,12 +125,10 @@ class AsyncBingXClient:
         retries: int = 3,
         retry_delay: float = 1.0
     ) -> Optional[Dict]:
-        """Универсальный запрос с корректной подписью BingX."""
         session = await self._get_session()
         params = params or {}
         headers = {"X-BX-APIKEY": self.api_key}
 
-        # Rate limiting
         now = time.time()
         elapsed = now - self._last_request_time
         if elapsed < self._rate_limit_delay:
@@ -144,18 +139,11 @@ class AsyncBingXClient:
         for attempt in range(retries):
             try:
                 if signed:
-                    # BingX signature: sort all params, create query string, sign it, append signature
                     params["timestamp"] = self._get_timestamp()
                     params["recvWindow"] = 5000
-
-                    # Sort alphabetically and create query string (WITHOUT signature)
                     sorted_params = sorted(params.items())
                     query_string = urlencode(sorted_params)
-
-                    # Generate signature from query string
                     signature = self._sign(query_string)
-
-                    # Build final URL: query_string + &signature=...
                     full_query = f"{query_string}&signature={signature}"
                     request_url = f"{self.base_url}{path}?{full_query}"
 
@@ -171,7 +159,6 @@ class AsyncBingXClient:
                     else:
                         raise ValueError(f"Unsupported HTTP method: {method}")
                 else:
-                    # Unsigned request
                     request_url = f"{self.base_url}{path}"
                     if method.upper() == "GET":
                         async with session.get(request_url, params=params, headers=headers) as resp:
@@ -191,14 +178,12 @@ class AsyncBingXClient:
                     logger.error(f"Невалидный JSON ответ: {text[:200]}")
                     return None
 
-                # Check for BingX errors
                 if data and data.get("code") != 0:
                     code = data.get("code")
                     msg = data.get("msg", "Unknown error")
                     error_desc = self.ERROR_CODES.get(code, "Unknown error")
                     logger.warning(f"BingX API Error {code}: {msg} ({error_desc})")
 
-                    # Retryable errors
                     if code in (100001, 100002, 100003, 100005, 80001):
                         if attempt < retries - 1:
                             await self._sync_server_time(force=True)
@@ -233,7 +218,6 @@ class AsyncBingXClient:
         return await self._request("GET", "/openApi/swap/v2/server/time", signed=False)
 
     async def get_symbol_info(self, symbol: str = None) -> Optional[Dict]:
-        """Получает информацию о торговых парах (stepSize, minNotional и т.д.)."""
         cache_ttl = 300
         now = time.time()
 
@@ -257,7 +241,6 @@ class AsyncBingXClient:
         return result
 
     async def get_ticker(self, symbol: str) -> Optional[Dict]:
-        """Получает текущую цену и объём."""
         result = await self._request(
             "GET", "/openApi/swap/v2/quote/ticker",
             params={"symbol": symbol}, signed=False
@@ -280,7 +263,6 @@ class AsyncBingXClient:
         return None
 
     async def get_all_tickers(self) -> List[Dict]:
-        """Получает все тикеры."""
         result = await self._request("GET", "/openApi/swap/v2/quote/ticker", signed=False)
         tickers = []
         if result and result.get("code") == 0:
@@ -297,7 +279,6 @@ class AsyncBingXClient:
         return tickers
 
     async def get_klines(self, symbol: str, interval: str = "15m", limit: int = 100) -> List[Dict]:
-        """Получает свечи (OHLCV)."""
         result = await self._request(
             "GET", "/openApi/swap/v3/quote/klines",
             params={"symbol": symbol, "interval": interval, "limit": limit},
@@ -329,7 +310,6 @@ class AsyncBingXClient:
         return []
 
     async def get_funding_rate(self, symbol: str) -> Optional[Dict]:
-        """Получает текущую ставку фандинга."""
         result = await self._request(
             "GET", "/openApi/swap/v2/quote/premiumIndex",
             params={"symbol": symbol}, signed=False
@@ -342,7 +322,6 @@ class AsyncBingXClient:
         return {"fundingRate": 0.0}
 
     async def get_order_book(self, symbol: str, limit: int = 5) -> Optional[Dict]:
-        """Получает стакан ордеров."""
         result = await self._request(
             "GET", "/openApi/swap/v2/quote/depth",
             params={"symbol": symbol, "limit": limit}, signed=False
@@ -358,36 +337,49 @@ class AsyncBingXClient:
     # ========== PRIVATE API METHODS ==========
 
     async def get_account_info(self) -> Optional[Dict]:
-        """Получает баланс счёта."""
+        """Получает баланс счёта. BingX возвращает data.balance как dict, не list."""
         result = await self._request("GET", "/openApi/swap/v2/user/balance", signed=True)
         if result and result.get("code") == 0:
             data = result.get("data", {})
-            balances = data.get("balance", []) if isinstance(data.get("balance"), list) else []
-            if not balances and isinstance(data, dict):
-                usdt_balance = data.get("availableMargin", data.get("balance", 0))
-                if isinstance(usdt_balance, (int, float, str)):
-                    return {
-                        "balance": float(usdt_balance),
-                        "available": float(data.get("availableMargin", usdt_balance)),
-                        "used": float(data.get("usedMargin", 0)),
-                    }
-            for bal in balances:
-                if bal.get("asset", "").upper() == "USDT":
-                    return {
-                        "balance": float(bal.get("balance", 0)),
-                        "available": float(bal.get("availableBalance", bal.get("balance", 0))),
-                        "used": float(bal.get("usedMargin", 0)),
-                    }
+            balance_data = data.get("balance")
+
+            # BingX returns balance as a dict (not a list)
+            if isinstance(balance_data, dict):
+                return {
+                    "balance": float(balance_data.get("balance", 0) or 0),
+                    "available": float(balance_data.get("availableMargin", balance_data.get("balance", 0)) or 0),
+                    "used": float(balance_data.get("usedMargin", 0) or 0),
+                    "equity": float(balance_data.get("equity", 0) or 0),
+                    "unrealizedProfit": float(balance_data.get("unrealizedProfit", 0) or 0),
+                    "realisedProfit": float(balance_data.get("realisedProfit", 0) or 0),
+                    "asset": balance_data.get("asset", "USDT"),
+                }
+
+            # Fallback: some versions may return list
+            if isinstance(balance_data, list):
+                for bal in balance_data:
+                    if isinstance(bal, dict) and bal.get("asset", "").upper() == "USDT":
+                        return {
+                            "balance": float(bal.get("balance", 0) or 0),
+                            "available": float(bal.get("availableMargin", bal.get("balance", 0)) or 0),
+                            "used": float(bal.get("usedMargin", 0) or 0),
+                            "equity": float(bal.get("equity", 0) or 0),
+                            "asset": bal.get("asset", "USDT"),
+                        }
+
+            # Direct access fallback
             if isinstance(data, dict):
                 return {
-                    "balance": float(data.get("balance", 0)),
-                    "available": float(data.get("availableMargin", data.get("balance", 0))),
-                    "used": float(data.get("usedMargin", 0)),
+                    "balance": float(data.get("balance", 0) or 0),
+                    "available": float(data.get("availableMargin", data.get("balance", 0)) or 0),
+                    "used": float(data.get("usedMargin", 0) or 0),
+                    "equity": float(data.get("equity", 0) or 0),
                 }
+
+        logger.error(f"❌ Не удалось распарсить баланс. Ответ: {result}")
         return None
 
     async def get_positions(self, symbol: str = None) -> List[Dict]:
-        """Получает открытые позиции."""
         params = {}
         if symbol:
             params["symbol"] = symbol
@@ -413,7 +405,6 @@ class AsyncBingXClient:
         return positions
 
     async def set_leverage(self, symbol: str, leverage: int) -> bool:
-        """Устанавливает плечо."""
         result = await self._request(
             "POST", "/openApi/swap/v2/trade/leverage",
             params={"symbol": symbol, "leverage": str(leverage), "side": "BOTH"}, signed=True
@@ -427,7 +418,6 @@ class AsyncBingXClient:
             return False
 
     async def set_margin_mode(self, symbol: str, margin_mode: str = "CROSSED") -> bool:
-        """Устанавливает режим маржи (ISOLATED или CROSSED)."""
         result = await self._request(
             "POST", "/openApi/swap/v2/trade/marginType",
             params={"symbol": symbol, "marginType": margin_mode}, signed=True
@@ -455,7 +445,6 @@ class AsyncBingXClient:
         take_profit: float = None,
         client_order_id: str = None,
     ) -> Optional[Dict]:
-        """Размещает ордер."""
         params = {
             "symbol": symbol,
             "side": side.upper(),
@@ -471,7 +460,6 @@ class AsyncBingXClient:
         if client_order_id:
             params["newClientOrderId"] = client_order_id
 
-        # Attach SL/TP if provided
         if stop_loss is not None:
             params["stopLoss"] = json.dumps({"stopPrice": str(stop_loss), "type": "STOP_MARKET", "workingType": "MARK_PRICE"})
         if take_profit is not None:
@@ -499,7 +487,6 @@ class AsyncBingXClient:
             return None
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
-        """Отменяет ордер."""
         result = await self._request(
             "DELETE", "/openApi/swap/v2/trade/order",
             params={"symbol": symbol, "orderId": order_id}, signed=True
@@ -514,7 +501,6 @@ class AsyncBingXClient:
         return False
 
     async def cancel_all_orders(self, symbol: str = None) -> bool:
-        """Отменяет все ордера."""
         params = {}
         if symbol:
             params["symbol"] = symbol
@@ -528,7 +514,6 @@ class AsyncBingXClient:
         return False
 
     async def close_position(self, symbol: str, position_side: str = "BOTH") -> bool:
-        """Закрывает позицию рыночным ордером."""
         positions = await self.get_positions(symbol)
         for pos in positions:
             if pos.get("symbol") == symbol:
@@ -548,7 +533,6 @@ class AsyncBingXClient:
         return False
 
     def set_demo_mode(self, demo_mode: bool):
-        """Переключает режим."""
         if self.demo_mode == demo_mode:
             return
         self.demo_mode = demo_mode
@@ -556,7 +540,6 @@ class AsyncBingXClient:
         logger.info(f"Режим переключён на {'демо' if demo_mode else 'реальный'}")
 
     def get_symbol_specs(self, symbol: str) -> Optional[Dict]:
-        """Возвращает спецификации символа (stepSize, minNotional)."""
         info = self._symbol_info_cache.get(symbol)
         if info:
             return {
