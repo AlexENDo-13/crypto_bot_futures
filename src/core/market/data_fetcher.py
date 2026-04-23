@@ -1,167 +1,77 @@
-"""
-Модуль получения рыночных данных с BingX
-Использует AsyncBingXClient для асинхронных запросов
-Исправлен фильтр контрактов – теперь принимает разные имена полей.
-"""
-import asyncio
-import time
-from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import pandas as pd
-import numpy as np
-from src.utils.api_client import AsyncBingXClient
-from src.config.settings import Settings
+from typing import Dict, Any, List, Optional
 from src.core.logger import BotLogger
 
+# Динамический импорт решает проблему кольцевой зависимости (из-за которой вылетал UI)
+def _compute_indicators(df):
+    try:
+        from src.core.market.indicators import compute_indicators
+        return compute_indicators(df)
+    except ImportError:
+        return {}
 
-class MarketDataFetcher:
-    def __init__(self, client: AsyncBingXClient, settings: Settings, logger: BotLogger):
+class DataFetcher:
+    """
+    Класс для получения рыночных данных с BingX API.
+    Адаптирован для реальной торговли и работы без ошибок импорта.
+    """
+    def __init__(self, client, logger: BotLogger, settings: dict):
         self.client = client
-        self.settings = settings
         self.logger = logger
-        self._klines_cache: Dict[str, pd.DataFrame] = {}
-        self._ticker_cache: Dict[str, Dict] = {}
-        self._last_update: Dict[str, float] = {}
-        self._cache_ttl = 5
+        self.settings = settings
 
-    async def get_all_usdt_contracts(self) -> List[str]:
-        """
-        Получает список всех фьючерсных контрактов, деноминированных в USDT.
-        Использует гибкое сопоставление полей (quoteCurrency / quoteAsset / settle).
-        """
+    async def get_all_usdt_contracts(self) -> List[Dict]:
+        """Получает список всех бессрочных фьючерсов."""
         try:
-            contracts = await self.client.get_all_contracts()
-            symbols = []
-            for c in contracts:
-                # Проверяем, что контракт USDT-маржированный
-                quote = (c.get('quoteCurrency') or c.get('quoteAsset') or
-                         c.get('settleCurrency') or c.get('quote', '')).upper()
-                if 'USDT' not in quote:
-                    continue
-                # Проверяем статус (1 или "TRADING")
-                status = c.get('status') or c.get('contractStatus')
-                if status != 1 and str(status).upper() != 'TRADING':
-                    continue
-                sym = c.get('symbol') or c.get('pair')
-                if sym:
-                    symbols.append(sym)
-            self.logger.info(f"Загружено {len(symbols)} контрактов USDT")
-            return symbols
+            # Нативный запрос напрямую в API BingX для надежности
+            import aiohttp
+            url = "https://open-api.bingx.com/openApi/swap/v2/quote/contracts"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    data = await resp.json()
+                    if data.get('code') == 0:
+                        contracts = []
+                        for c in data.get('data',[]):
+                            symbol = c.get('symbol', '')
+                            # Берем только USDT-фьючерсы, исключая щиткоины/акции (NC)
+                            if symbol.endswith('-USDT') and not symbol.startswith('NC'):
+                                contracts.append(c)
+                        return contracts
+            return[]
         except Exception as e:
-            self.logger.error(f"Исключение при получении контрактов: {e}")
-            return []
+            self.logger.error(f"Ошибка получения списка контрактов: {e}")
+            return[]
 
-    async def fetch_klines(self, symbol: str, interval: str = "1h", limit: int = 100) -> Optional[pd.DataFrame]:
-        cache_key = f"{symbol}_{interval}_{limit}"
-        now = time.time()
-        if cache_key in self._klines_cache and (now - self._last_update.get(cache_key, 0)) < self._cache_ttl:
-            return self._klines_cache[cache_key]
-
+    async def fetch_klines_async(self, session, symbol: str, interval: str, limit: int = 100) -> Optional[pd.DataFrame]:
+        """Загрузка свечей и упаковка их в DataFrame для анализа."""
         try:
-            symbol_clean = symbol.replace(":USDT", "").replace("/", "-").upper()
-            if not symbol_clean.endswith("-USDT"):
-                symbol_clean = f"{symbol_clean}-USDT"
-            klines = await self.client.get_klines(symbol_clean, interval, limit)
+            klines = await self.client.get_klines(symbol.replace("/", "-"), interval=interval, limit=limit)
             if not klines:
                 return None
-
-            df = pd.DataFrame(klines, columns=["openTime", "open", "high", "low", "close", "volume", "closeTime"])
-            numeric_cols = ["open", "high", "low", "close", "volume"]
-            df[numeric_cols] = df[numeric_cols].astype(float)
-            df["openTime"] = pd.to_datetime(df["openTime"], unit="ms")
-            df["closeTime"] = pd.to_datetime(df["closeTime"], unit="ms")
-            df.set_index("openTime", inplace=True)
-            df.sort_index(inplace=True)
-
-            self._klines_cache[cache_key] = df
-            self._last_update[cache_key] = now
+                
+            df = pd.DataFrame(klines)
+            if df.empty:
+                return None
+                
+            if 'time' in df.columns:
+                df.rename(columns={'time': 'timestamp'}, inplace=True)
+                
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                if col in df.columns:
+                    df[col] = df[col].astype(float)
+                    
+            df.sort_values('timestamp', inplace=True)
             return df
         except Exception as e:
-            self.logger.error(f"Ошибка в fetch_klines для {symbol}: {e}")
+            self.logger.error(f"Ошибка загрузки свечей {symbol}: {e}")
             return None
 
-    async def fetch_ticker(self, symbol: str) -> Optional[Dict]:
-        cache_key = f"ticker_{symbol}"
-        now = time.time()
-        if cache_key in self._ticker_cache and (now - self._last_update.get(cache_key, 0)) < self._cache_ttl:
-            return self._ticker_cache[cache_key]
-
-        try:
-            symbol_clean = symbol.replace(":USDT", "").replace("/", "-").upper()
-            if not symbol_clean.endswith("-USDT"):
-                symbol_clean = f"{symbol_clean}-USDT"
-            data = await self.client.get_ticker(symbol_clean)
-            if data:
-                ticker = {
-                    "symbol": symbol,
-                    "last_price": float(data.get("lastPrice", 0)),
-                    "bid": float(data.get("bidPrice", 0)),
-                    "ask": float(data.get("askPrice", 0)),
-                    "volume_24h": float(data.get("quoteVolume", data.get("volume", 0))),
-                    "high_24h": float(data.get("highPrice", 0)),
-                    "low_24h": float(data.get("lowPrice", 0)),
-                    "change_percent": float(data.get("priceChangePercent", 0)),
-                }
-                self._ticker_cache[cache_key] = ticker
-                self._last_update[cache_key] = now
-                return ticker
-            return None
-        except Exception as e:
-            self.logger.error(f"Ошибка fetch_ticker для {symbol}: {e}")
-            return None
-
-    async def fetch_order_book(self, symbol: str, limit: int = 20) -> Optional[Dict]:
-        try:
-            symbol_clean = symbol.replace(":USDT", "").replace("/", "-").upper()
-            if not symbol_clean.endswith("-USDT"):
-                symbol_clean = f"{symbol_clean}-USDT"
-            data = await self.client.get_order_book(symbol_clean, limit)
-            if data:
-                return {
-                    "bids": [[float(p), float(q)] for p, q in data.get("bids", [])],
-                    "asks": [[float(p), float(q)] for p, q in data.get("asks", [])],
-                }
-            return None
-        except Exception as e:
-            self.logger.error(f"Ошибка fetch_order_book для {symbol}: {e}")
-            return None
-
-    async def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
-            return df
-
-        df = df.copy()
-        try:
-            df['sma_20'] = df['close'].rolling(window=20).mean()
-            df['sma_50'] = df['close'].rolling(window=50).mean()
-            df['ema_12'] = df['close'].ewm(span=12, adjust=False).mean()
-            df['ema_26'] = df['close'].ewm(span=26, adjust=False).mean()
-
-            delta = df['close'].diff()
-            gain = delta.where(delta > 0, 0.0)
-            loss = (-delta.where(delta < 0, 0.0))
-            alpha = 1.0 / 14
-            avg_gain = gain.ewm(alpha=alpha, adjust=False).mean()
-            avg_loss = loss.ewm(alpha=alpha, adjust=False).mean()
-            rs = avg_gain / avg_loss.replace(0, np.nan)
-            df['rsi'] = 100 - (100 / (1 + rs))
-
-            df['macd'] = df['ema_12'] - df['ema_26']
-            df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-            df['macd_hist'] = df['macd'] - df['macd_signal']
-
-            df['bb_mid'] = df['close'].rolling(window=20).mean()
-            bb_std = df['close'].rolling(window=20).std()
-            df['bb_upper'] = df['bb_mid'] + (bb_std * 2)
-            df['bb_lower'] = df['bb_mid'] - (bb_std * 2)
-
-            high_low = df['high'] - df['low']
-            high_close = (df['high'] - df['close'].shift()).abs()
-            low_close = (df['low'] - df['close'].shift()).abs()
-            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            df['atr'] = tr.rolling(window=14).mean()
-            df['atr_percent'] = (df['atr'] / df['close']) * 100
-        except Exception as e:
-            self.logger.error(f"Ошибка расчёта индикаторов: {e}")
-
-        return df
+    def compute_indicators(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Безопасный расчет индикаторов."""
+        if df is None or df.empty or len(df) < 14:
+            return {}
+        return _compute_indicators(df)

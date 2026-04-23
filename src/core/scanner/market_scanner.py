@@ -1,251 +1,181 @@
-"""
-Модуль сканирования рынка для поиска торговых сигналов
-С поддержкой мультитаймфреймного анализа.
-Теперь сканирует наиболее ликвидные пары (по объёму за 24ч).
-"""
-import asyncio
-from typing import List, Dict, Optional
-import pandas as pd
-import numpy as np
-from src.core.market.data_fetcher import MarketDataFetcher
-from src.utils.api_client import AsyncBingXClient
-from src.config.settings import Settings
-from src.core.logger import BotLogger
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
+import asyncio
+from typing import List, Dict
+from src.core.logger import BotLogger
+from src.config.settings import Settings
 
 class MarketScanner:
-    """Сканер рынка: ищет сигналы на основе технического анализа"""
-
-    def __init__(self, client: AsyncBingXClient, settings: Settings, logger: BotLogger):
-        self.client = client
+    """
+    Адаптивный сканер рынка.
+    Сам подстраивает фильтры под волатильность, чтобы стабильно находить сделки.
+    """
+    def __init__(self, settings: Settings, logger: BotLogger, data_fetcher, risk_controller, strategy_engine):
         self.settings = settings
         self.logger = logger
-        self.data_fetcher = MarketDataFetcher(client, settings, logger)
-        self.active_symbols: List[str] = []
-        self._symbols_last_update = 0
-        self._symbols_cache_ttl = 3600  # 1 час
+        self.data_fetcher = data_fetcher
+        self.risk_controller = risk_controller
+        self.strategy_engine = strategy_engine
+        
+        self.empty_scans_count = 0
+        # Базовые пороги
+        self.current_min_adx = float(settings.get("min_adx", 15))
+        self.current_min_atr = float(settings.get("min_atr_percent", 1.0))
+        
+    async def scan_async(self, balance: float, max_pairs: int = 100, max_asset_price_ratio: float = 0.5, ignore_session_check: bool = False) -> List[Dict]:
+        self.logger.info(f"🔎 Сканирование рынка (Фильтры: ADX >= {self.current_min_adx:.1f}, ATR >= {self.current_min_atr:.2f}%)")
+        
+        contracts = await self.data_fetcher.get_all_usdt_contracts()
+        if not contracts:
+            self.logger.warning("❌ Не удалось получить список торговых пар с биржи")
+            return[]
 
-    async def get_active_symbols(self) -> List[str]:
-        """Получить список активных USDT-фьючерсов."""
-        now = asyncio.get_event_loop().time()
-        if not self.active_symbols or (now - self._symbols_last_update) > self._symbols_cache_ttl:
-            self.active_symbols = await self.data_fetcher.get_all_usdt_contracts()
-            self._symbols_last_update = now
-        return self.active_symbols
+        # АВТОАДАПТАЦИЯ: если бот не может найти сделку 3 скана подряд, он слегка смягчает фильтры
+        if self.empty_scans_count >= 3:
+            self.current_min_adx = max(10.0, self.current_min_adx * 0.9)
+            self.current_min_atr = max(0.5, self.current_min_atr * 0.9)
+            self.logger.info(f"🔄 Адаптация: фильтры смягчены для поиска входа (ADX={self.current_min_adx:.1f}, ATR={self.current_min_atr:.2f}%)")
+            self.empty_scans_count = 0
 
-    async def scan_all(self) -> List[Dict]:
-        """
-        Сканирует все доступные пары, отбирая наиболее ликвидные по объёму,
-        и возвращает список сигналов.
-        """
-        symbols = await self.get_active_symbols()
-        if not symbols:
-            self.logger.warning("Нет доступных символов для сканирования")
-            return []
-
-        max_scan = getattr(self.settings, 'max_scan_symbols', 50)
-
-        # Предварительно загружаем тикеры, чтобы отсортировать по объёму
-        try:
-            all_tickers = await self.client.get_all_tickers()
-            # Сортируем символы по убыванию объёма (quoteVolume), у кого нет – в конец
-            def get_volume(sym):
-                t = all_tickers.get(sym, {})
-                return float(t.get('quoteVolume', 0)) if t else 0
-            symbols_sorted = sorted(symbols, key=get_volume, reverse=True)
-            symbols_to_scan = symbols_sorted[:max_scan]
-        except Exception as e:
-            self.logger.warning(f"Не удалось отсортировать по объёму, используем первые {max_scan} символов: {e}")
-            symbols_to_scan = symbols[:max_scan]
-
-        use_mtf = getattr(self.settings, 'use_multi_timeframe', False)
-        if use_mtf:
-            tasks = [self.analyze_symbol_multi_tf(sym) for sym in symbols_to_scan]
-        else:
-            tasks = [self.analyze_symbol(sym) for sym in symbols_to_scan]
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        signals = []
+        candidates =[]
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for c in contracts[:max_pairs]:
+                symbol = c.get('symbol', '').replace('-', '/')
+                tasks.append(self._analyze_symbol(session, symbol))
+                
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
         for res in results:
-            if isinstance(res, dict) and res.get("signal"):
-                signals.append(res)
-            elif isinstance(res, Exception):
-                self.logger.error(f"Ошибка при анализе: {res}")
-
-        signals.sort(key=lambda x: x.get("score", 0), reverse=True)
-        return signals
-
-    async def analyze_symbol(self, symbol: str, timeframe: str = None) -> Optional[Dict]:
-        """Анализирует один символ на наличие сигнала (один таймфрейм)."""
-        try:
-            if timeframe is None:
-                timeframe = getattr(self.settings, 'default_timeframe', '1h')
-            df = await self.data_fetcher.fetch_klines(symbol, timeframe, limit=100)
-            if df is None or df.empty:
-                return None
-
-            if 'rsi' not in df.columns:
-                df = await self.data_fetcher.calculate_indicators(df)
-
-            ticker = await self.data_fetcher.fetch_ticker(symbol)
-            if not ticker:
-                return None
-
-            signal = self._evaluate_signals(symbol, df, ticker)
-            return signal
-        except Exception as e:
-            self.logger.error(f"Ошибка анализа {symbol}: {e}")
-            return None
-
-    async def analyze_symbol_multi_tf(self, symbol: str) -> Optional[Dict]:
-        """Мультитаймфреймный анализ символа."""
-        try:
-            timeframes = getattr(self.settings, 'timeframes', ['15m', '1h', '4h'])
-            weights = getattr(self.settings, 'timeframe_weights', {
-                '15m': 0.2, '1h': 0.5, '4h': 0.3
-            })
-            min_agreement = getattr(self.settings, 'min_timeframe_agreement', 2)
-
-            signals = []
-            for tf in timeframes:
-                signal = await self.analyze_symbol(symbol, timeframe=tf)
-                if signal and signal.get("signal"):
-                    signals.append({
-                        'timeframe': tf,
-                        'direction': signal['direction'],
-                        'score': signal['score'] * weights.get(tf, 0.33),
-                        'confidence': signal['confidence'],
-                        'price': signal['price'],
-                        'volume_24h': signal['volume_24h'],
-                    })
-
-            if len(signals) < min_agreement:
-                return None
-
-            long_signals = [s for s in signals if s['direction'] == 'LONG']
-            short_signals = [s for s in signals if s['direction'] == 'SHORT']
-
-            if len(long_signals) >= min_agreement:
-                direction = 'LONG'
-                total_score = sum(s['score'] for s in long_signals)
-                avg_confidence = sum(s['confidence'] for s in long_signals) / len(long_signals)
-                agreeing_tfs = [s['timeframe'] for s in long_signals]
-            elif len(short_signals) >= min_agreement:
-                direction = 'SHORT'
-                total_score = sum(s['score'] for s in short_signals)
-                avg_confidence = sum(s['confidence'] for s in short_signals) / len(short_signals)
-                agreeing_tfs = [s['timeframe'] for s in short_signals]
-            else:
-                return None
-
-            primary = signals[0]
-            return {
-                "symbol": symbol,
-                "direction": direction,
-                "score": round(total_score, 2),
-                "confidence": round(avg_confidence, 2),
-                "price": primary['price'],
-                "volume_24h": primary['volume_24h'],
-                "signal": True,
-                "timeframes": agreeing_tfs,
-                "multi_timeframe": True,
-            }
-        except Exception as e:
-            self.logger.error(f"Ошибка мультитаймфреймного анализа {symbol}: {e}")
-            return None
-
-    def _evaluate_signals(self, symbol: str, df: pd.DataFrame, ticker: Dict) -> Optional[Dict]:
-        """
-        Оценка сигналов на основе индикаторов.
-        ИСПРАВЛЕНО: RSI < 30 → LONG требует подтверждения (цена выше EMA).
-        """
-        last = df.iloc[-1]
-        prev = df.iloc[-2] if len(df) > 1 else last
-        score = 0
-        direction = None
-
-        # RSI с подтверждением разворота
-        rsi = last.get('rsi', 50)
-        ema_12 = last.get('ema_12', last.get('close', 0))
-        close = last.get('close', 0)
-
-        if rsi < 30:
-            if close > ema_12 or (last.get('close', 0) > last.get('open', 0)):
-                score += 2
-                direction = 'LONG'
-            else:
-                score += 1
-        elif rsi > 70:
-            if close < ema_12 or (last.get('close', 0) < last.get('open', 0)):
-                score += -2
-                direction = 'SHORT'
-            else:
-                score += -1
-
-        # MACD пересечение
-        macd = last.get('macd', 0)
-        macd_signal = last.get('macd_signal', 0)
-        prev_macd = prev.get('macd', 0)
-        prev_macd_signal = prev.get('macd_signal', 0)
-        if prev_macd <= prev_macd_signal and macd > macd_signal:
-            score += 3
-            direction = 'LONG'
-        elif prev_macd >= prev_macd_signal and macd < macd_signal:
-            score += -3
-            direction = 'SHORT'
-
-        # Bollinger Bands
-        bb_upper = last.get('bb_upper', 0)
-        bb_lower = last.get('bb_lower', 0)
-        if close <= bb_lower:
-            score += 2
-            if direction is None:
-                direction = 'LONG'
-        elif close >= bb_upper:
-            score += -2
-            if direction is None:
-                direction = 'SHORT'
-
-        # Тренд по EMA
-        ema_26 = last.get('ema_26', 0)
-        if ema_12 > ema_26:
-            score += 1
-            if direction is None:
-                direction = 'LONG'
+            if isinstance(res, dict) and res:
+                candidates.append(res)
+                
+        if not candidates:
+            self.empty_scans_count += 1
+            self.logger.info("📭 Подходящих сигналов не найдено. Ждем рынка...")
         else:
-            score += -1
-            if direction is None:
-                direction = 'SHORT'
+            self.empty_scans_count = 0
+            # Возвращаем фильтры к норме, если рынок "разогрелся"
+            base_adx = float(self.settings.get("min_adx", 15))
+            base_atr = float(self.settings.get("min_atr_percent", 1.0))
+            self.current_min_adx = min(base_adx, self.current_min_adx * 1.05)
+            self.current_min_atr = min(base_atr, self.current_min_atr * 1.05)
 
-        # Объём
-        volume_ratio = last.get('volume', 0) / (df['volume'].rolling(20).mean().iloc[-1] or 1)
-        atr_percent = last.get('atr_percent', 0)
-        if volume_ratio > 1.5 and atr_percent > 0.5:
-            score += 1 if direction == 'LONG' else -1
+        # Сортируем кандидатов по "силе тренда" и отдаем Топ-5
+        candidates.sort(key=lambda x: x['indicators'].get('adx', 0) * x['indicators'].get('atr_percent', 0), reverse=True)
+        return candidates[:5]
 
-        if direction is None:
-            return None
+    async def _analyze_symbol(self, session, symbol: str) -> Dict:
+        """Расчет индикаторов и оценка сигнала для пары."""
+        tf = self.settings.get("timeframe", "15m")
+        df = await self.data_fetcher.fetch_klines_async(session, symbol, interval=tf, limit=60)
+        
+        if df is None or df.empty:
+            return {}
+            
+        indicators = self.data_fetcher.compute_indicators(df)
+        if not indicators:
+            return {}
+            
+        adx = indicators.get('adx', 0)
+        atr_pct = indicators.get('atr_percent', 0)
+        direction = indicators.get('signal_direction', 'NEUTRAL')
+        
+        if direction != 'NEUTRAL':
+            # Применяем текущие адаптивные пороги
+            if adx >= self.current_min_adx and atr_pct >= self.current_min_atr:
+                return {'symbol': symbol, 'indicators': indicators}
+                
+        return {}#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-        min_score = getattr(self.settings, 'min_signal_score', 4)
-        if abs(score) < min_score:
-            return None
+import asyncio
+from typing import List, Dict
+from src.core.logger import BotLogger
+from src.config.settings import Settings
 
-        # Фильтр ликвидности
-        volume_24h = ticker.get('volume_24h', 0)
-        min_volume = getattr(self.settings, 'min_volume_24h_usdt', 50000)
-        if volume_24h < min_volume:
-            return None
+class MarketScanner:
+    """
+    Адаптивный сканер рынка.
+    Сам подстраивает фильтры под волатильность, чтобы стабильно находить сделки.
+    """
+    def __init__(self, settings: Settings, logger: BotLogger, data_fetcher, risk_controller, strategy_engine):
+        self.settings = settings
+        self.logger = logger
+        self.data_fetcher = data_fetcher
+        self.risk_controller = risk_controller
+        self.strategy_engine = strategy_engine
+        
+        self.empty_scans_count = 0
+        # Базовые пороги
+        self.current_min_adx = float(settings.get("min_adx", 15))
+        self.current_min_atr = float(settings.get("min_atr_percent", 1.0))
+        
+    async def scan_async(self, balance: float, max_pairs: int = 100, max_asset_price_ratio: float = 0.5, ignore_session_check: bool = False) -> List[Dict]:
+        self.logger.info(f"🔎 Сканирование рынка (Фильтры: ADX >= {self.current_min_adx:.1f}, ATR >= {self.current_min_atr:.2f}%)")
+        
+        contracts = await self.data_fetcher.get_all_usdt_contracts()
+        if not contracts:
+            self.logger.warning("❌ Не удалось получить список торговых пар с биржи")
+            return[]
 
-        confidence = min(abs(score) / 10.0, 1.0)
-        return {
-            "symbol": symbol,
-            "direction": direction,
-            "score": score,
-            "confidence": confidence,
-            "price": ticker.get('last_price', close),
-            "volume_24h": volume_24h,
-            "signal": True,
-            "rsi": rsi,
-            "atr_percent": atr_percent,
-            "multi_timeframe": False,
-        }
+        # АВТОАДАПТАЦИЯ: если бот не может найти сделку 3 скана подряд, он слегка смягчает фильтры
+        if self.empty_scans_count >= 3:
+            self.current_min_adx = max(10.0, self.current_min_adx * 0.9)
+            self.current_min_atr = max(0.5, self.current_min_atr * 0.9)
+            self.logger.info(f"🔄 Адаптация: фильтры смягчены для поиска входа (ADX={self.current_min_adx:.1f}, ATR={self.current_min_atr:.2f}%)")
+            self.empty_scans_count = 0
+
+        candidates =[]
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for c in contracts[:max_pairs]:
+                symbol = c.get('symbol', '').replace('-', '/')
+                tasks.append(self._analyze_symbol(session, symbol))
+                
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+        for res in results:
+            if isinstance(res, dict) and res:
+                candidates.append(res)
+                
+        if not candidates:
+            self.empty_scans_count += 1
+            self.logger.info("📭 Подходящих сигналов не найдено. Ждем рынка...")
+        else:
+            self.empty_scans_count = 0
+            # Возвращаем фильтры к норме, если рынок "разогрелся"
+            base_adx = float(self.settings.get("min_adx", 15))
+            base_atr = float(self.settings.get("min_atr_percent", 1.0))
+            self.current_min_adx = min(base_adx, self.current_min_adx * 1.05)
+            self.current_min_atr = min(base_atr, self.current_min_atr * 1.05)
+
+        # Сортируем кандидатов по "силе тренда" и отдаем Топ-5
+        candidates.sort(key=lambda x: x['indicators'].get('adx', 0) * x['indicators'].get('atr_percent', 0), reverse=True)
+        return candidates[:5]
+
+    async def _analyze_symbol(self, session, symbol: str) -> Dict:
+        """Расчет индикаторов и оценка сигнала для пары."""
+        tf = self.settings.get("timeframe", "15m")
+        df = await self.data_fetcher.fetch_klines_async(session, symbol, interval=tf, limit=60)
+        
+        if df is None or df.empty:
+            return {}
+            
+        indicators = self.data_fetcher.compute_indicators(df)
+        if not indicators:
+            return {}
+            
+        adx = indicators.get('adx', 0)
+        atr_pct = indicators.get('atr_percent', 0)
+        direction = indicators.get('signal_direction', 'NEUTRAL')
+        
+        if direction != 'NEUTRAL':
+            # Применяем текущие адаптивные пороги
+            if adx >= self.current_min_adx and atr_pct >= self.current_min_atr:
+                return {'symbol': symbol, 'indicators': indicators}
+                
+        return {}
