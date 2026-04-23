@@ -1,0 +1,28 @@
+"""
+Trap Detector – выявление ловушек в стакане.
+"""
+
+from typing import Dict, Tuple
+
+
+class TrapDetector:
+    def __init__(self, logger, config):
+        self.logger = logger
+        self.enabled = config.get("trap_detector_enabled", True)
+
+    def analyze_order_book(self, order_book: Dict, side: str) -> Tuple[bool, str]:
+        if not self.enabled:
+            return False, ""
+        bids = order_book.get('bids', [])
+        asks = order_book.get('asks', [])
+        if side == 'SELL' and bids:
+            top_vol = sum(b[1] for b in bids[:3])
+            avg_vol = sum(b[1] for b in bids) / len(bids)
+            if top_vol > avg_vol * 3:
+                return True, "Стена на покупку (ловушка)"
+        elif side == 'BUY' and asks:
+            top_vol = sum(a[1] for a in asks[:3])
+            avg_vol = sum(a[1] for a in asks) / len(asks)
+            if top_vol > avg_vol * 3:
+                return True, "Стена на продажу (ловушка)"
+        return False, ""

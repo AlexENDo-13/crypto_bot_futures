@@ -1,0 +1,90 @@
+"""
+Logger Module – цветной вывод в консоль, запись в файл, сигналы для UI.
+"""
+
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import Optional, List, Callable
+
+import colorama
+from colorama import Fore, Style
+from PyQt5.QtCore import QObject, pyqtSignal
+
+colorama.init(autoreset=True)
+
+
+class LogSignal(QObject):
+    message_signal = pyqtSignal(str, str)
+
+
+class BotLogger:
+    LOG_DIR = Path("data/logs")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    def __init__(self, name: str = "TradingBot", level: str = "INFO"):
+        self.logger = logging.getLogger(name)
+        if not self.logger.handlers:
+            self.logger.setLevel(getattr(logging, level.upper()))
+            self.log_signal = LogSignal()
+            self.ui_callbacks: List[Callable] = []
+
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+
+            log_file = self.LOG_DIR / f"{datetime.now().strftime('%Y%m%d')}_bot.log"
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            file_handler.setFormatter(formatter)
+            self.logger.addHandler(file_handler)
+
+            console_handler = logging.StreamHandler()
+            console_handler.setFormatter(self.ColoredFormatter())
+            self.logger.addHandler(console_handler)
+        else:
+            self.log_signal = getattr(self, 'log_signal', LogSignal())
+            self.ui_callbacks = getattr(self, 'ui_callbacks', [])
+
+    class ColoredFormatter(logging.Formatter):
+        FORMATS = {
+            logging.DEBUG: Fore.CYAN + "%(message)s" + Style.RESET_ALL,
+            logging.INFO: Fore.GREEN + "%(message)s" + Style.RESET_ALL,
+            logging.WARNING: Fore.YELLOW + "%(message)s" + Style.RESET_ALL,
+            logging.ERROR: Fore.RED + "%(message)s" + Style.RESET_ALL,
+            logging.CRITICAL: Fore.MAGENTA + "%(message)s" + Style.RESET_ALL
+        }
+
+        def format(self, record):
+            log_fmt = self.FORMATS.get(record.levelno)
+            formatter = logging.Formatter('%(asctime)s - ' + log_fmt, datefmt='%H:%M:%S')
+            return formatter.format(record)
+
+    def add_ui_callback(self, callback: Callable[[str, str], None]):
+        self.log_signal.message_signal.connect(callback)
+
+    def _emit_to_ui(self, level: str, message: str):
+        try:
+            self.log_signal.message_signal.emit(message, level)
+        except:
+            pass
+
+    def debug(self, msg):
+        self.logger.debug(msg)
+        self._emit_to_ui("DEBUG", msg)
+
+    def info(self, msg):
+        self.logger.info(msg)
+        self._emit_to_ui("INFO", msg)
+
+    def warning(self, msg):
+        self.logger.warning(msg)
+        self._emit_to_ui("WARNING", msg)
+
+    def error(self, msg):
+        self.logger.error(msg)
+        self._emit_to_ui("ERROR", msg)
+
+    def critical(self, msg):
+        self.logger.critical(msg)
+        self._emit_to_ui("ERROR", msg)

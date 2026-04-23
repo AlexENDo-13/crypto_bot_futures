@@ -1,0 +1,196 @@
+"""
+Trade Executor v3 — свинговые входы с адаптивным риском.
+"""
+
+import time
+from typing import Dict, Optional
+from datetime import datetime, timezone
+
+from src.core.logger import BotLogger
+from src.core.trading.order_manager import OrderManager
+from src.core.trading.position import Position
+from src.core.risk.risk_manager import RiskManager
+from src.core.risk.risk_controller import RiskController
+from src.config.settings import Settings
+from src.config.constants import OrderSide, SignalDirection
+from src.core.market.indicators import calculate_session_bonus
+
+
+class TradeExecutor:
+    def __init__(self, settings: Settings, logger: BotLogger, order_manager: OrderManager,
+                 risk_manager: RiskManager, risk_controller: RiskController):
+        self.settings = settings
+        self.logger = logger
+        self.order_manager = order_manager
+        self.risk_manager = risk_manager
+        self.risk_controller = risk_controller
+
+        self.last_loss_time: Dict[str, float] = {}
+        self.base_cooldown_minutes = 30
+
+    def _get_dynamic_risk(self, balance, atr_percent, adx):
+        base_risk = self.settings.get("max_risk_per_trade", 2.0)
+        if balance < 50:
+            base_risk = min(base_risk, 2.0)
+        elif balance < 100:
+            base_risk = min(base_risk, 2.5)
+        if atr_percent > 8:
+            vol_factor = 0.6
+        elif atr_percent > 5:
+            vol_factor = 0.8
+        else:
+            vol_factor = 1.0
+        trend_factor = min(1.5, max(0.8, adx / 30))
+        if hasattr(self.risk_controller, 'consecutive_losses'):
+            loss_factor = max(0.5, 1.0 - self.risk_controller.consecutive_losses * 0.15)
+        else:
+            loss_factor = 1.0
+        return base_risk * vol_factor * trend_factor * loss_factor
+
+    def _apply_night_risk(self, risk_percent):
+        hour_utc = datetime.now(timezone.utc).hour
+        if 0 <= hour_utc < 6:
+            return risk_percent * 0.35
+        elif 6 <= hour_utc <= 9:
+            return risk_percent * 0.7
+        return risk_percent
+
+
+
+
+    def _check_session(self) -> bool:
+        hour = datetime.now(timezone.utc).hour
+        return hour >= 1
+
+    def execute_trade(self, candidate, balance, open_positions,
+                      trailing_stop_enabled, trailing_stop_distance,
+                      telegram_notifier=None, daily_pnl_percent=0.0,
+                      weekly_pnl_percent=0.0, weekly_start_balance=None):
+        symbol = candidate["symbol"]
+        indicators = candidate["indicators"]
+        strength = candidate["strength"]
+        direction = candidate["direction"]
+
+        if not self._check_session():
+            self.logger.debug(f"{symbol}: вход отменен — не торговая сессия")
+            return None
+
+        if symbol in self.last_loss_time:
+            if time.time() - self.last_loss_time[symbol] < self.base_cooldown_minutes * 60:
+                return None
+
+        atr_percent = indicators.get("atr_percent", 3.0)
+        adx = indicators.get("adx", 20)
+
+        risk_percent = self._get_dynamic_risk(balance, atr_percent, adx)
+        risk_percent = self._apply_night_risk(risk_percent)
+
+        if risk_percent <= 0.1:
+            return None
+
+        min_stop = 1.5 * atr_percent
+        max_stop = 4.0 if balance < 30 else (6.0 if balance < 100 else 8.0)
+        stop_distance_pct = max(1.5, min(min_stop, max_stop))
+
+        market_regime = indicators.get("market_regime", "CHOP")
+        if market_regime == "CHOP":
+            min_rr = 3.5 if balance < 100 else 3.0
+        else:
+            min_rr = 2.5 if balance < 100 else 2.0
+        
+        target_rr = min_rr if adx > 25 else max(min_rr, 2.0)
+        
+        if market_regime == "CHOP":
+            stop_distance_pct *= 1.2
+            target_rr *= 1.15
+
+        tp_distance_pct = stop_distance_pct * target_rr
+
+        if tp_distance_pct < 5.0:
+            self.logger.debug(f"{symbol}: TP слишком мал ({tp_distance_pct:.1f}%), пропускаем")
+            return None
+
+        side = OrderSide.BUY if direction == SignalDirection.BUY else OrderSide.SELL
+        current_price = candidate["snapshot"].get("lastPrice", 0)
+
+        if side == OrderSide.BUY:
+            stop_loss = current_price * (1 - stop_distance_pct / 100)
+            take_profit = current_price * (1 + tp_distance_pct / 100)
+        else:
+            stop_loss = current_price * (1 + stop_distance_pct / 100)
+            take_profit = current_price * (1 - tp_distance_pct / 100)
+
+        available = self.risk_manager._get_available_balance(force_refresh=True)
+        min_required = self.risk_manager.get_min_entry_requirement(balance)
+        if available < min_required:
+            self.logger.warning(f"💰 Недостаточно средств для входа: {available:.2f} USDT (нужно {min_required:.2f})")
+            return None
+
+        qty = self.risk_manager.calculate_position_size(
+            symbol, balance, risk_percent, stop_distance_pct,
+            self.settings.get("max_leverage", 3), atr_percent, current_price
+        )
+        if qty == 0:
+            return None
+
+        notional = qty * current_price
+        if notional < self.settings.get("min_position_notional", 5.0):
+            self.logger.warning(f"{symbol}: позиция слишком мала ({notional:.2f} USDT)")
+            return None
+
+        position_side = "LONG" if side == OrderSide.BUY else "SHORT"
+        leverage = self.settings.get("max_leverage", 3)
+
+        self.order_manager.client.set_margin_mode(symbol, 'cross')
+        time.sleep(0.1)
+        self.order_manager.client.set_leverage(symbol, leverage, side=position_side)
+
+        order = self.order_manager.client.place_market_order(
+            symbol=symbol,
+            side=side.value,
+            position_side=position_side,
+            quantity=qty,
+            stop_loss=None,
+            take_profit=None
+        )
+
+        if not order:
+            return None
+
+        pos = Position(
+            symbol=symbol,
+            side=side,
+            quantity=qty,
+            entry_price=current_price,
+            leverage=leverage,
+            stop_loss_price=stop_loss,
+            take_profit_price=take_profit,
+            atr_entry=atr_percent,
+            rsi_entry=indicators.get("rsi", 50),
+            adx_entry=adx
+        )
+        pos.strategy_type = indicators.get('entry_type', 'trend_following')
+        pos.stepped_tp_levels = self.settings.get("stepped_tp_levels", [])
+
+        session_mult = calculate_session_bonus()
+        self.logger.info(
+            f"📊 ВХОД {symbol} {side.value} | "
+            f"Цена: {current_price:.6f} | "
+            f"Стоп: {stop_distance_pct:.1f}% | "
+            f"TP: {tp_distance_pct:.1f}% | "
+            f"RR: 1:{target_rr:.1f} | "
+            f"Режим: {market_regime} | "
+            f"Сессия: {session_mult:.1f}x | "
+            f"Риск: {risk_percent:.1f}%"
+        )
+
+        if telegram_notifier:
+            telegram_notifier.send_sync(
+                f"🚀 {side.value} {symbol} | "
+                f"Цена: {current_price:.4f} | "
+                f"Стоп: {stop_distance_pct:.1f}% | "
+                f"TP: {tp_distance_pct:.1f}% | "
+                f"RR 1:{target_rr:.1f} | Режим: {market_regime}"
+            )
+
+        return pos

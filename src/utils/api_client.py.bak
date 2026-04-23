@@ -1,0 +1,370 @@
+"""
+BingX API Client на базе CCXT + прямые запросы для контрактов
+"""
+import asyncio
+import aiohttp
+import time
+import hmac
+import hashlib
+import urllib.parse
+import json
+from typing import Dict, List, Optional, Any
+import ccxt
+
+from src.core.logger import BotLogger
+
+
+class BingXClient:
+    """
+    Синхронный клиент для BingX Futures через CCXT.
+    Автоматически добавляет суффикс :USDT ко всем символам.
+    """
+
+    def __init__(self, api_key: str, api_secret: str, demo_mode: bool = True, settings: Dict = None):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.demo_mode = demo_mode
+        self.settings = settings or {}
+        self.logger = BotLogger(level="INFO")
+
+        exchange_config = {
+            'apiKey': api_key,
+            'secret': api_secret,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap',
+                'fetchMarkets': True,
+                'adjustForTimeDifference': True,
+            }
+        }
+
+        if demo_mode:
+            exchange_config['urls'] = {
+                'api': {
+                    'public': 'https://open-api-vst.bingx.com',
+                    'private': 'https://open-api-vst.bingx.com',
+                }
+            }
+            self.exchange = ccxt.bingx(exchange_config)
+            self.exchange.urls['api'] = exchange_config['urls']['api']
+        else:
+            self.exchange = ccxt.bingx(exchange_config)
+
+        self._markets_loaded = False
+        self._load_markets()
+
+        api_urls = self.exchange.urls.get('api', {})
+        if isinstance(api_urls, dict):
+            self.base_url = api_urls.get('public', 'https://open-api.bingx.com')
+        else:
+            self.base_url = str(api_urls)
+
+        self.exchange.options['warnOnFetchOHLCVLimitArgument'] = False
+        self.logger.info(f"CCXT BingX client инициализирован (demo={demo_mode})")
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        """Добавляет суффикс :USDT, если его нет."""
+        if symbol.endswith(':USDT'):
+            return symbol
+        if '/' in symbol and not symbol.endswith(':USDT'):
+            return symbol + ':USDT'
+        return symbol
+
+    def _load_markets(self):
+        if not self._markets_loaded:
+            try:
+                self.exchange.load_markets()
+                self._markets_loaded = True
+            except Exception as e:
+                self.logger.error(f"Ошибка загрузки рынков: {e}")
+
+    def _handle_ccxt_error(self, e: Exception, action: str) -> Optional[Dict]:
+        self.logger.error(f"CCXT ошибка при {action}: {e}")
+        return None
+
+    # ------------------ Публичные методы ------------------
+    def get_ticker(self, symbol: str) -> Dict:
+        symbol_ccxt = self._normalize_symbol(symbol)
+        self._load_markets()
+        try:
+            ticker = self.exchange.fetch_ticker(symbol_ccxt)
+            volume = ticker.get('quoteVolume', 0.0)
+            if volume == 0:
+                volume = ticker.get('baseVolume', 0.0)
+            if volume == 0:
+                volume = ticker.get('volume', 0.0)
+            # FALLBACK: пытаемся достать объём из сырого info
+            if volume == 0 and 'info' in ticker:
+                info = ticker['info']
+                volume = float(info.get('volume', 0) or info.get('quoteVolume', 0) or info.get('vol', 0))
+            return {
+                "symbol": symbol,
+                "lastPrice": ticker.get('last', 0.0),
+                "volume24h": volume,
+                "high24h": ticker.get('high', 0.0),
+                "low24h": ticker.get('low', 0.0),
+                "markPrice": ticker.get('mark', ticker.get('last', 0.0)),
+            }
+        except Exception as e:
+            self._handle_ccxt_error(e, f"get_ticker({symbol})")
+            return {"symbol": symbol, "lastPrice": 0, "volume24h": 0}
+
+    def get_all_tickers(self) -> List[Dict]:
+        """Возвращает тикеры для всех доступных USDT фьючерсов."""
+        self._load_markets()
+        try:
+            all_tickers = self.exchange.fetch_tickers()
+            result = []
+            for symbol, ticker in all_tickers.items():
+                if not symbol.endswith(':USDT'):
+                    continue
+                clean_symbol = symbol.replace(':USDT', '')
+                volume = ticker.get('quoteVolume', 0.0) or ticker.get('baseVolume', 0.0) or ticker.get('volume', 0.0)
+                if volume == 0 and 'info' in ticker:
+                    info = ticker['info']
+                    volume = float(info.get('volume', 0) or info.get('quoteVolume', 0) or info.get('vol', 0))
+                result.append({
+                    "symbol": clean_symbol,
+                    "lastPrice": ticker.get('last', 0.0),
+                    "quoteVolume": volume,
+                })
+            return result
+        except Exception as e:
+            self.logger.error(f"Ошибка получения всех тикеров: {e}")
+            return []
+
+    def get_klines(self, symbol: str, interval: str = "1h", limit: int = 100) -> List:
+        symbol_ccxt = self._normalize_symbol(symbol)
+        self._load_markets()
+        try:
+            return self.exchange.fetch_ohlcv(symbol_ccxt, timeframe=interval, limit=limit)
+        except Exception as e:
+            self._handle_ccxt_error(e, f"get_klines({symbol})")
+            return []
+
+    def get_funding_rate(self, symbol: str) -> Dict:
+        symbol_ccxt = self._normalize_symbol(symbol)
+        self._load_markets()
+        try:
+            fr = self.exchange.fetch_funding_rate(symbol_ccxt)
+            return {"fundingRate": fr.get('fundingRate', 0.0)}
+        except Exception:
+            try:
+                ticker = self.exchange.fetch_ticker(symbol_ccxt)
+                return {"fundingRate": ticker.get('info', {}).get('fundingRate', 0.0)}
+            except Exception as e:
+                self._handle_ccxt_error(e, f"get_funding_rate({symbol})")
+                return {"fundingRate": 0.0}
+
+    def get_order_book(self, symbol: str, limit: int = 5) -> Dict:
+        symbol_ccxt = self._normalize_symbol(symbol)
+        self._load_markets()
+        try:
+            ob = self.exchange.fetch_order_book(symbol_ccxt, limit)
+            return {"bids": ob['bids'], "asks": ob['asks']}
+        except Exception as e:
+            self._handle_ccxt_error(e, f"get_order_book({symbol})")
+            return {"bids": [], "asks": []}
+
+    # ------------------ Приватные методы ------------------
+    def get_account_info(self) -> Optional[Dict]:
+        try:
+            balance = self.exchange.fetch_balance()
+            total = balance.get('total', {})
+            free = balance.get('free', {})
+            used = balance.get('used', {})
+            return {
+                "balance": total.get('USDT', 0.0),
+                "available": free.get('USDT', 0.0),
+                "used": used.get('USDT', 0.0),
+            }
+        except Exception as e:
+            self._handle_ccxt_error(e, "get_account_info")
+            return None
+
+    def get_positions(self) -> List[Dict]:
+        try:
+            positions = self.exchange.fetch_positions()
+            result = []
+            for p in positions:
+                if p.get('contracts', 0) == 0:
+                    continue
+                symbol = p['symbol'].replace(':USDT', '')
+                result.append({
+                    "symbol": symbol,
+                    "positionAmt": p.get('contracts', 0.0) * (1 if p.get('side') == 'long' else -1),
+                    "avgPrice": p.get('entryPrice', 0.0),
+                    "positionSide": 'LONG' if p.get('side') == 'long' else 'SHORT',
+                    "leverage": int(p.get('leverage', 1)),
+                    "unrealizedProfit": p.get('unrealizedPnl', 0.0),
+                    "markPrice": p.get('markPrice', 0.0),
+                    "lastPrice": p.get('markPrice', 0.0),
+                })
+            return result
+        except Exception as e:
+            self._handle_ccxt_error(e, "get_positions")
+            return []
+
+    def set_leverage(self, symbol: str, leverage: int, side: str = "LONG") -> Dict:
+        symbol_ccxt = self._normalize_symbol(symbol)
+        try:
+            self.exchange.set_leverage(leverage, symbol_ccxt)
+            self.logger.info(f"Плечо {leverage}x для {symbol} установлено")
+            return {"leverage": leverage}
+        except Exception as e:
+            self._handle_ccxt_error(e, f"set_leverage({symbol}, {leverage})")
+            return {"leverage": leverage, "error": str(e)}
+
+    def set_margin_mode(self, symbol: str, margin_mode: str = 'cross') -> bool:
+        symbol_ccxt = self._normalize_symbol(symbol)
+        try:
+            self.exchange.set_margin_mode(margin_mode, symbol_ccxt)
+            return True
+        except Exception as e:
+            if 'already' in str(e).lower():
+                return True
+            self.logger.warning(f"Ошибка установки маржи {margin_mode} для {symbol}: {e}")
+            return False
+
+    def place_market_order(self, symbol: str, side: str, position_side: str,
+                           quantity: float, stop_loss: float = None,
+                           take_profit: float = None) -> Dict:
+        symbol_ccxt = self._normalize_symbol(symbol)
+        try:
+            params = {}
+            if position_side and position_side.upper() in ('LONG', 'SHORT'):
+                params['positionSide'] = position_side.upper()
+            if stop_loss:
+                params['stopLossPrice'] = stop_loss
+            if take_profit:
+                params['takeProfitPrice'] = take_profit
+
+            order = self.exchange.create_market_order(symbol_ccxt, side.lower(), quantity, None, params)
+            return {"orderId": order.get('id', ''), "symbol": symbol, "side": side, "quantity": quantity}
+        except Exception as e:
+            self._handle_ccxt_error(e, f"place_market_order({symbol}, {side})")
+            return {}
+
+    def place_market_buy(self, symbol: str, quote_order_qty: float, position_side: str,
+                         stop_loss: float = None, take_profit: float = None) -> Dict:
+        ticker = self.get_ticker(symbol)
+        price = float(ticker.get('lastPrice', 0))
+        if price <= 0:
+            return {}
+        quantity = quote_order_qty / price
+        return self.place_market_order(symbol, 'BUY', position_side, quantity, stop_loss, take_profit)
+
+    def place_market_sell(self, symbol: str, quantity: float, position_side: str,
+                          stop_loss: float = None, take_profit: float = None) -> Dict:
+        return self.place_market_order(symbol, 'SELL', position_side, quantity, stop_loss, take_profit)
+
+    def cancel_all_orders(self, symbol: str) -> bool:
+        symbol_ccxt = self._normalize_symbol(symbol)
+        try:
+            self.exchange.cancel_all_orders(symbol_ccxt)
+            return True
+        except Exception as e:
+            if 'no orders' in str(e).lower():
+                return True
+            self.logger.error(f"Ошибка отмены ордеров {symbol}: {e}")
+            return False
+
+    def close_position_with_cleanup(self, symbol: str, position_side: str = "LONG") -> bool:
+        self.cancel_all_orders(symbol)
+        time.sleep(0.3)
+        positions = self.get_positions()
+        pos = next((p for p in positions if p['symbol'] == symbol), None)
+        if not pos or float(pos.get('positionAmt', 0)) == 0:
+            self.logger.info(f"Позиция {symbol} уже закрыта")
+            return True
+        amt = abs(float(pos['positionAmt']))
+        actual_side = pos.get('positionSide', position_side)
+        close_side = 'SELL' if actual_side.upper() == "LONG" else 'BUY'
+        try:
+            self.place_market_order(symbol, close_side, actual_side, amt)
+            return True
+        except Exception as e:
+            self.logger.error(f"Ошибка закрытия {symbol}: {e}")
+            return False
+
+    def close(self):
+        pass
+
+
+# ----------------------------------------------------------------------
+# Асинхронная обёртка для совместимости с TradingEngine
+# ----------------------------------------------------------------------
+class AsyncBingXClient:
+    """Асинхронная обёртка над BingXClient с поддержкой прямых запросов."""
+
+    def __init__(self, api_key: str, api_secret: str, demo_mode: bool = True, settings: Dict = None):
+        self._sync = BingXClient(api_key, api_secret, demo_mode, settings)
+        self.demo_mode = demo_mode
+        self.base_url = self._sync.base_url
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.settings = settings or {}
+        self.logger = self._sync.logger
+
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._session_lock = asyncio.Lock()
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            async with self._session_lock:
+                if self._session is None or self._session.closed:
+                    timeout = aiohttp.ClientTimeout(total=30, connect=15, sock_read=30)
+                    connector = aiohttp.TCPConnector(limit=100, limit_per_host=20, ttl_dns_cache=300)
+                    self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        return self._session
+
+    async def close(self):
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    async def _run_sync(self, func, *args, **kwargs):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+
+    async def get_ticker(self, symbol: str) -> Dict:
+        return await self._run_sync(self._sync.get_ticker, symbol)
+
+    async def get_all_tickers(self) -> List[Dict]:
+        return await self._run_sync(self._sync.get_all_tickers)
+
+    async def get_klines(self, symbol: str, interval: str = "1h", limit: int = 100) -> List:
+        return await self._run_sync(self._sync.get_klines, symbol, interval, limit)
+
+    async def get_funding_rate(self, symbol: str) -> Dict:
+        return await self._run_sync(self._sync.get_funding_rate, symbol)
+
+    async def get_order_book(self, symbol: str, limit: int = 5) -> Dict:
+        return await self._run_sync(self._sync.get_order_book, symbol, limit)
+
+    async def get_account_info(self) -> Optional[Dict]:
+        return await self._run_sync(self._sync.get_account_info)
+
+    async def get_positions(self) -> List[Dict]:
+        return await self._run_sync(self._sync.get_positions)
+
+    async def set_leverage(self, symbol: str, leverage: int, side: str = "LONG") -> Dict:
+        return await self._run_sync(self._sync.set_leverage, symbol, leverage, side)
+
+    async def set_margin_mode(self, symbol: str, margin_mode: str = 'cross') -> bool:
+        return await self._run_sync(self._sync.set_margin_mode, symbol, margin_mode)
+
+    async def place_market_order(self, symbol: str, side: str, position_side: str,
+                                 quantity: float, stop_loss: float = None,
+                                 take_profit: float = None) -> Dict:
+        return await self._run_sync(self._sync.place_market_order, symbol, side, position_side,
+                                    quantity, stop_loss, take_profit)
+
+    async def cancel_all_orders(self, symbol: str) -> bool:
+        return await self._run_sync(self._sync.cancel_all_orders, symbol)
+
+    async def close_position_with_cleanup(self, symbol: str, position_side: str = "LONG") -> bool:
+        return await self._run_sync(self._sync.close_position_with_cleanup, symbol, position_side)
+
+    async def _sync_server_time(self, force: bool = False):
+        pass

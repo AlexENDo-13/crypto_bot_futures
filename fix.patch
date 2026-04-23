@@ -1,0 +1,29 @@
+--- src/core/market/data_fetcher.py
++++ src/core/market/data_fetcher.py
+@@ -9,7 +9,7 @@
+ import pandas as pd
+ 
+ from src.core.logger import BotLogger
+-from src.core.market.indicators import calculate_indicators  # <-- ИСПРАВЛЕНО
++from src.core.market.indicators import compute_indicators
+ from src.utils.api_client import AsyncBingXClient
+ from src.config.constants import TimeFrame
+ 
+@@ -142,7 +142,7 @@
+             self.logger.error(f"Ошибка загрузки свечей {symbol}: {e}")
+             return None
+ 
+-    def calculate_indicators(self, df: pd.DataFrame) -> Dict[str, Any]:
++    def compute_indicators(self, df: pd.DataFrame) -> Dict[str, Any]:
+         """
+         Рассчитывает технические индикаторы для DataFrame свечей.
+         Возвращает словарь с ATR%, RSI, ADX, trend_score и т.д.
+@@ -153,7 +153,7 @@
+             self.logger.warning(f"DataFrame пуст или содержит недостаточно данных")
+             return {}
+         try:
+-            return calculate_indicators(df)  # <-- ИСПРАВЛЕНО: прямой вызов функции из модуля
++            return compute_indicators(df)
+         except Exception as e:
+             self.logger.error(f"Ошибка расчёта индикаторов: {e}")
+             return {}

@@ -1,0 +1,183 @@
+import json
+from pathlib import Path
+from typing import Dict, Any
+
+class Settings:
+    CONFIG_FILE = Path(__file__).parent / "user_config.json"
+    CONFIG_VERSION = 7
+
+    DEFAULTS: Dict[str, Any] = {
+        "_config_version": CONFIG_VERSION,
+        # API
+        "api_key": "",
+        "api_secret": "",
+        "demo_mode": False,
+        "virtual_balance": 21.0,
+
+        # Risk Management
+        "max_risk_per_trade": 2.0,
+        "max_leverage": 3,
+        "max_positions": 2,
+        "max_total_risk_percent": 30.0,
+        "daily_loss_limit_percent": 10.0,
+        "max_orders_per_hour": 8,
+        "min_position_notional": 5.0,
+        "unrealized_drawdown_limit_percent": 15.0,
+        "max_margin_percent": 80.0,
+
+        # Scanning
+        "scan_interval_minutes": 2,
+        "min_volume_24h_usdt": 200_000,
+        "min_atr_percent": 1.5,
+        "max_funding_rate": 0.0,
+        "min_adx": 20,
+        "force_ignore_session": True,   # ← ВКЛЮЧЕНО для тестов
+
+        # Features
+        "use_genetic_optimizer": True,
+        "self_healing_enabled": True,
+        "trailing_stop_enabled": True,
+        "trailing_stop_distance_percent": 1.5,
+        "use_multi_timeframe": True,
+        "use_stepped_take_profit": True,
+        "stepped_tp_levels": [
+            {"profit_percent": 2.5, "close_ratio": 0.5},
+            {"profit_percent": 5.0, "close_ratio": 0.3},
+            {"profit_percent": 10.0, "close_ratio": 0.2}
+        ],
+        "anti_chase_enabled": True,
+        "adaptive_tp_enabled": True,
+        "dead_weight_exit_enabled": True,
+        "predictive_entry_enabled": True,
+        "trap_detector_enabled": True,
+        "use_neural_filter": False,
+        "use_neural_predictor": False,
+        "neural_confidence_threshold": 0.55,
+
+        # Multi‑timeframe weights
+        "tf_weight_15m": 0.20,
+        "tf_weight_1h": 0.30,
+        "tf_weight_4h": 0.30,
+        "tf_weight_1d": 0.20,
+
+        # Notifications
+        "telegram_enabled": False,
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "telegram_commands_enabled": True,
+        "discord_enabled": False,
+        "discord_webhook_url": "",
+
+        # Web Interface
+        "web_interface_enabled": False,
+        "web_interface_port": 5000,
+
+        # System
+        "log_level": "DEBUG",
+        "json_logging_enabled": True,
+        "export_trades_csv": True,
+        "cache_klines": False,
+        "cache_ttl_minutes": 30,
+        "use_async_scan": True,
+        "async_concurrency": 10,
+        "keep_top_weights": 3,
+        "weekend_trading": False,
+        "reduce_risk_on_weekends": True,
+        "weekend_risk_multiplier": 0.5,
+
+        # Staged Risk
+        "staged_risk": True,
+        "stages": [
+            {"balance_up_to": 30, "risk_percent": 3.0, "leverage": 3},
+            {"balance_up_to": 100, "risk_percent": 2.0, "leverage": 3},
+            {"balance_up_to": 500, "risk_percent": 1.0, "leverage": 2},
+        ],
+
+        "correlation_limit_enabled": True,
+        "correlation_groups": {
+            "btc_eth": ["BTC/USDT", "ETH/USDT"],
+            "layer1": ["BNB/USDT", "SOL/USDT", "AVAX/USDT"],
+            "meme": ["DOGE/USDT", "SHIB/USDT", "PEPE/USDT"]
+        },
+        "daily_profit_target_percent": 20.0,
+        "stop_on_daily_target": False,
+        "max_daily_trades": 8,
+
+        "health_score_threshold": 0.3,
+        "use_spread_filter": True,
+        "max_spread_percent": 0.3,
+
+        "anti_martingale_enabled": True,
+        "anti_martingale_risk_reduction": 0.8,
+        "anti_chase_threshold_percent": 0.3,
+
+        "use_bollinger_filter": True,
+        "use_candle_patterns": True,
+        "use_macd_indicator": True,
+        "use_ichimoku_indicator": True,
+        "telegram_daily_report_enabled": False,
+        "sound_enabled": True,
+        "voice_enabled": False,
+        "dark_theme": True,
+    }
+
+    def __init__(self):
+        self.data = self.load()
+
+    def load(self) -> Dict[str, Any]:
+        if self.CONFIG_FILE.exists():
+            try:
+                with open(self.CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if not content:
+                        raise ValueError("Empty config file")
+                    user_config = json.loads(content)
+                user_version = user_config.get('_config_version', 1)
+                if user_version < self.CONFIG_VERSION:
+                    merged = self.DEFAULTS.copy()
+                    for key, value in user_config.items():
+                        if key in merged and not key.startswith('_'):
+                            # Некоторые настройки не переносим из старого конфига
+                            if key in ['max_positions', 'daily_loss_limit_percent',
+                                      'min_volume_24h_usdt', 'min_atr_percent', 'min_adx',
+                                      'max_total_risk_percent', 'max_orders_per_hour',
+                                      'max_spread_percent', 'stepped_tp_levels']:
+                                continue
+                            merged[key] = value
+                    merged['_config_version'] = self.CONFIG_VERSION
+                    self.save(merged)
+                    return merged
+                else:
+                    config = self.DEFAULTS.copy()
+                    config.update(user_config)
+                    return config
+            except (json.JSONDecodeError, ValueError, IOError):
+                return self._create_default_config()
+        else:
+            return self._create_default_config()
+
+    def _create_default_config(self) -> Dict[str, Any]:
+        defaults_with_version = self.DEFAULTS.copy()
+        defaults_with_version['_config_version'] = self.CONFIG_VERSION
+        self.save(defaults_with_version)
+        return defaults_with_version
+
+    def save(self, config_dict: Dict[str, Any] = None):
+        if config_dict is None:
+            config_dict = self.data
+        try:
+            with open(self.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(config_dict, f, indent=4, ensure_ascii=False)
+        except IOError as e:
+            print(f"Ошибка сохранения конфига: {e}")
+
+    def get(self, key: str, default=None):
+        return self.data.get(key, default)
+
+    def set(self, key: str, value):
+        self.data[key] = value
+        self.save()
+
+    def update(self, updates: Dict[str, Any]):
+        self.data.update(updates)
+        self.save()

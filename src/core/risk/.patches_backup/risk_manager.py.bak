@@ -1,0 +1,183 @@
+import time
+import math
+from typing import Dict, Optional
+
+from src.core.logger import BotLogger
+from src.core.risk.adaptive_risk import AntiChase
+
+class RiskManager:
+    def __init__(self, client, config: Dict):
+        self.client = client
+        self.config = config
+        self.logger = BotLogger()
+        self.max_risk_per_trade = config.get("max_risk_per_trade", 1.0)
+        self.base_max_leverage = config.get("max_leverage", 3)
+        self._cached_available_balance = 0.0
+        self._last_balance_check = 0
+        self.anti_chase = AntiChase(self.logger)
+
+        self.MIN_NOTIONAL = config.get("min_position_notional", 5.0)
+        self.MAX_MARGIN_PERCENT = config.get("max_margin_percent", 80.0) / 100.0
+
+        self._consecutive_losses = 0
+
+    def get_min_entry_requirement(self, balance: float) -> float:
+        multiplier = max(1.05, min(1.5, 1.05 + (balance / 200.0)))
+        return self.MIN_NOTIONAL * multiplier
+
+    def _get_max_leverage_for_balance(self, balance: float) -> int:
+        if balance < 30:
+            return min(5, self.base_max_leverage)
+        elif balance < 100:
+            return min(4, self.base_max_leverage)
+        elif balance < 500:
+            return min(3, self.base_max_leverage)
+        else:
+            return self.base_max_leverage
+
+    def update_pnl(self, pnl: float):
+        if pnl < 0:
+            self.anti_chase.record_loss("general")
+            self._consecutive_losses += 1
+        else:
+            self._consecutive_losses = 0
+
+    def _get_available_balance(self, force_refresh: bool = False) -> float:
+        now = time.time()
+        if force_refresh or (now - self._last_balance_check > 5):
+            try:
+                info = self.client.get_account_info()
+                if info and "available" in info:
+                    self._cached_available_balance = float(info["available"])
+                    self._last_balance_check = now
+            except Exception:
+                pass
+        return self._cached_available_balance
+
+    def _get_total_balance(self) -> float:
+        try:
+            info = self.client.get_account_info()
+            if info and "balance" in info:
+                return float(info["balance"])
+        except:
+            pass
+        return 0.0
+
+    def calculate_position_size(self, symbol: str, balance: float, risk_percent: float,
+                                stop_distance_pct: float, leverage: int, atr_percent: float,
+                                current_price: float = 0) -> float:
+        if self.client.demo_mode:
+            available = balance
+            total_balance = balance
+        else:
+            available = self._get_available_balance(force_refresh=True)
+            total_balance = self._get_total_balance()
+            if available <= 0:
+                self.logger.warning("Не удалось получить доступный баланс с биржи")
+                return 0.0
+
+        if current_price <= 0:
+            ticker = self.client.get_ticker(symbol)
+            current_price = float(ticker.get("lastPrice", 0))
+        if current_price <= 0:
+            self.logger.error(f"Не удалось получить цену для {symbol}")
+            return 0.0
+
+        min_notional = self._get_min_notional(symbol)
+        if min_notional is None:
+            min_notional = self.MIN_NOTIONAL
+
+        effective_leverage = self._get_max_leverage_for_balance(total_balance)
+        if effective_leverage > leverage:
+            leverage = effective_leverage
+            self.logger.debug(f"Плечо увеличено до {leverage}x для соответствия мин. номиналу")
+
+        original_risk = risk_percent
+        max_allowed_risk = 5.0 if total_balance < 50 else 3.0
+
+        position_value_usdt = 0.0
+        while risk_percent <= max_allowed_risk and position_value_usdt < min_notional:
+            risk_amount = total_balance * (risk_percent / 100.0)
+            price_risk_pct = stop_distance_pct / 100.0
+            if price_risk_pct <= 0:
+                return 0.0
+            position_value_usdt = risk_amount / price_risk_pct
+            if position_value_usdt < min_notional:
+                risk_percent += 0.5
+
+        max_position_value = total_balance * leverage
+        final_value = min(position_value_usdt, max_position_value)
+
+        if final_value < min_notional and total_balance >= min_notional / leverage:
+            final_value = min_notional
+            self.logger.debug(f"⚠️ Принудительный размер позиции {final_value:.2f} USDT")
+
+        if final_value < min_notional:
+            self.logger.warning(f"💰 Недостаточно средств для мин. позиции {min_notional} USDT")
+            return 0.0
+
+        required_margin = final_value / leverage
+        if required_margin > available:
+            self.logger.warning(f"⚠️ Недостаточно свободной маржи: нужно {required_margin:.2f}, доступно {available:.2f}")
+            if available > 0:
+                max_possible_value = available * leverage
+                if max_possible_value >= min_notional:
+                    final_value = max_possible_value
+                    self.logger.info(f"📉 Размер позиции уменьшен до {final_value:.2f} USDT из-за нехватки маржи")
+                else:
+                    return 0.0
+            else:
+                return 0.0
+
+        total_margin_used = 0.0
+        try:
+            positions = self.client.get_positions()
+            for p in positions:
+                if p.get("symbol") == symbol:
+                    continue
+                pos_value = abs(float(p.get("positionAmt", 0))) * float(p.get("markPrice", 0))
+                lev = int(p.get("leverage", 1))
+                total_margin_used += pos_value / lev if lev > 0 else 0
+        except:
+            pass
+
+        new_margin = final_value / leverage
+        total_margin_after = total_margin_used + new_margin
+        if total_balance > 0 and (total_margin_after / total_balance) > self.MAX_MARGIN_PERCENT:
+            self.logger.warning(f"⚠️ Превышен лимит используемой маржи ({self.MAX_MARGIN_PERCENT*100:.0f}%)")
+            return 0.0
+
+        qty = final_value / current_price
+
+        contract_info = self.get_contract_info(symbol)
+        step_size = contract_info.get("stepSize", 0.001)
+        qty = math.floor(qty / step_size) * step_size
+
+        if risk_percent != original_risk:
+            self.logger.info(f"🔧 Риск временно увеличен с {original_risk:.1f}% до {risk_percent:.1f}%")
+
+        return qty
+
+    def _get_min_notional(self, symbol: str) -> Optional[float]:
+        try:
+            market = self.client.exchange.market(symbol)
+            return float(market['limits']['cost']['min'] or 5.0)
+        except:
+            return None
+
+    def get_contract_info(self, symbol: str) -> Dict:
+        try:
+            market = self.client.exchange.market(symbol)
+            return {
+                "minQty": market['limits']['amount']['min'] or 0.001,
+                "stepSize": market['limits']['amount']['min'] or 0.001,
+                "pricePrecision": self._convert_precision(market['precision']['price']),
+                "quantityPrecision": self._convert_precision(market['precision']['amount'])
+            }
+        except:
+            return {"minQty": 0.001, "stepSize": 0.001, "pricePrecision": 4, "quantityPrecision": 4}
+
+    def _convert_precision(self, prec) -> int:
+        if isinstance(prec, float) and 0 < prec < 1:
+            return max(0, int(round(-math.log10(prec))))
+        return int(prec) if prec else 4

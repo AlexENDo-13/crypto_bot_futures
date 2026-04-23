@@ -1,0 +1,257 @@
+import time
+from typing import Dict, Optional
+from datetime import datetime, timedelta
+
+from src.core.logger import BotLogger
+from src.core.trading.position import Position, OrderSide
+from src.core.market.data_fetcher import DataFetcher
+from src.core.risk.risk_manager import RiskManager
+from src.core.risk.risk_controller import RiskController
+from src.core.trading.order_manager import OrderManager
+from src.intelligence.strategy_engine import StrategyEngine
+from src.config.settings import Settings
+from src.config.constants import ExitReason, TimeFrame
+
+class ExitManager:
+    def __init__(self, settings: Settings, logger: BotLogger, data_fetcher: DataFetcher,
+                 risk_manager: RiskManager, risk_controller: RiskController,
+                 strategy_engine: StrategyEngine, order_manager: OrderManager,
+                 executor_ref=None, sqlite_history=None):
+        self.settings = settings
+        self.logger = logger
+        self.data_fetcher = data_fetcher
+        self.risk_manager = risk_manager
+        self.risk_controller = risk_controller
+        self.strategy_engine = strategy_engine
+        self.order_manager = order_manager
+        self.executor_ref = executor_ref
+        self.sqlite_history = sqlite_history
+
+        self.time_exit_hours = 24
+        self.max_hold_hours = 72
+        self.stepped_tp_enabled = settings.get("use_stepped_take_profit", True)
+        self.stepped_tp_levels = settings.get("stepped_tp_levels", [])
+
+        self._failed_closures: Dict[str, int] = {}
+        self._last_closure_attempt: Dict[str, float] = {}
+        self._candle_cache: Dict[str, Dict] = {}
+
+    def check_all_positions(self, open_positions, get_ticker_func, update_balance_func,
+                            save_history=True, telegram_notifier=None, discord_notifier=None,
+                            current_balance=None):
+        for symbol, pos in list(open_positions.items()):
+            try:
+                elapsed_seconds = (datetime.now() - pos.timestamp).total_seconds()
+                if elapsed_seconds < 300:
+                    continue
+
+                ticker = get_ticker_func(symbol)
+                price = float(ticker.get("markPrice", ticker.get("lastPrice", pos.entry_price)))
+                pos.update_market_price(price)
+
+                if symbol not in self._candle_cache or time.time() - self._candle_cache[symbol].get('ts', 0) > 3600:
+                    df = self.data_fetcher.get_historical_klines(symbol, TimeFrame.H1.value, 2)
+                    if df is not None and len(df) >= 2:
+                        last_candle = df.iloc[-1]
+                        self._candle_cache[symbol] = {
+                            'close': last_candle['close'],
+                            'high': last_candle['high'],
+                            'low': last_candle['low'],
+                            'ts': time.time()
+                        }
+
+                candle = self._candle_cache.get(symbol)
+
+                # === АДАПТИВНЫЙ ТРЕЙЛИНГ ===
+                atr_percent = getattr(pos, 'atr_entry', 3.0)
+                adx = getattr(pos, 'adx_entry', 20)
+                profit_pct = pos.calculate_pnl_percent()
+
+                # Ранняя активация трейлинга при хорошей прибыли
+                if profit_pct >= 1.5:
+                    # Динамическая дистанция трейлинга
+                    if adx > 30:
+                        trailing_distance = atr_percent * 1.0  # Тight при сильном тренде
+                    elif adx > 20:
+                        trailing_distance = atr_percent * 1.5
+                    else:
+                        trailing_distance = atr_percent * 2.0  # Шире при слабом тренде
+
+                    pos.update_trailing_stop(trailing_distance)
+
+                # === УМНЫЙ ЧАСТИЧНЫЙ ВЫХОД ===
+                if self.stepped_tp_enabled and pos.stepped_tp_levels and profit_pct >= 2.0:
+                    # Адаптивные уровни на основе ATR
+                    adaptive_levels = self._calculate_adaptive_tp_levels(pos, atr_percent, adx)
+                    pnl, fully_closed = self._apply_adaptive_stepped_tp(pos, adaptive_levels, price)
+
+                    if pnl != 0:
+                        self.logger.info(f"📊 Частичное закрытие {symbol}: PnL {pnl:+.2f}")
+                        if fully_closed:
+                            self._finalize_position(symbol, pos, price, pnl, ExitReason.TAKE_PROFIT,
+                                                    open_positions, update_balance_func,
+                                                    save_history, telegram_notifier, discord_notifier)
+                            continue
+                        else:
+                            update_balance_func(pnl, pos.strategy_type)
+                            continue
+
+                # === УЛУЧШЕННЫЕ УСЛОВИЯ ВЫХОДА ===
+                # Мягкий выход по стопу с подтверждением свечи
+                if self._should_exit_stop_loss_soft(pos, price, candle):
+                    # Проверяем, не ложное пробитие
+                    if self._confirm_stop_exit(pos, price, candle, atr_percent):
+                        pnl = pos.close_full()
+                        reason = ExitReason.TRAILING_STOP if pos.trailing_stop_activated else ExitReason.STOP_LOSS
+                        self._finalize_position(symbol, pos, price, pnl, reason,
+                                                open_positions, update_balance_func,
+                                                save_history, telegram_notifier, discord_notifier)
+                        continue
+
+                # Адаптивный TP на основе текущей волатильности
+                if self._should_exit_adaptive_tp(pos, price, atr_percent, adx):
+                    pnl = pos.close_full()
+                    self._finalize_position(symbol, pos, price, pnl, ExitReason.TAKE_PROFIT,
+                                            open_positions, update_balance_func,
+                                            save_history, telegram_notifier, discord_notifier)
+                    continue
+                    pnl = pos.close_full()
+                    self._finalize_position(symbol, pos, price, pnl, ExitReason.TAKE_PROFIT,
+                                            open_positions, update_balance_func,
+                                            save_history, telegram_notifier, discord_notifier)
+                    continue
+
+                elapsed = datetime.now() - pos.timestamp
+                if pos.calculate_pnl_percent() < -2.0 and elapsed > timedelta(hours=self.time_exit_hours):
+                    pnl = pos.close_full()
+                    self._finalize_position(symbol, pos, price, pnl, ExitReason.TIME_EXIT,
+                                            open_positions, update_balance_func,
+                                            save_history, telegram_notifier, discord_notifier)
+                    continue
+
+                if pos.is_dead_weight(range_percent=2.0, max_hours=48):
+                    pnl = pos.close_full()
+                    self._finalize_position(symbol, pos, price, pnl, ExitReason.DEAD_WEIGHT,
+                                            open_positions, update_balance_func,
+                                            save_history, telegram_notifier, discord_notifier)
+                    continue
+
+            except Exception as e:
+                self.logger.error(f"Ошибка проверки выхода {symbol}: {e}")
+
+    def _should_exit_stop_loss_soft(self, pos: Position, current_price: float, candle: Optional[Dict]) -> bool:
+        active_stop = pos._get_active_stop()
+        if pos.side == OrderSide.BUY:
+            if current_price > active_stop:
+                return False
+            if candle:
+                return candle['close'] <= active_stop
+        else:
+            if current_price < active_stop:
+                return False
+            if candle:
+                return candle['close'] >= active_stop
+        return pos.should_exit_by_stop_loss()
+
+    def _should_exit_take_profit_soft(self, pos: Position, current_price: float, candle: Optional[Dict]) -> bool:
+        tp = pos.take_profit_price
+        if pos.side == OrderSide.BUY:
+            if current_price < tp:
+                return False
+            if candle:
+                return candle['close'] >= tp
+        else:
+            if current_price > tp:
+                return False
+            if candle:
+                return candle['close'] <= tp
+        return pos.should_exit_by_take_profit()
+
+    def _finalize_position(self, symbol, pos, exit_price, pnl, reason, open_positions,
+                           update_balance_func, save_history, telegram_notifier, discord_notifier,
+                           custom_msg=None):
+        last_attempt = self._last_closure_attempt.get(symbol, 0)
+        if time.time() - last_attempt < 5:
+            return
+        self._last_closure_attempt[symbol] = time.time()
+        fail_count = self._failed_closures.get(symbol, 0)
+        if fail_count >= 3:
+            self.logger.error(f"🚨 Позиция {symbol} пропущена: лимит попыток ({fail_count})")
+            if telegram_notifier and fail_count == 3:
+                telegram_notifier.send_sync(f"🚨 {symbol} не закрывается. Требуется ручное закрытие!")
+            return
+        max_attempts = 2
+        success = False
+        for attempt in range(1, max_attempts + 1):
+            success = self.order_manager.close_position(symbol)
+            if success:
+                if symbol in self._failed_closures:
+                    del self._failed_closures[symbol]
+                break
+            if attempt < max_attempts:
+                self.logger.warning(f"Попытка {attempt} закрыть {symbol} не удалась, повтор через 0.5 сек...")
+                time.sleep(0.5)
+        if not success:
+            self._failed_closures[symbol] = fail_count + 1
+            self.logger.error(f"❌ Не удалось закрыть {symbol} после {max_attempts} попыток")
+            return
+        if save_history:
+            self._save_trade_to_history(symbol, pos, exit_price, pnl, reason)
+        if symbol in open_positions:
+            del open_positions[symbol]
+        if symbol in self._failed_closures:
+            del self._failed_closures[symbol]
+        if symbol in self._last_closure_attempt:
+            del self._last_closure_attempt[symbol]
+        update_balance_func(pnl, getattr(pos, 'strategy_type', None))
+        self.risk_controller.register_position_close(symbol)
+        new_risk = self.risk_controller.apply_anti_martingale(pnl, self.settings.get("max_risk_per_trade", 1.0))
+        self.settings.set("max_risk_per_trade", new_risk)
+        self.strategy_engine.evolve(pnl > 0, symbol)
+        if pnl < 0 and self.executor_ref:
+            self.executor_ref.last_loss_time[symbol] = time.time()
+        if custom_msg:
+            msg = custom_msg
+        else:
+            msg = f"{'🟢' if pnl>0 else '🔴'} {symbol} закрыта | PnL: {pnl:+.2f} | {reason.value}"
+        self.logger.info(msg)
+        if telegram_notifier:
+            telegram_notifier.send_sync(msg)
+        if discord_notifier:
+            discord_notifier.send_message(msg)
+
+    def _save_trade_to_history(self, symbol: str, pos: Position, exit_price: float, pnl: float, reason: ExitReason):
+        try:
+            trade_data = {
+                "timestamp": datetime.now().isoformat(),
+                "symbol": symbol,
+                "side": pos.side.value,
+                "entry_price": pos.entry_price,
+                "exit_price": exit_price,
+                "quantity": pos.quantity,
+                "pnl": round(pnl, 4),
+                "pnl_percent": round((pnl / (pos.entry_price * pos.quantity * pos.leverage)) * 100, 2) if pos.entry_price else 0,
+                "exit_reason": reason.value,
+                "hold_time_hours": round((datetime.now() - pos.timestamp).total_seconds() / 3600, 2),
+                "indicators_at_entry": {
+                    "atr_percent": getattr(pos, 'atr_entry', 0),
+                    "rsi": getattr(pos, 'rsi_entry', 50),
+                    "adx": getattr(pos, 'adx_entry', 20),
+                    "trend_score": getattr(pos, 'trend_score', 0)
+                }
+            }
+            if self.sqlite_history:
+                self.sqlite_history.add_trade(trade_data)
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка записи сделки: {e}")
+
+    def record_exchange_tp_close(self, symbol: str, pos: Position, exit_price: float, pnl: float):
+        try:
+            self._save_trade_to_history(symbol, pos, exit_price, pnl, ExitReason.TAKE_PROFIT)
+            self.logger.info(f"🏁 Биржевое закрытие: {symbol} | PnL: {pnl:+.2f}")
+            self.risk_controller.add_pnl(pnl)
+            self.risk_manager.update_pnl(pnl)
+            self.strategy_engine.evolve(pnl > 0, symbol)
+            self.risk_controller.register_position_close(symbol)
+        except Exception as e:
+            self.logger.error(f"Ошибка записи биржевого закрытия: {e}")
