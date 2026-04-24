@@ -1,6 +1,7 @@
 """
-CryptoBot v7.0 - Trade Executor
-Fixed: live trading, balance sync, trailing stop, notifications
+CryptoBot v7.1 - Trade Executor
+Fixed: live trading, balance sync, trailing stop, notifications,
+proper qty calculation, volume validation
 """
 import logging
 import time
@@ -12,14 +13,12 @@ from enum import Enum
 from exchange.api_client import BingXAPIClient
 from risk.risk_manager import RiskManager, Position, RiskLimits
 
-
 class OrderStatus(Enum):
     PENDING = "pending"
     FILLED = "filled"
     PARTIAL = "partial"
     REJECTED = "rejected"
     CANCELLED = "cancelled"
-
 
 @dataclass
 class Order:
@@ -37,7 +36,6 @@ class Order:
     fill_time: str = ""
     pnl: float = 0.0
     metadata: Dict = field(default_factory=dict)
-
 
 class TradeExecutor:
     """Executes trades with full live/paper support."""
@@ -58,7 +56,7 @@ class TradeExecutor:
         self.positions: Dict[str, Position] = {}
         self.order_counter = 0
 
-        self.logger.info(f"TradeExecutor v7.0 | paper={paper_trading} balance=${balance:,.2f}")
+        self.logger.info(f"TradeExecutor v7.1 | paper={paper_trading} balance=${balance:,.2f}")
 
     @property
     def balance(self) -> float:
@@ -108,6 +106,11 @@ class TradeExecutor:
             current_balance
         )
 
+        # Validate size
+        if size <= 0 or size * entry_price < 5.0:
+            self.logger.warning(f"Trade rejected: {symbol} - calculated size too small ({size:.6f})")
+            return None
+
         order = Order(
             symbol=symbol,
             side=side,
@@ -142,9 +145,9 @@ class TradeExecutor:
             entry_price=price,
             leverage=order.leverage,
             stop_loss=price * (1 - self.risk.limits.default_sl_percent / 100) if order.position_side == "LONG"
-                      else price * (1 + self.risk.limits.default_sl_percent / 100),
+            else price * (1 + self.risk.limits.default_sl_percent / 100),
             take_profit=price * (1 + self.risk.limits.default_tp_percent / 100) if order.position_side == "LONG"
-                        else price * (1 - self.risk.limits.default_tp_percent / 100),
+            else price * (1 - self.risk.limits.default_tp_percent / 100),
             margin=margin
         )
 
@@ -194,9 +197,9 @@ class TradeExecutor:
                 entry_price=order.fill_price,
                 leverage=order.leverage,
                 stop_loss=order.fill_price * (1 - self.risk.limits.default_sl_percent / 100) if order.position_side == "LONG"
-                          else order.fill_price * (1 + self.risk.limits.default_sl_percent / 100),
+                else order.fill_price * (1 + self.risk.limits.default_sl_percent / 100),
                 take_profit=order.fill_price * (1 + self.risk.limits.default_tp_percent / 100) if order.position_side == "LONG"
-                            else order.fill_price * (1 - self.risk.limits.default_tp_percent / 100),
+                else order.fill_price * (1 - self.risk.limits.default_tp_percent / 100),
                 margin=margin
             )
             self.positions[order.symbol] = position
@@ -274,7 +277,6 @@ class TradeExecutor:
             if symbol in prices:
                 price = prices[symbol]
                 if position.side == "LONG":
-                    # Move stop loss up if price moved favorably
                     new_sl = price * (1 - self.risk.limits.default_sl_percent / 100)
                     if new_sl > position.stop_loss:
                         position.stop_loss = new_sl

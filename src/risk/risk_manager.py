@@ -1,6 +1,6 @@
 """
-CryptoBot v7.0 - Risk Manager
-Added: trailing stop, max drawdown, correlation check
+CryptoBot v7.1 - Risk Manager
+Fixed: update_pnl method, zero division protection, position validation
 """
 import logging
 from typing import Dict, List, Optional, Any
@@ -8,13 +8,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-
 class RiskLevel(Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
-
 
 @dataclass
 class RiskLimits:
@@ -28,7 +26,6 @@ class RiskLimits:
     min_risk_reward: float = 1.5
     max_drawdown: float = 15.0
     max_correlation: float = 0.8
-
 
 @dataclass
 class Position:
@@ -63,6 +60,13 @@ class Position:
 
         return self.pnl
 
+    def calculate_pnl_percent(self, mark_price: float) -> float:
+        """Calculate P&L percentage safely."""
+        pnl = self.calculate_pnl(mark_price)
+        if self.margin > 0:
+            return (pnl / self.margin) * 100
+        return 0.0
+
     def is_stop_loss_hit(self, price: float) -> bool:
         if self.stop_loss <= 0:
             return False
@@ -88,7 +92,6 @@ class Position:
             if new_sl < self.stop_loss or self.stop_loss == 0:
                 self.stop_loss = new_sl
 
-
 class RiskManager:
     """Advanced risk management."""
 
@@ -103,11 +106,11 @@ class RiskManager:
         self.trade_history: List[Dict] = []
         self.risk_events: List[Dict] = []
 
-        self.logger.info("RiskManager v7.0 initialized")
+        self.logger.info("RiskManager v7.1 initialized")
 
     def can_open_position(self, symbol: str, side: str, size: float,
-                         price: float, leverage: int = 1,
-                         balance: float = 10000.0) -> tuple[bool, str]:
+                          price: float, leverage: int = 1,
+                          balance: float = 10000.0) -> tuple[bool, str]:
         if leverage > self.limits.max_leverage:
             return False, f"Leverage {leverage}x exceeds max {self.limits.max_leverage}x"
 
@@ -151,6 +154,14 @@ class RiskManager:
         return self.limits.max_position_size / price
 
     def add_position(self, position: Position) -> bool:
+        # Validate entry price
+        if position.entry_price <= 0:
+            self.logger.warning(f"Invalid entry price for {position.symbol}: {position.entry_price}")
+            return False
+        if position.size <= 0:
+            self.logger.warning(f"Invalid size for {position.symbol}: {position.size}")
+            return False
+
         self.positions[position.symbol] = position
         self.total_risk += position.margin * (self.limits.max_risk_per_trade / 100)
         self.logger.info(f"Position added: {position.symbol} {position.side} @ {position.entry_price:.2f}")
@@ -161,20 +172,21 @@ class RiskManager:
             return None
 
         pos = self.positions.pop(symbol)
+        pnl = 0.0
         if exit_price > 0:
             pnl = pos.calculate_pnl(exit_price)
             self.daily_pnl += pnl
             if pnl < 0:
                 self.daily_loss += abs(pnl)
 
-            self.trade_history.append({
-                "symbol": symbol, "side": pos.side,
-                "entry": pos.entry_price, "exit": exit_price,
-                "pnl": pnl, "pnl_percent": pos.pnl_percent,
-                "close_time": datetime.now().isoformat()
-            })
+        self.trade_history.append({
+            "symbol": symbol, "side": pos.side,
+            "entry": pos.entry_price, "exit": exit_price,
+            "pnl": pnl, "pnl_percent": pos.pnl_percent,
+            "close_time": datetime.now().isoformat()
+        })
 
-            self.logger.info(f"Position closed: {symbol} P&L=${pnl:+.2f}")
+        self.logger.info(f"Position closed: {symbol} P&L=${pnl:+.2f}")
 
         return pos
 

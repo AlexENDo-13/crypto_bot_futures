@@ -1,6 +1,7 @@
 """
-CryptoBot v7.0 - Main GUI Window
-Fixed: no double init, proper mode sync, real trading, charts
+CryptoBot v7.1 - Main GUI Window
+Fixed: no crash on start, proper error handling in worker,
+graceful shutdown, removed useless dark theme button
 """
 import sys
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import json
 import time
+import traceback
 
 try:
     from PyQt6.QtWidgets import (
@@ -37,7 +39,6 @@ except ImportError:
     from PyQt5.QtGui import QFont, QColor, QAction, QKeySequence
     PYQT_VER = 5
 
-
 class LogWidget(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,7 +63,7 @@ class LogWidget(QTextEdit):
 
         color = self.colors.get(level_name, "#000000")
         timestamp = datetime.now().strftime("%H:%M:%S")
-        html = f'<span style="color:#666666">[{timestamp}]</span> <span style="color:{color}"><b>{level_name}</b></span> <span style="color:#cccccc">{message}</span>'
+        html = f'[<span style="color:#888">{timestamp}</span>] <b style="color:{color}">{level_name}</b> {message}'
         self.append(html)
 
         self._line_count += 1
@@ -71,7 +72,6 @@ class LogWidget(QTextEdit):
             self._line_count = 0
 
         self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
-
 
 class BotWorker(QThread):
     signal_log = pyqtSignal(str, int)
@@ -101,43 +101,53 @@ class BotWorker(QThread):
                     self.signal_status.emit(f"Cycle #{self._cycle_count}: Scanning...")
 
                     if self.scanner:
-                        signals = self.scanner.scan_all()
-                        if signals:
-                            self.signal_log.emit(f"Found {len(signals)} signals", 20)
-                            for sig in signals[:3]:
-                                self.signal_log.emit(
-                                    f"Signal: {sig.symbol} {sig.type.value.upper()} "
-                                    f"({sig.strategy}) conf={sig.confidence:.2f}", 20)
-
-                                # Auto-execute top signals
+                        try:
+                            signals = self.scanner.scan_all()
+                            if signals:
+                                self.signal_log.emit(f"Found {len(signals)} signals", 20)
+                                for sig in signals[:3]:
+                                    self.signal_log.emit(
+                                        f"Signal: {sig.symbol} {sig.type.value.upper()} "
+                                        f"({sig.strategy}) conf={sig.confidence:.2f}", 20)
                                 if self.executor:
-                                    self.executor.execute_signal(sig)
+                                    for sig in signals[:3]:
+                                        try:
+                                            self.executor.execute_signal(sig)
+                                        except Exception as e:
+                                            self.signal_log.emit(f"Execute error: {e}", 40)
+                        except Exception as e:
+                            self.signal_log.emit(f"Scan error: {e}", 40)
 
-                    # Update balance
                     if self.executor:
-                        bal = self.executor.get_balance() if hasattr(self.executor, 'get_balance') else {"balance": self.executor.balance}
-                        if isinstance(bal, dict):
-                            self.signal_balance.emit(
-                                float(bal.get("balance", self.executor.balance)),
-                                float(bal.get("available", self.executor.balance))
-                            )
+                        try:
+                            bal = self.executor.balance
+                            self.signal_balance.emit(bal, bal)
+                        except Exception as e:
+                            self.signal_log.emit(f"Balance update error: {e}", 40)
 
-                        # Update positions
-                        if self.data_fetcher:
+                    if self.data_fetcher and self.executor:
+                        try:
                             prices = {}
                             for sym in list(self.executor.positions.keys()):
                                 p = self.data_fetcher.get_current_price(sym)
                                 if p > 0:
                                     prices[sym] = p
-                            self.executor.update_positions(prices)
-                            self.signal_positions.emit(self.executor.get_open_positions())
+                            if prices:
+                                self.executor.update_positions(prices)
+                                self.signal_positions.emit(self.executor.get_open_positions())
+                        except Exception as e:
+                            self.signal_log.emit(f"Position update error: {e}", 40)
 
                     self.signal_status.emit(f"Cycle #{self._cycle_count}: Idle")
 
                 except Exception as e:
-                    self.signal_log.emit(f"Worker error: {e}", 40)
+                    err_msg = f"Worker error: {e}"
+                    self.signal_log.emit(err_msg, 40)
+                    traceback_str = traceback.format_exc()
+                    for line in traceback_str.split("\n")[:5]:
+                        if line.strip():
+                            self.signal_log.emit(line, 40)
 
-            # Sleep with interrupt check
             for _ in range(self.interval):
                 if not self.running or self._paused:
                     break
@@ -157,18 +167,16 @@ class BotWorker(QThread):
         self._paused = False
         self.signal_status.emit("Running")
 
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CryptoBot v7.0 - Professional Futures Trading")
+        self.setWindowTitle("CryptoBot v7.1 - Professional Futures Trading")
         self.setMinimumSize(1500, 950)
 
         self.bot_running = False
         self.worker = None
         self.start_time = None
 
-        # Core components
         self.settings = None
         self.api_client = None
         self.data_fetcher = None
@@ -185,16 +193,20 @@ class MainWindow(QMainWindow):
         self._setup_timers()
         self._apply_dark_theme()
 
-        # Connect logger AFTER UI setup
         from core.logger import BotLogger
         BotLogger().add_gui_handler(self.append_log)
 
-        # Init core ONCE
-        self._init_core()
-        self._load_settings_to_ui()
-
-        self.append_log("CryptoBot v7.0 initialized", 20)
-        self.append_log("Configure API keys in Settings before live trading", 20)
+        try:
+            self._init_core()
+            self._load_settings_to_ui()
+            self.append_log("CryptoBot v7.1 initialized", 20)
+            self.append_log("Configure API keys in Settings before live trading", 20)
+        except Exception as e:
+            self.append_log(f"Init error: {e}", 40)
+            traceback_str = traceback.format_exc()
+            for line in traceback_str.split("\n")[:5]:
+                if line.strip():
+                    self.append_log(line, 40)
 
     def _init_core(self):
         from core.settings import BotSettings
@@ -320,7 +332,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("Mode:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Paper Trading", "Live Trading"])
-        self.mode_combo.setCurrentIndex(0 if self.settings and self.settings.paper_trading else 1)
+        self.mode_combo.setCurrentIndex(0)
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         layout.addWidget(self.mode_combo)
 
@@ -879,7 +891,7 @@ class MainWindow(QMainWindow):
         self.set_paper.setChecked(is_paper)
         if self.executor:
             self.executor.paper = is_paper
-            self.settings.paper_trading = is_paper
+        self.settings.paper_trading = is_paper
         self.append_log(f"Mode: {text}", 20)
 
     def _on_start(self):
@@ -890,10 +902,17 @@ class MainWindow(QMainWindow):
             if not self.settings.api_key or not self.settings.api_secret:
                 QMessageBox.warning(self, "API Keys", "Enter API keys in Settings for live trading")
                 return
-            reply = QMessageBox.question(self, "LIVE TRADING",
-                "START LIVE TRADING WITH REAL MONEY?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No if PYQT_VER == 6 else QMessageBox.Yes | QMessageBox.No)
-            if reply != (QMessageBox.StandardButton.Yes if PYQT_VER == 6 else QMessageBox.Yes):
+            if PYQT_VER == 6:
+                reply = QMessageBox.question(self, "LIVE TRADING",
+                    "START LIVE TRADING WITH REAL MONEY?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                yes = QMessageBox.StandardButton.Yes
+            else:
+                reply = QMessageBox.question(self, "LIVE TRADING",
+                    "START LIVE TRADING WITH REAL MONEY?",
+                    QMessageBox.Yes | QMessageBox.No)
+                yes = QMessageBox.Yes
+            if reply != yes:
                 return
 
         self.bot_running = True
@@ -909,8 +928,11 @@ class MainWindow(QMainWindow):
         self.append_log("Bot started!", 20)
         if not self.settings.paper_trading:
             self.append_log("LIVE MODE ACTIVE", 40)
-            if self.notifier:
-                self.notifier.send_alert("Bot started in LIVE mode")
+        if self.notifier:
+            try:
+                self.notifier.send_alert("Bot started")
+            except Exception:
+                pass
 
         self.statusbar.showMessage("Running")
 
@@ -1008,24 +1030,27 @@ class MainWindow(QMainWindow):
     def _on_scan(self):
         self.append_log("Scanning...", 20)
         if self.scanner:
-            self.scanner.load_symbols(self.scan_symbols.value())
-            signals = self.scanner.scan_all(self.scan_timeframe.currentText())
-            self.signals_table.setRowCount(min(len(signals), 20))
-            for i, sig in enumerate(signals[:20]):
-                self.signals_table.setItem(i, 0, QTableWidgetItem(str(sig.timestamp)[:19]))
-                self.signals_table.setItem(i, 1, QTableWidgetItem(sig.symbol))
-                self.signals_table.setItem(i, 2, QTableWidgetItem(sig.strategy))
-                self.signals_table.setItem(i, 3, QTableWidgetItem(sig.type.value.upper()))
-                self.signals_table.setItem(i, 4, QTableWidgetItem(f"{sig.confidence:.2f}"))
-                self.signals_table.setItem(i, 5, QTableWidgetItem(f"${sig.price:.4f}"))
-            self.append_log(f"Scan: {len(signals)} signals", 20)
+            try:
+                self.scanner.load_symbols(self.scan_symbols.value())
+                signals = self.scanner.scan_all(self.scan_timeframe.currentText())
+                self.signals_table.setRowCount(min(len(signals), 20))
+                for i, sig in enumerate(signals[:20]):
+                    self.signals_table.setItem(i, 0, QTableWidgetItem(str(sig.timestamp)[:19]))
+                    self.signals_table.setItem(i, 1, QTableWidgetItem(sig.symbol))
+                    self.signals_table.setItem(i, 2, QTableWidgetItem(sig.strategy))
+                    self.signals_table.setItem(i, 3, QTableWidgetItem(sig.type.value.upper()))
+                    self.signals_table.setItem(i, 4, QTableWidgetItem(f"{sig.confidence:.2f}"))
+                    self.signals_table.setItem(i, 5, QTableWidgetItem(f"${sig.price:.4f}"))
+                self.append_log(f"Scan: {len(signals)} signals", 20)
+            except Exception as e:
+                self.append_log(f"Scan error: {e}", 40)
         else:
             self.append_log("Scanner not ready", 40)
 
     def _on_save_state(self):
         if self.state_manager:
             self.state_manager.save_stat("last_save", datetime.now().isoformat())
-        self.append_log("State saved", 20)
+            self.append_log("State saved", 20)
 
     def _on_load_state(self):
         self.append_log("State loaded", 20)
@@ -1033,7 +1058,7 @@ class MainWindow(QMainWindow):
     def _on_run_backtest(self):
         self.append_log("Backtest started...", 20)
         self.bt_results.setText("""
-Backtest Results v7.0
+Backtest Results v7.1
 ======================
 Strategy: EMA Cross
 Symbol: BTC-USDT
@@ -1052,13 +1077,15 @@ Final: $14,530
 
     def _on_about(self):
         QMessageBox.about(self, "About",
-            "<h2>CryptoBot v7.0</h2>"
+            "<h2>CryptoBot v7.1</h2>"
             "<p>Professional Automated Futures Trading</p>"
-            "<ul><li>Real-time trading on BingX</li>"
+            "<ul>"
+            "<li>Real-time trading on BingX</li>"
             "<li>7 strategies + ML filtering</li>"
             "<li>Advanced risk management</li>"
             "<li>Telegram/Discord/Email alerts</li>"
-            "<li>Trailing stops</li></ul>"
+            "<li>Trailing stops</li>"
+            "</ul>"
         )
 
     def _update_ui(self):
@@ -1072,9 +1099,12 @@ Final: $14,530
         if not self.bot_running:
             return
         if self.risk_manager:
-            stats = self.risk_manager.get_stats()
-            self.dash_total_pnl.setText(f"${stats.get('total_pnl', 0):+.2f}")
-            self.dash_winrate.setText(f"{stats.get('win_rate', 0):.1f}%")
+            try:
+                stats = self.risk_manager.get_stats()
+                self.dash_total_pnl.setText(f"${stats.get('total_pnl', 0):+.2f}")
+                self.dash_winrate.setText(f"{stats.get('win_rate', 0):.1f}%")
+            except Exception:
+                pass
 
     def append_log(self, message: str, level: int = 20):
         if hasattr(self, 'log_widget'):

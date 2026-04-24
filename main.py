@@ -1,8 +1,10 @@
 """
-CryptoBot v7.0 - Main Entry Point
+CryptoBot v7.1 - Main Entry Point
+Fixed: proper exception handling, graceful shutdown, no crash on start
 """
 import sys
 import os
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -20,18 +22,16 @@ except ImportError:
         print("ERROR: Install PyQt6: pip install PyQt6")
         sys.exit(1)
 
-
 def ensure_directories():
     for d in ["logs", "data/state", "data/cache", "config", "backtests"]:
         Path(d).mkdir(parents=True, exist_ok=True)
 
-
 def run_gui():
     log = get_logger("CryptoBot")
-    log.info(f"Starting CryptoBot v7.0 GUI | Qt={PYQT}")
+    log.info(f"Starting CryptoBot v7.1 GUI | Qt={PYQT}")
 
     app = QApplication(sys.argv)
-    app.setApplicationName("CryptoBot v7.0")
+    app.setApplicationName("CryptoBot v7.1")
 
     from ui.main_window import MainWindow
     window = MainWindow()
@@ -44,22 +44,25 @@ def run_gui():
     else:
         sys.exit(app.exec_())
 
-
 def main():
     ensure_directories()
     logger = BotLogger(log_dir="logs", level=20)
     log = logger.get_logger("CryptoBot")
 
     log.info("=" * 60)
-    log.info("CryptoBot v7.0 - Professional Futures Trading Bot")
+    log.info("CryptoBot v7.1 - Professional Futures Trading Bot")
     log.info("=" * 60)
 
     try:
         run_gui()
     except Exception as e:
         log.error(f"Fatal: {e}", exc_info=True)
+        print("f"
+FATAL ERROR: {e})
+        print(traceback.format_exc())
+        input(
+Press Enter to exit...)
         raise
-
 
 if __name__ == "__main__":
     main()

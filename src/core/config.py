@@ -9,17 +9,14 @@ from typing import List, Dict, Optional, Any
 from pathlib import Path
 from enum import Enum
 
-
 class TradingMode(Enum):
     PAPER = "paper"
     LIVE = "live"
     BACKTEST = "backtest"
 
-
 class MarginMode(Enum):
     ISOLATED = "ISOLATED"
     CROSSED = "CROSSED"
-
 
 @dataclass
 class ExchangeConfig:
@@ -37,7 +34,6 @@ class ExchangeConfig:
         self.api_key = os.getenv("BINGX_API_KEY", self.api_key)
         self.api_secret = os.getenv("BINGX_API_SECRET", self.api_secret)
 
-
 @dataclass
 class TradingConfig:
     symbols: List[str] = field(default_factory=lambda: ["BTC-USDT", "ETH-USDT"])
@@ -46,13 +42,11 @@ class TradingConfig:
     margin_mode: str = "ISOLATED"
     order_type: str = "MARKET"
 
-    # Position sizing
     max_position_usdt: float = 100.0
     risk_per_trade_pct: float = 1.0
     max_open_positions: int = 5
     max_positions_per_symbol: int = 1
 
-    # Entry/Exit
     use_trailing_stop: bool = True
     trailing_stop_pct: float = 0.5
     trailing_stop_atr_mult: float = 2.0
@@ -61,7 +55,6 @@ class TradingConfig:
     use_breakeven: bool = True
     breakeven_trigger_pct: float = 0.8
 
-    # Partial profits
     use_partial_tp: bool = True
     partial_tp_levels: List[Dict] = field(default_factory=lambda: [
         {"pct": 1.0, "close": 0.25},
@@ -69,17 +62,14 @@ class TradingConfig:
         {"pct": 3.0, "close": 0.25},
     ])
 
-    # Safety
     max_daily_loss_pct: float = 5.0
     cooldown_after_loss_sec: int = 300
     min_volume_24h: float = 500000.0
     max_spread_pct: float = 0.1
 
-    # Session filters
     trade_asia: bool = True
     trade_london: bool = True
     trade_new_york: bool = True
-
 
 @dataclass
 class RiskConfig:
@@ -88,28 +78,23 @@ class RiskConfig:
     max_drawdown_pct: float = 10.0
     emergency_stop_balance_pct: float = 20.0
 
-    # Advanced sizing
     use_kelly: bool = False
     kelly_fraction: float = 0.25
     use_optimal_f: bool = False
 
-    # Volatility
     max_atr_pct: float = 5.0
     min_atr_pct: float = 0.05
 
-    # Correlation
     max_correlation_positions: int = 2
     correlation_threshold: float = 0.8
 
-    # News filter
     avoid_high_impact_news: bool = True
     news_buffer_minutes: int = 15
-
 
 @dataclass
 class StrategyConfig:
     enabled_strategies: List[str] = field(default_factory=lambda: [
-        "ema_cross", "rsi_divergence", "volume_breakout", 
+        "ema_cross", "rsi_divergence", "volume_breakout",
         "support_resistance", "macd_momentum", "bollinger_squeeze"
     ])
     timeframes: List[str] = field(default_factory=lambda: ["1m", "5m", "15m", "1h", "4h"])
@@ -117,31 +102,25 @@ class StrategyConfig:
     confirmation_timeframe: str = "1h"
     min_signal_confidence: float = 0.65
 
-    # EMA
     ema_fast: int = 9
     ema_slow: int = 21
     ema_trend: int = 50
     ema_long: int = 200
 
-    # RSI
     rsi_period: int = 14
     rsi_overbought: float = 70.0
     rsi_oversold: float = 30.0
 
-    # Volume
     volume_ma_period: int = 20
     volume_breakout_mult: float = 2.0
 
-    # BB
     bb_period: int = 20
     bb_std: float = 2.0
     bb_squeeze_threshold: float = 0.1
 
-    # MACD
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal: int = 9
-
 
 @dataclass
 class AIConfig:
@@ -159,7 +138,6 @@ class AIConfig:
     use_ensemble: bool = True
     ensemble_models: List[str] = field(default_factory=lambda: ["rf", "gb", "xgb"])
 
-
 @dataclass
 class BacktestConfig:
     enabled: bool = False
@@ -171,7 +149,6 @@ class BacktestConfig:
     walk_forward: bool = True
     walk_forward_window: int = 30
     walk_forward_step: int = 7
-
 
 @dataclass
 class NotificationConfig:
@@ -185,7 +162,6 @@ class NotificationConfig:
     notify_on_drawdown: bool = True
     drawdown_threshold_pct: float = 5.0
 
-
 @dataclass
 class UIConfig:
     window_title: str = "Crypto Bot Futures v5.0"
@@ -198,7 +174,6 @@ class UIConfig:
     show_equity_curve: bool = True
     show_drawdown_chart: bool = True
     auto_scroll_logs: bool = True
-
 
 @dataclass
 class Config:
@@ -223,10 +198,10 @@ class Config:
         if self.mode == TradingMode.LIVE:
             if not self.exchange.api_key or not self.exchange.api_secret:
                 errors.append("API keys required for live trading")
-        if self.trading.leverage < 1 or self.trading.leverage > 125:
-            errors.append("Leverage must be 1-125")
-        if self.trading.risk_per_trade_pct <= 0:
-            errors.append("Risk per trade must be > 0")
+            if self.trading.leverage < 1 or self.trading.leverage > 125:
+                errors.append("Leverage must be 1-125")
+            if self.trading.risk_per_trade_pct <= 0:
+                errors.append("Risk per trade must be > 0")
         return errors
 
     def to_dict(self) -> Dict:
@@ -254,7 +229,6 @@ class Config:
                 else:
                     setattr(cfg, key, val)
 
-        # Nested configs
         if "exchange" in data:
             cfg.exchange = ExchangeConfig(**{k: v for k, v in data["exchange"].items() if k in ExchangeConfig.__dataclass_fields__})
         if "trading" in data:
@@ -272,7 +246,6 @@ class Config:
         if "ui" in data:
             cfg.ui = UIConfig(**{k: v for k, v in data["ui"].items() if k in UIConfig.__dataclass_fields__})
         return cfg
-
 
 _config: Optional[Config] = None
 

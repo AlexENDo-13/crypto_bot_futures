@@ -1,5 +1,5 @@
 """
-CryptoBot v7.0 - Advanced Logging System
+CryptoBot v7.1 - Advanced Logging System
 Fixed: singleton duplication, proper handler management
 """
 import logging
@@ -9,7 +9,6 @@ from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Callable
-
 
 class CallbackLogHandler(logging.Handler):
     """GUI callback handler - no Qt dependencies."""
@@ -33,7 +32,6 @@ class CallbackLogHandler(logging.Handler):
                     pass
         except Exception:
             self.handleError(record)
-
 
 class BotLogger:
     """Centralized logging manager - proper singleton."""
@@ -80,7 +78,7 @@ class BotLogger:
             ))
             self.logger.addHandler(file_h)
 
-        self.logger.info(f"BotLogger v7.0 initialized | log_dir={log_dir}")
+        self.logger.info(f"BotLogger v7.1 initialized | log_dir={log_dir}")
 
     def add_gui_handler(self, callback: Callable[[str, int], None]):
         """Add GUI callback - replaces existing if any."""
@@ -99,7 +97,6 @@ class BotLogger:
 
     def get_logger(self, name: str = "CryptoBot") -> logging.Logger:
         return logging.getLogger(name)
-
 
 def get_logger(name: str = "CryptoBot") -> logging.Logger:
     return BotLogger().get_logger(name)

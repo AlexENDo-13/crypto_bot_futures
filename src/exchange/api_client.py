@@ -1,6 +1,7 @@
 """
-CryptoBot v7.0 - BingX API Client
-Fixed: proper key passing, auto-reconnect, better error handling
+CryptoBot v7.1 - BingX API Client
+Fixed: proper signature generation, error codes 100412/100001 handling,
+retry logic, recvWindow support
 """
 import time
 import hmac
@@ -17,12 +18,11 @@ try:
 except ImportError:
     REQUESTS_OK = False
 
-
 class BingXAPIClient:
-    """BingX Futures API Client v7.0"""
+    """BingX Futures API Client v7.1"""
 
-    def __init__(self, api_key: str = "", api_secret: str = "", 
-                 base_url: str = "https://open-api.bingx.com", 
+    def __init__(self, api_key: str = "", api_secret: str = "",
+                 base_url: str = "https://open-api.bingx.com",
                  testnet: bool = True, pool_size: int = 10):
         self.api_key = api_key or ""
         self.api_secret = api_secret or ""
@@ -33,15 +33,15 @@ class BingXAPIClient:
         self.session = None
         if REQUESTS_OK:
             self.session = requests.Session()
-            retry = Retry(total=3, backoff_factor=0.5, 
-                         status_forcelist=[500, 502, 503, 504, 429])
-            adapter = HTTPAdapter(max_retries=retry, pool_connections=pool_size, 
-                                 pool_maxsize=pool_size)
+            retry = Retry(total=3, backoff_factor=0.5,
+                          status_forcelist=[500, 502, 503, 504, 429])
+            adapter = HTTPAdapter(max_retries=retry, pool_connections=pool_size,
+                                  pool_maxsize=pool_size)
             self.session.mount("https://", adapter)
             self.session.mount("http://", adapter)
 
         has_key = "YES" if self.api_key else "NO"
-        self.logger.info(f"BingXAPIClient v7.0 | base={self.base_url} api_key={has_key}")
+        self.logger.info(f"BingXAPIClient v7.1 | base={self.base_url} api_key={has_key}")
 
     def update_credentials(self, api_key: str, api_secret: str):
         """Update API credentials without recreating client."""
@@ -50,6 +50,7 @@ class BingXAPIClient:
         self.logger.info(f"API credentials updated | key={'YES' if self.api_key else 'NO'}")
 
     def _generate_signature(self, params: Dict[str, Any]) -> str:
+        """Generate HMAC SHA256 signature for BingX API."""
         query_string = urlencode(sorted(params.items()))
         return hmac.new(
             self.api_secret.encode("utf-8"),
@@ -57,14 +58,15 @@ class BingXAPIClient:
             hashlib.sha256
         ).hexdigest()
 
-    def _request(self, method: str, endpoint: str, params: Dict = None, 
-                 signed: bool = False) -> Dict:
+    def _request(self, method: str, endpoint: str, params: Dict = None,
+                 signed: bool = False, retries: int = 3) -> Dict:
         if not REQUESTS_OK:
             return {"code": -1, "msg": "requests not installed"}
 
         url = f"{self.base_url}{endpoint}"
         params = params or {}
         params["timestamp"] = int(time.time() * 1000)
+        params["recvWindow"] = 5000
 
         if signed:
             if not self.api_secret:
@@ -75,25 +77,39 @@ class BingXAPIClient:
         if self.api_key:
             headers["X-BX-APIKEY"] = self.api_key
 
-        try:
-            if method.upper() == "GET":
-                resp = self.session.get(url, params=params, headers=headers, timeout=15)
-            else:
-                resp = self.session.post(url, json=params, headers=headers, timeout=15)
+        last_error = None
+        for attempt in range(retries):
+            try:
+                if method.upper() == "GET":
+                    resp = self.session.get(url, params=params, headers=headers, timeout=15)
+                else:
+                    resp = self.session.post(url, json=params, headers=headers, timeout=15)
 
-            resp.raise_for_status()
-            data = resp.json()
+                resp.raise_for_status()
+                data = resp.json()
 
-            if data.get("code") not in (0, None, 200):
-                self.logger.warning(f"API error {data.get('code')}: {data.get('msg', '')}")
+                # Handle specific BingX error codes
+                code = data.get("code")
+                if code in (100412, 100001):
+                    self.logger.warning(f"BingX error {code}: {data.get('msg', '')}, retrying...")
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
 
-            return data
-        except requests.exceptions.Timeout:
-            return {"code": -1, "msg": "timeout"}
-        except requests.exceptions.ConnectionError:
-            return {"code": -1, "msg": "connection_error"}
-        except Exception as e:
-            return {"code": -1, "msg": str(e)}
+                if code not in (0, None, 200):
+                    self.logger.warning(f"API error {code}: {data.get('msg', '')}")
+
+                return data
+            except requests.exceptions.Timeout:
+                last_error = "timeout"
+                time.sleep(0.5 * (attempt + 1))
+            except requests.exceptions.ConnectionError:
+                last_error = "connection_error"
+                time.sleep(0.5 * (attempt + 1))
+            except Exception as e:
+                last_error = str(e)
+                time.sleep(0.5 * (attempt + 1))
+
+        return {"code": -1, "msg": f"{last_error} after {retries} retries"}
 
     def get_server_time(self) -> Dict:
         return self._request("GET", "/openApi/swap/v2/server/time")

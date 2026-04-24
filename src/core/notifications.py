@@ -1,6 +1,6 @@
 """
-CryptoBot v7.0 - Notification System
-Telegram, Discord, Email alerts with trade templates
+CryptoBot v7.1 - Notification System
+Fixed: proper dataclass field names matching settings
 """
 import logging
 from typing import Dict, Optional
@@ -11,7 +11,6 @@ try:
     REQUESTS_OK = True
 except ImportError:
     REQUESTS_OK = False
-
 
 @dataclass
 class NotificationConfig:
@@ -26,7 +25,6 @@ class NotificationConfig:
     email_login: str = ""
     email_password: str = ""
     email_to: str = ""
-
 
 class NotificationManager:
     """Multi-channel notification system."""
@@ -87,13 +85,13 @@ class NotificationManager:
             self.logger.error(f"Email error: {e}")
 
     def send_trade_open(self, symbol: str, side: str, price: float, size: float):
-        msg = f"<b>OPEN</b> {symbol} {side} @ ${price:.4f} x {size:.4f}"
+        msg = f"📈 OPEN {symbol} {side} @ ${price:.4f} x {size:.4f}"
         self.send(msg, "TRADE")
 
     def send_trade_close(self, symbol: str, side: str, entry: float, exit_price: float, pnl: float):
-        emoji = "+" if pnl >= 0 else "-"
-        msg = f"<b>CLOSE</b> {symbol} {side} | Entry: ${entry:.4f} | Exit: ${exit_price:.4f} | P&L: {emoji}${abs(pnl):.2f}"
+        emoji = "🟢" if pnl >= 0 else "🔴"
+        msg = f"{emoji} CLOSE {symbol} {side} | Entry: ${entry:.4f} | Exit: ${exit_price:.4f} | P&L: ${pnl:+.2f}"
         self.send(msg, "TRADE")
 
     def send_alert(self, message: str):
-        self.send(f"<b>ALERT</b> {message}", "ALERT")
+        self.send(f"⚠️ ALERT {message}", "ALERT")

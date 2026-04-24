@@ -1,126 +1,58 @@
 """
-Event Bus - Central pub/sub system for decoupled architecture.
-All components communicate via typed events.
+CryptoBot v7.0 - Event System
 """
-import asyncio
-import threading
-from typing import Dict, List, Callable, Any, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from collections import defaultdict
-import inspect
+from enum import Enum
+from typing import Dict, Any, Optional
 
+class EventType(Enum):
+    SIGNAL = "signal"
+    TRADE = "trade"
+    POSITION_UPDATE = "position_update"
+    PRICE_UPDATE = "price_update"
+    RISK_EVENT = "risk_event"
+    ERROR = "error"
+    STATUS = "status"
 
 @dataclass
 class Event:
-    """Base event class"""
-    type: str
-    timestamp: datetime = field(default_factory=datetime.now)
-    data: Dict[str, Any] = field(default_factory=dict)
+    type: EventType
+    timestamp: datetime
+    data: Dict[str, Any]
     source: str = ""
-
-    def get(self, key: str, default=None):
-        return self.data.get(key, default)
-
+    priority: int = 0
 
 class EventBus:
-    """
-    Thread-safe event bus with sync and async handlers.
-    Supports priority, filtering, and dead-letter queue.
-    """
+    """Simple event bus for decoupled communication."""
 
     def __init__(self):
-        self._handlers: Dict[str, List[Callable]] = defaultdict(list)
-        self._async_handlers: Dict[str, List[Callable]] = defaultdict(list)
-        self._lock = threading.RLock()
-        self._event_queue: List[Event] = []
-        self._running = False
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._metrics: Dict[str, int] = defaultdict(int)
+        self._handlers = {}
+        self._history = []
 
-    def subscribe(self, event_type: str, handler: Callable, async_handler: bool = False):
-        """Subscribe to event type"""
-        with self._lock:
-            if async_handler or inspect.iscoroutinefunction(handler):
-                if handler not in self._async_handlers[event_type]:
-                    self._async_handlers[event_type].append(handler)
-            else:
-                if handler not in self._handlers[event_type]:
-                    self._handlers[event_type].append(handler)
+    def subscribe(self, event_type: EventType, handler):
+        if event_type not in self._handlers:
+            self._handlers[event_type] = []
+        self._handlers[event_type].append(handler)
 
-    def unsubscribe(self, event_type: str, handler: Callable):
-        """Unsubscribe from event type"""
-        with self._lock:
-            if handler in self._handlers.get(event_type, []):
-                self._handlers[event_type].remove(handler)
-            if handler in self._async_handlers.get(event_type, []):
-                self._async_handlers[event_type].remove(handler)
+    def unsubscribe(self, event_type: EventType, handler):
+        if event_type in self._handlers:
+            self._handlers[event_type] = [h for h in self._handlers[event_type] if h != handler]
 
-    def emit(self, event: Event):
-        """Emit event to all subscribers"""
-        self._metrics[event.type] += 1
+    def publish(self, event: Event):
+        self._history.append(event)
+        if len(self._history) > 1000:
+            self._history = self._history[-500:]
 
-        # Sync handlers
-        handlers = []
-        async_handlers = []
-        with self._lock:
-            handlers = list(self._handlers.get(event.type, []))
-            async_handlers = list(self._async_handlers.get(event.type, []))
-
+        handlers = self._handlers.get(event.type, [])
         for handler in handlers:
             try:
                 handler(event)
-            except Exception as e:
-                print(f"Event handler error: {e}")
+            except Exception:
+                pass
 
-        # Async handlers
-        if async_handlers:
-            for handler in async_handlers:
-                try:
-                    if self._loop and self._loop.is_running():
-                        asyncio.run_coroutine_threadsafe(handler(event), self._loop)
-                    else:
-                        asyncio.run(handler(event))
-                except Exception as e:
-                    print(f"Async event handler error: {e}")
-
-    def emit_new(self, event_type: str, data: Dict[str, Any] = None, source: str = ""):
-        """Convenience method to create and emit event"""
-        self.emit(Event(type=event_type, data=data or {}, source=source))
-
-    def get_metrics(self) -> Dict[str, int]:
-        return dict(self._metrics)
-
-
-# Global event bus instance
-_bus: Optional[EventBus] = None
-
-def get_event_bus() -> EventBus:
-    global _bus
-    if _bus is None:
-        _bus = EventBus()
-    return _bus
-
-
-# Common event types
-class EventType:
-    PRICE_UPDATE = "price_update"
-    TICKER_UPDATE = "ticker_update"
-    KLINE_UPDATE = "kline_update"
-    ORDERBOOK_UPDATE = "orderbook_update"
-    SIGNAL_GENERATED = "signal_generated"
-    POSITION_OPENED = "position_opened"
-    POSITION_CLOSED = "position_closed"
-    POSITION_UPDATED = "position_updated"
-    ORDER_PLACED = "order_placed"
-    ORDER_FILLED = "order_filled"
-    ORDER_CANCELLED = "order_cancelled"
-    BALANCE_UPDATE = "balance_update"
-    RISK_ALERT = "risk_alert"
-    ERROR = "error"
-    BOT_STARTED = "bot_started"
-    BOT_STOPPED = "bot_stopped"
-    BACKTEST_RESULT = "backtest_result"
-    NOTIFICATION = "notification"
-    WS_CONNECTED = "ws_connected"
-    WS_DISCONNECTED = "ws_disconnected"
+    def get_history(self, event_type: EventType = None, limit: int = 100):
+        filtered = self._history
+        if event_type:
+            filtered = [e for e in filtered if e.type == event_type]
+        return filtered[-limit:]

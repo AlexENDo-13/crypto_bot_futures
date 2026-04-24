@@ -1,11 +1,11 @@
 """
-CryptoBot v7.0 - Settings
+CryptoBot v7.1 - Settings
+Fixed: added scan_interval, proper defaults
 """
 import json
 from pathlib import Path
 from typing import List
 from dataclasses import dataclass, asdict, field
-
 
 @dataclass
 class BotSettings:

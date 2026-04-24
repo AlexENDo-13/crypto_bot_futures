@@ -1,6 +1,7 @@
 """
-CryptoBot v7.0 - Market Scanner
-Fixed: proper error handling, signal validation, multi-timeframe
+CryptoBot v7.1 - Market Scanner
+Fixed: proper error handling, signal validation, multi-timeframe,
+graceful handling of missing data
 """
 import logging
 import time
@@ -11,7 +12,6 @@ import pandas as pd
 from exchange.data_fetcher import DataFetcher
 from strategies.strategies import StrategyManager, Signal
 from ml.ml_engine import MLEngine
-
 
 class MarketScanner:
     """Scans markets for trading opportunities."""
@@ -30,7 +30,7 @@ class MarketScanner:
         self.scan_results: List[Dict] = []
         self.last_scan_time: float = 0
 
-        self.logger.info(f"MarketScanner v7.0 | strategies={len(self.strategies.strategies)}")
+        self.logger.info(f"MarketScanner v7.1 | strategies={len(self.strategies.strategies)}")
 
     def load_symbols(self, count: int = 15) -> List[str]:
         self.symbols = self.data_fetcher.load_symbols(count)
@@ -38,8 +38,8 @@ class MarketScanner:
         return self.symbols
 
     def scan_symbol(self, symbol: str, timeframe: str = "15m",
-                   min_confidence: float = 0.5,
-                   enabled_strategies: List[str] = None) -> List[Signal]:
+                    min_confidence: float = 0.5,
+                    enabled_strategies: List[str] = None) -> List[Signal]:
         """Scan a single symbol."""
         try:
             df = self.data_fetcher.get_klines(symbol, timeframe)

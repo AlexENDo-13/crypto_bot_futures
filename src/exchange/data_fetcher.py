@@ -1,6 +1,6 @@
 """
-CryptoBot v7.0 - Data Fetcher
-Fixed: proper validation, robust mock data, API fallback
+CryptoBot v7.1 - Data Fetcher
+Fixed: proper klines parsing, volume/qty validation, mock data fallback
 """
 import time
 import logging
@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-
 
 @dataclass
 class Candle:
@@ -36,7 +35,6 @@ class Candle:
         except (ValueError, TypeError, IndexError):
             return None
 
-
 class DataFetcher:
     """Fetches and caches market data."""
 
@@ -47,7 +45,7 @@ class DataFetcher:
         self._symbols: List[str] = []
         self._klines_cache: Dict[str, pd.DataFrame] = {}
         self._last_update: Dict[str, float] = {}
-        self.logger.info("DataFetcher v7.0 initialized")
+        self.logger.info("DataFetcher v7.1 initialized")
 
     def load_symbols(self, count: int = 15) -> List[str]:
         if self.api and self.api.api_key:
@@ -68,7 +66,7 @@ class DataFetcher:
         self.logger.info(f"Loaded {len(self._symbols)} default symbols")
         return self._symbols[:count]
 
-    def get_klines(self, symbol: str, timeframe: str = "15m", 
+    def get_klines(self, symbol: str, timeframe: str = "15m",
                    limit: int = 100, use_cache: bool = True) -> Optional[pd.DataFrame]:
         cache_key = f"{symbol}_{timeframe}"
 
@@ -94,7 +92,8 @@ class DataFetcher:
         if df is not None and len(df) >= 50:
             self._klines_cache[cache_key] = df
             self._last_update[cache_key] = time.time()
-        return df
+            return df
+        return None
 
     def _parse_klines(self, raw_data: List[List]) -> Optional[pd.DataFrame]:
         try:
@@ -109,6 +108,7 @@ class DataFetcher:
                     })
 
             if len(candles) < 50:
+                self.logger.warning(f"Parse klines: only {len(candles)} candles, need >= 50")
                 return None
 
             df = pd.DataFrame(candles)
@@ -139,7 +139,6 @@ class DataFetcher:
             timestamps = [now - timedelta(minutes=minutes * (limit - i)) for i in range(limit)]
 
             returns = np.random.normal(0.0001, 0.015, limit)
-            # Add some trend
             trend = np.sin(np.linspace(0, 4*np.pi, limit)) * 0.005
             prices = base * np.exp(np.cumsum(returns + trend))
 
