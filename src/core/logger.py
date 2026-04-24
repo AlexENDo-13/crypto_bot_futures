@@ -1,6 +1,6 @@
 """
 CryptoBot v6.0 - Advanced Logging System
-Fixed QtLogHandler MRO issue
+Fixed: убран конфликтный QtLogHandler, используем callback-логгер
 """
 import logging
 import sys
@@ -8,73 +8,33 @@ import os
 from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
-from typing import Optional
-
-# PyQt6 imports
-try:
-    from PyQt6.QtCore import QObject, pyqtSignal
-    from PyQt6.QtWidgets import QTextEdit
-    PYQT6 = True
-except ImportError:
-    try:
-        from PyQt5.QtCore import QObject, pyqtSignal
-        from PyQt5.QtWidgets import QTextEdit
-        PYQT6 = False
-    except ImportError:
-        QObject = None
-        pyqtSignal = None
-        QTextEdit = None
+from typing import Optional, Callable, List
 
 
-class QtLogHandler(logging.Handler):
-    """Custom log handler that emits Qt signals for GUI updates.
-
-    FIXED v6.0: Properly handles QObject inheritance without MRO conflicts.
-    Uses composition instead of multiple inheritance to avoid sip.simplewrapper issues.
+class CallbackLogHandler(logging.Handler):
+    """Простой обработчик, который вызывает callback-функцию.
+    Не зависит от Qt, работает через функцию-прослойку.
     """
-    log_signal = None  # Will be set as class attribute
 
-    def __init__(self, parent=None):
-        # CRITICAL FIX: Call logging.Handler.__init__ first, then setup QObject
-        logging.Handler.__init__(self)
+    def __init__(self, callback: Callable[[str, int], None] = None):
+        super().__init__()
+        self.callback = callback
         self.setLevel(logging.DEBUG)
-
-        # Use a formatter that works well with GUI
         self.setFormatter(logging.Formatter(
             "%(asctime)s %(levelname)s %(name)s | %(message)s",
             datefmt="%H:%M:%S"
         ))
 
-        # Store parent reference for later
-        self._parent = parent
-        self._qt_object = None
-
-        # Create internal QObject for signals ONLY if Qt is available
-        if QObject is not None:
-            try:
-                self._qt_object = QObject()
-                # Define signal on instance if not on class
-                if not hasattr(QtLogHandler, '_signal_defined'):
-                    QtLogHandler.log_signal = pyqtSignal(str)
-                    QtLogHandler._signal_defined = True
-            except Exception as e:
-                print(f"[Logger] Warning: Could not create Qt signal object: {e}")
-
     def emit(self, record):
-        """Emit log record. Thread-safe via signal if Qt available."""
         try:
             msg = self.format(record)
-
-            # If we have a parent with append_log method, call it directly
-            if self._parent is not None and hasattr(self._parent, 'append_log'):
+            if self.callback:
                 try:
-                    self._parent.append_log(msg, record.levelno)
+                    self.callback(msg, record.levelno)
                 except Exception:
                     pass
-
-            # Also print to console as fallback
+            # Также пишем в консоль
             print(msg)
-
         except Exception:
             self.handleError(record)
 
@@ -97,7 +57,7 @@ class BotLogger:
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.level = level
-        self._qt_handler: Optional[QtLogHandler] = None
+        self._callback_handler: Optional[CallbackLogHandler] = None
         self._file_handler: Optional[RotatingFileHandler] = None
         self._console_handler: Optional[logging.StreamHandler] = None
 
@@ -134,21 +94,19 @@ class BotLogger:
         self._initialized = True
         self.logger.info(f"BotLogger v6.0 initialized | log_dir={log_dir}")
 
-    def add_qt_handler(self, parent_widget=None) -> QtLogHandler:
-        """Add Qt GUI log handler. Safe even if Qt is not available."""
-        if self._qt_handler is not None:
-            return self._qt_handler
+    def add_gui_handler(self, callback: Callable[[str, int], None]):
+        """Add GUI callback log handler."""
+        if self._callback_handler is not None:
+            self._callback_handler.callback = callback
+            return
 
         try:
-            self._qt_handler = QtLogHandler(parent=parent_widget)
-            self._qt_handler.setLevel(logging.INFO)
-            self.logger.addHandler(self._qt_handler)
-            self.logger.info("QtLogHandler v6.0 added successfully")
+            self._callback_handler = CallbackLogHandler(callback=callback)
+            self._callback_handler.setLevel(logging.INFO)
+            self.logger.addHandler(self._callback_handler)
+            self.logger.info("GUI log handler added successfully")
         except Exception as e:
-            self.logger.warning(f"Could not add Qt handler: {e}. Console logging only.")
-            self._qt_handler = None
-
-        return self._qt_handler
+            self.logger.warning(f"Could not add GUI handler: {e}")
 
     def get_logger(self, name: str = "CryptoBot") -> logging.Logger:
         """Get a named logger."""
@@ -162,6 +120,5 @@ class BotLogger:
             handler.setLevel(level)
 
 
-# Convenience function
 def get_logger(name: str = "CryptoBot") -> logging.Logger:
     return BotLogger().get_logger(name)

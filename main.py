@@ -9,19 +9,14 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# ============================================================
-# Core imports
-# ============================================================
 from core.logger import BotLogger, get_logger
 
 try:
     from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtCore import Qt
     PYQT = "PyQt6"
 except ImportError:
     try:
         from PyQt5.QtWidgets import QApplication
-        from PyQt5.QtCore import Qt
         PYQT = "PyQt5"
     except ImportError:
         print("ERROR: PyQt5 or PyQt6 is required. Install with: pip install PyQt6")
@@ -40,17 +35,8 @@ def run_gui():
     log = get_logger("CryptoBot")
     log.info(f"Starting CryptoBot v6.0 GUI | Qt={PYQT}")
 
-    # High DPI support
-    if hasattr(Qt, 'ApplicationAttribute'):
-        try:
-            QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
-            QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
-        except Exception:
-            pass
-
     app = QApplication(sys.argv)
     app.setApplicationName("CryptoBot v6.0")
-    app.setApplicationVersion("6.0.0")
 
     # Import and create main window
     from ui.main_window import MainWindow
@@ -60,7 +46,11 @@ def run_gui():
 
     log.info("MainWindow displayed successfully")
 
-    sys.exit(app.exec() if hasattr(app, 'exec') else app.exec_())
+    # PyQt6 has exec(), PyQt5 has exec_()
+    if hasattr(app, 'exec'):
+        sys.exit(app.exec())
+    else:
+        sys.exit(app.exec_())
 
 
 def main():
@@ -68,7 +58,7 @@ def main():
     ensure_directories()
 
     # Initialize logger
-    logger = BotLogger(log_dir="logs", level=20)  # INFO level
+    logger = BotLogger(log_dir="logs", level=20)
     log = logger.get_logger("CryptoBot")
 
     log.info("=" * 60)
