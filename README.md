@@ -1,48 +1,33 @@
-# CryptoBot v7.1 - Professional Futures Trading Bot
+# Проект crypto_bot_futures
 
-## Fixed in v7.1
+## Описание
+Проект по разработке криптовалютного бота для фьючерсных торгов на Binance.
 
-1. **main.py** - Added fatal error handling, graceful shutdown
-2. **api_client.py** - Fixed BingX signature generation, error 100412/100001 handling, retry logic
-3. **data_fetcher.py** - Fixed klines parsing (error: 0), added mock data fallback
-4. **trade_executor.py** - Fixed qty calculation, volume_24h=0 validation, live/paper modes
-5. **risk_manager.py** - Added update_pnl method, zero division protection
-6. **market_scanner.py** - Improved error handling during scanning
-7. **main_window.py** - Bot no longer crashes on startup, worker with try/except, removed useless theme button
-8. **settings.py** - Added scan_interval, proper load/save
-9. **notifications.py** - Fixed field names to match settings
+## Структура проекта
+- src/ — основной код проекта
+  - core/ — ядро бота (трейдинг, управление позициями)
+  - strategies/ — стратегии торговли
+  - exchange/ — взаимодействие с биржей (Binance, Bybit и т.д.)
+  - ai/ — использование ИИ для анализа и принятия решений
+  - risk/ — управление рисками
+  - notifications/ — уведомления (Telegram, Discord)
+  - web/ — веб-интерфейс (опционально)
+- config/ — конфигурация (бот, биржа, ключи)
+- data/ — данные (история, стейты, бэкапы)
+- backtests/ — результаты бэкtesting
+- tests/ — юнит-тесты и интеграционные тесты
 
-## Installation
+## Быстрый старт
+1. Установить зависимости: `pip install -r requirements.txt`
+2. Настроить конфигурацию в `config/bot_config.json`
+3. Запустить бота: `python main.py`
 
-```bash
-pip install -r requirements.txt
-python main.py
-```
+## Зависимости
+- ccxt — трейдинг-интерфейс
+- pandas, numpy — анализ данных
+- scikit-learn, tensorflow/keras — ИИ-модели (опционально)
+- python-telegram-bot / websockets — уведомления
 
-## Structure
-
-```
-crypto_bot_futures/
-├── main.py
-├── requirements.txt
-├── config/
-│   └── settings.json
-├── data/
-│   ├── cache/
-│   ├── state/
-│   └── models/
-├── logs/
-└── src/
-    ├── core/        # logger, settings, config, events, state, security, notifications
-    ├── exchange/    # api_client, data_fetcher, market_scanner, trade_executor
-    ├── risk/        # risk_manager
-    ├── strategies/  # strategies
-    ├── ml/          # ml_engine
-    └── ui/          # main_window
-```
-
-## Important
-
-- Default is **Paper Trading** - no real money spent
-- For live trading enter BingX API keys in Settings
-- Always start with paper trading for testing
+## Примечания
+- Бот рассчитан на фьючерсы с плечом (рекомендуется тестировать на тестовой сети).
+- Храните секреты в переменных окружения или в защищённых файлах.
