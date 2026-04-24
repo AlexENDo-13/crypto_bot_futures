@@ -4,7 +4,7 @@ order book analysis, and funding rate monitoring.
 """
 import time
 import threading
-from typing import Dict, List, Optional, Callable, Tuple
+from typing import Dict, List, Optional, Callable, Tuple, Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from collections import deque
