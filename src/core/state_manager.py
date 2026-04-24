@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-
 class StateManager:
     """Manages bot state persistence."""
 

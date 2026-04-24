@@ -11,7 +11,6 @@ try:
 except ImportError:
     REQUESTS_OK = False
 
-
 @dataclass
 class NotificationConfig:
     telegram_enabled: bool = False
@@ -25,7 +24,6 @@ class NotificationConfig:
     email_login: str = ""
     email_password: str = ""
     email_to: str = ""
-
 
 class NotificationManager:
     """Multi-channel notification system."""

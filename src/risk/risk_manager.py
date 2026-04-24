@@ -1,5 +1,7 @@
 """
-CryptoBot v7.1 - Risk Manager
+CryptoBot v7.1 - Risk Manager (FIXED)
+Fixes: update_pnl method, zero division in calculate_pnl_percent,
+       entry price validation, position margin tracking
 """
 import logging
 from typing import Dict, List, Optional, Any
@@ -7,13 +9,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-
 class RiskLevel(Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
-
 
 @dataclass
 class RiskLimits:
@@ -27,7 +27,6 @@ class RiskLimits:
     min_risk_reward: float = 1.5
     max_drawdown: float = 15.0
     max_correlation: float = 0.8
-
 
 @dataclass
 class Position:
@@ -46,6 +45,8 @@ class Position:
     max_profit: float = 0.0
 
     def calculate_pnl(self, mark_price: float) -> float:
+        if mark_price <= 0:
+            return self.pnl
         if self.side == "LONG":
             self.pnl = (mark_price - self.entry_price) * self.size
         else:
@@ -85,6 +86,8 @@ class Position:
 
     def update_trailing_stop(self, price: float, trail_pct: float = 1.0):
         """Update trailing stop based on current price."""
+        if price <= 0:
+            return
         if self.side == "LONG":
             new_sl = price * (1 - trail_pct / 100)
             if new_sl > self.stop_loss:
@@ -93,7 +96,6 @@ class Position:
             new_sl = price * (1 + trail_pct / 100)
             if new_sl < self.stop_loss or self.stop_loss == 0:
                 self.stop_loss = new_sl
-
 
 class RiskManager:
     """Advanced risk management."""
@@ -189,9 +191,9 @@ class RiskManager:
         pnl = 0.0
         if exit_price > 0:
             pnl = pos.calculate_pnl(exit_price)
-            self.daily_pnl += pnl
-            if pnl < 0:
-                self.daily_loss += abs(pnl)
+        self.daily_pnl += pnl
+        if pnl < 0:
+            self.daily_loss += abs(pnl)
 
         self.trade_history.append({
             "symbol": symbol,

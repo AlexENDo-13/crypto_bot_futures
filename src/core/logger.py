@@ -9,7 +9,6 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Callable
 
-
 class CallbackLogHandler(logging.Handler):
     """GUI callback handler - no Qt dependencies."""
 
@@ -32,7 +31,6 @@ class CallbackLogHandler(logging.Handler):
                     pass
         except Exception:
             self.handleError(record)
-
 
 class BotLogger:
     """Centralized logging manager - proper singleton."""
@@ -99,7 +97,6 @@ class BotLogger:
 
     def get_logger(self, name: str = "CryptoBot") -> logging.Logger:
         return logging.getLogger(name)
-
 
 def get_logger(name: str = "CryptoBot") -> logging.Logger:
     return BotLogger().get_logger(name)

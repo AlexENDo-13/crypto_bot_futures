@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import List
 from dataclasses import dataclass, asdict, field
 
-
 @dataclass
 class BotSettings:
     api_key: str = ""
