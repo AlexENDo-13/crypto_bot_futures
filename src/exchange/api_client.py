@@ -1,12 +1,10 @@
 """
-CryptoBot v6.0 - BingX API Client
-Robust API client with retry logic and error handling.
+CryptoBot v7.0 - BingX API Client
+Fixed: proper key passing, auto-reconnect, better error handling
 """
 import time
 import hmac
 import hashlib
-import json
-from datetime import datetime
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlencode
 import logging
@@ -15,25 +13,25 @@ try:
     import requests
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
-    REQUESTS_AVAILABLE = True
+    REQUESTS_OK = True
 except ImportError:
-    REQUESTS_AVAILABLE = False
+    REQUESTS_OK = False
 
 
 class BingXAPIClient:
-    """BingX Futures API Client v6.0."""
+    """BingX Futures API Client v7.0"""
 
     def __init__(self, api_key: str = "", api_secret: str = "", 
                  base_url: str = "https://open-api.bingx.com", 
                  testnet: bool = True, pool_size: int = 10):
-        self.api_key = api_key
-        self.api_secret = api_secret
+        self.api_key = api_key or ""
+        self.api_secret = api_secret or ""
         self.base_url = base_url.rstrip("/")
         self.testnet = testnet
         self.logger = logging.getLogger("CryptoBot.API")
 
         self.session = None
-        if REQUESTS_AVAILABLE:
+        if REQUESTS_OK:
             self.session = requests.Session()
             retry = Retry(total=3, backoff_factor=0.5, 
                          status_forcelist=[500, 502, 503, 504, 429])
@@ -42,10 +40,16 @@ class BingXAPIClient:
             self.session.mount("https://", adapter)
             self.session.mount("http://", adapter)
 
-        self.logger.info(f"BingXAPIClient v6.0 | base={self.base_url} pool={pool_size}")
+        has_key = "YES" if self.api_key else "NO"
+        self.logger.info(f"BingXAPIClient v7.0 | base={self.base_url} api_key={has_key}")
+
+    def update_credentials(self, api_key: str, api_secret: str):
+        """Update API credentials without recreating client."""
+        self.api_key = api_key or ""
+        self.api_secret = api_secret or ""
+        self.logger.info(f"API credentials updated | key={'YES' if self.api_key else 'NO'}")
 
     def _generate_signature(self, params: Dict[str, Any]) -> str:
-        """Generate HMAC SHA256 signature."""
         query_string = urlencode(sorted(params.items()))
         return hmac.new(
             self.api_secret.encode("utf-8"),
@@ -55,15 +59,16 @@ class BingXAPIClient:
 
     def _request(self, method: str, endpoint: str, params: Dict = None, 
                  signed: bool = False) -> Dict:
-        """Make API request with error handling."""
-        if not REQUESTS_AVAILABLE:
-            return {"code": -1, "msg": "requests library not installed"}
+        if not REQUESTS_OK:
+            return {"code": -1, "msg": "requests not installed"}
 
         url = f"{self.base_url}{endpoint}"
         params = params or {}
         params["timestamp"] = int(time.time() * 1000)
 
-        if signed and self.api_secret:
+        if signed:
+            if not self.api_secret:
+                return {"code": -1, "msg": "API Secret empty"}
             params["signature"] = self._generate_signature(params)
 
         headers = {}
@@ -72,95 +77,90 @@ class BingXAPIClient:
 
         try:
             if method.upper() == "GET":
-                response = self.session.get(url, params=params, headers=headers, timeout=10)
+                resp = self.session.get(url, params=params, headers=headers, timeout=15)
             else:
-                response = self.session.post(url, json=params, headers=headers, timeout=10)
+                resp = self.session.post(url, json=params, headers=headers, timeout=15)
 
-            response.raise_for_status()
-            data = response.json()
+            resp.raise_for_status()
+            data = resp.json()
 
             if data.get("code") not in (0, None, 200):
-                self.logger.warning(f"API error {data.get('code')}: {data.get('msg')}")
+                self.logger.warning(f"API error {data.get('code')}: {data.get('msg', '')}")
 
             return data
-
         except requests.exceptions.Timeout:
-            self.logger.error("API request timeout")
             return {"code": -1, "msg": "timeout"}
         except requests.exceptions.ConnectionError:
-            self.logger.error("API connection error")
             return {"code": -1, "msg": "connection_error"}
         except Exception as e:
-            self.logger.error(f"API request failed: {e}")
             return {"code": -1, "msg": str(e)}
 
     def get_server_time(self) -> Dict:
-        """Get server time."""
         return self._request("GET", "/openApi/swap/v2/server/time")
 
     def get_symbols(self) -> List[Dict]:
-        """Get all trading symbols."""
         data = self._request("GET", "/openApi/swap/v2/quote/contracts")
         if data.get("code") == 0:
             return data.get("data", [])
         return []
 
     def get_ticker(self, symbol: str) -> Dict:
-        """Get 24h ticker data."""
-        return self._request("GET", "/openApi/swap/v2/quote/ticker", 
-                            {"symbol": symbol})
+        return self._request("GET", "/openApi/swap/v2/quote/ticker", {"symbol": symbol})
 
-    def get_klines(self, symbol: str, interval: str = "15m", 
-                   limit: int = 100) -> List[List]:
-        """Get candlestick data."""
+    def get_klines(self, symbol: str, interval: str = "15m", limit: int = 100) -> List[List]:
         data = self._request("GET", "/openApi/swap/v3/quote/klines", {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit
+            "symbol": symbol, "interval": interval, "limit": limit
         })
         if data.get("code") == 0:
             return data.get("data", [])
         return []
 
     def get_balance(self) -> Dict:
-        """Get account balance."""
-        return self._request("GET", "/openApi/swap/v3/user/balance", signed=True)
+        result = self._request("GET", "/openApi/swap/v3/user/balance", signed=True)
+        if result.get("code") == 0:
+            data = result.get("data", {})
+            if isinstance(data, list) and len(data) > 0:
+                for asset in data:
+                    if asset.get("asset", "").upper() in ("USDT", "USDC", ""):
+                        return {"code": 0, "data": {
+                            "balance": float(asset.get("balance", 0)),
+                            "available": float(asset.get("available", asset.get("free", 0))),
+                            "margin": float(asset.get("margin", 0)),
+                            "asset": asset.get("asset", "USDT")
+                        }}
+                asset = data[0]
+                return {"code": 0, "data": {
+                    "balance": float(asset.get("balance", 0)),
+                    "available": float(asset.get("available", asset.get("free", 0))),
+                    "margin": float(asset.get("margin", 0)),
+                    "asset": asset.get("asset", "USDT")
+                }}
+            elif isinstance(data, dict):
+                return result
+        return result
 
     def place_order(self, symbol: str, side: str, position_side: str,
                     order_type: str = "MARKET", quantity: float = 0,
                     price: float = 0, stop_price: float = 0,
                     leverage: int = 1) -> Dict:
-        """Place an order."""
         params = {
-            "symbol": symbol,
-            "side": side,
-            "positionSide": position_side,
-            "type": order_type,
-            "leverage": leverage
+            "symbol": symbol, "side": side, "positionSide": position_side,
+            "type": order_type, "leverage": leverage
         }
-        if quantity > 0:
-            params["quantity"] = quantity
-        if price > 0:
-            params["price"] = price
-        if stop_price > 0:
-            params["stopPrice"] = stop_price
-
-        return self._request("POST", "/openApi/swap/v2/trade/order", 
-                            params, signed=True)
+        if quantity > 0: params["quantity"] = quantity
+        if price > 0: params["price"] = price
+        if stop_price > 0: params["stopPrice"] = stop_price
+        return self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
 
     def get_positions(self, symbol: str = "") -> List[Dict]:
-        """Get open positions."""
         params = {}
-        if symbol:
-            params["symbol"] = symbol
-        data = self._request("GET", "/openApi/swap/v2/user/positions", 
-                            params, signed=True)
+        if symbol: params["symbol"] = symbol
+        data = self._request("GET", "/openApi/swap/v2/user/positions", params, signed=True)
         if data.get("code") == 0:
             return data.get("data", [])
         return []
 
     def close_position(self, symbol: str, position_side: str) -> Dict:
-        """Close a position."""
         return self.place_order(
             symbol=symbol,
             side="SELL" if position_side == "LONG" else "BUY",
