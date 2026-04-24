@@ -8,7 +8,7 @@ from datetime import datetime
 
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QSplitter,
+    QTableWidget, QTableWidgetItem, QTabWidget, QPlainTextEdit, QSplitter,
     QHeaderView, QGroupBox, QGridLayout, QSpinBox, QDoubleSpinBox,
     QComboBox, QCheckBox, QProgressBar, QMessageBox, QStatusBar,
     QFrame, QSizePolicy, QMenuBar, QMenu, QAction, QFileDialog
@@ -342,7 +342,7 @@ class MainWindow(QMainWindow):
         log_header.addWidget(self.btn_clear)
         log_layout.addLayout(log_header)
 
-        self.log_text = QTextEdit()
+        self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumBlockCount(5000)
         log_layout.addWidget(self.log_text)
@@ -388,7 +388,7 @@ class MainWindow(QMainWindow):
         elif "RISK" in message:
             color = "#ffaa00"
 
-        self.log_text.append(f'<span style="color: {color}">{message}</span>')
+        self.log_text.appendHtml(f'<span style="color: {color}">{message}</span>')
         sb = self.log_text.verticalScrollBar()
         sb.setValue(sb.maximum())
 
