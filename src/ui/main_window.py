@@ -1,540 +1,526 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""MainWindow v4.0 — полноценный интерфейс с интегрированным логгером, мониторингом и аварийной остановкой."""
-import sys, os, asyncio, threading, time, json, csv
+"""
+Main Window v5.0 - Advanced GUI with charts, real-time monitoring,
+and comprehensive control panel.
+"""
+import sys
+from typing import Optional, List
 from datetime import datetime
+
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QGroupBox,
-    QGridLayout, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox,
-    QLineEdit, QMessageBox, QFileDialog, QProgressBar, QSplitter,
-    QHeaderView, QSystemTrayIcon, QMenu, QAction, QApplication,
-    QFrame, QScrollArea, QDialog, QDialogButtonBox,
+    QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit, QSplitter,
+    QHeaderView, QGroupBox, QGridLayout, QSpinBox, QDoubleSpinBox,
+    QComboBox, QCheckBox, QProgressBar, QMessageBox, QStatusBar,
+    QFrame, QSizePolicy, QMenuBar, QMenu, QAction, QFileDialog
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QFont, QIcon, QColor
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot, QThread
+from PyQt5.QtGui import QColor, QFont, QPalette
 
-from src.config.settings import Settings
-from src.core.engine.trading_engine import TradingEngine
-from src.core.logger import BotLogger, QtLogHandler
-from src.utils.api_client import AsyncBingXClient
-from src.notifications.telegram_notifier import TelegramNotifier
+from src.core.config import get_config
+from src.core.logger import get_logger, BotLogger, QtLogHandler
+from src.core.events import get_event_bus, EventType
+from src.trading.data_fetcher import DataFetcher
+from src.trading.trade_executor import TradeExecutor
+from src.trading.risk_manager import RiskManager
+from src.trading.market_scanner import MarketScanner
+from src.ai.ml_engine import MLEngine
+from src.notifications.telegram import TelegramNotifier
+from src.notifications.discord import DiscordNotifier
 
-class AsyncWorker(QThread):
-    finished = pyqtSignal(object)
-    error = pyqtSignal(str)
-    def __init__(self, coro):
+logger = get_logger()
+
+
+def apply_dark_theme(app):
+    app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor(15, 15, 20))
+    palette.setColor(QPalette.WindowText, QColor(220, 220, 220))
+    palette.setColor(QPalette.Base, QColor(25, 25, 32))
+    palette.setColor(QPalette.AlternateBase, QColor(32, 32, 40))
+    palette.setColor(QPalette.ToolTipBase, QColor(35, 35, 45))
+    palette.setColor(QPalette.ToolTipText, QColor(220, 220, 220))
+    palette.setColor(QPalette.Text, QColor(220, 220, 220))
+    palette.setColor(QPalette.Button, QColor(40, 40, 50))
+    palette.setColor(QPalette.ButtonText, QColor(220, 220, 220))
+    palette.setColor(QPalette.BrightText, QColor(255, 80, 80))
+    palette.setColor(QPalette.Highlight, QColor(0, 160, 220))
+    palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+    app.setPalette(palette)
+
+    app.setStyleSheet("""
+        QMainWindow { background-color: #0f0f14; }
+        QGroupBox { border: 1px solid #3a3a4a; border-radius: 6px; margin-top: 10px; padding-top: 10px; font-weight: bold; color: #a0a0b0; }
+        QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+        QPushButton { background-color: #2d5a8a; color: white; border: none; border-radius: 4px; padding: 8px 16px; font-weight: bold; }
+        QPushButton:hover { background-color: #3d7ab0; }
+        QPushButton:pressed { background-color: #1d4a7a; }
+        QPushButton:disabled { background-color: #3a3a4a; color: #666; }
+        QPushButton#startBtn { background-color: #0d8a5a; }
+        QPushButton#startBtn:hover { background-color: #0daa6a; }
+        QPushButton#stopBtn { background-color: #8a2d2d; }
+        QPushButton#stopBtn:hover { background-color: #aa3d3d; }
+        QTableWidget { background-color: #191920; border: 1px solid #3a3a4a; gridline-color: #2a2a3a; }
+        QTableWidget::item { padding: 6px; }
+        QTableWidget::item:selected { background-color: #0d5a7a; }
+        QHeaderView::section { background-color: #22222c; color: #a0a0b0; padding: 8px; border: 1px solid #3a3a4a; font-weight: bold; }
+        QTextEdit { background-color: #121218; color: #c0c0c0; border: 1px solid #3a3a4a; font-family: Consolas, Monaco, monospace; font-size: 12px; }
+        QComboBox, QSpinBox, QDoubleSpinBox { background-color: #22222c; color: #e0e0e0; border: 1px solid #3a3a4a; padding: 4px; border-radius: 3px; }
+        QProgressBar { border: 1px solid #3a3a4a; border-radius: 4px; text-align: center; color: white; }
+        QProgressBar::chunk { background-color: #0d8a5a; border-radius: 3px; }
+        QLabel { color: #c0c0c0; }
+        QTabWidget::pane { border: 1px solid #3a3a4a; background-color: #191920; }
+        QTabBar::tab { background-color: #22222c; color: #a0a0b0; padding: 8px 16px; border: 1px solid #3a3a4a; border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; }
+        QTabBar::tab:selected { background-color: #191920; color: #e0e0e0; }
+        QTabBar::tab:hover { background-color: #2d2d3a; }
+        QMenuBar { background-color: #1a1a22; color: #c0c0c0; }
+        QMenuBar::item:selected { background-color: #2d5a8a; }
+        QMenu { background-color: #1a1a22; border: 1px solid #3a3a4a; }
+        QMenu::item:selected { background-color: #2d5a8a; }
+    """)
+
+
+class BotWorker(QThread):
+    def __init__(self, bot_core):
         super().__init__()
-        self.coro = coro
+        self.bot_core = bot_core
+        self.running = False
     def run(self):
+        self.running = True
+        while self.running:
+            try:
+                self.bot_core.tick()
+            except Exception as e:
+                logger.error("Tick error: %s", e)
+            self.msleep(1000)
+    def stop(self):
+        self.running = False
+        self.wait(3000)
+
+
+class BotCore:
+    def __init__(self):
+        self.data_fetcher = DataFetcher()
+        self.executor = TradeExecutor()
+        self.risk_manager = RiskManager()
+        self.scanner = MarketScanner()
+        self.ml_engine = MLEngine()
+        self.telegram = TelegramNotifier()
+        self.discord = DiscordNotifier()
+        self.event_bus = get_event_bus()
+        self.running = False
+        self.symbol = get_config().trading.primary_symbol
+        self.scan_interval = 60
+        self._tick_count = 0
+        self.scanner.add_signal_callback(self._on_signals)
+        self._setup_event_handlers()
+
+    def _setup_event_handlers(self):
+        self.event_bus.subscribe(EventType.POSITION_CLOSED, self._on_position_closed)
+        self.event_bus.subscribe(EventType.RISK_ALERT, self._on_risk_alert)
+
+    def _on_signals(self, signals):
+        for sig in signals:
+            if sig.confidence >= 0.7:
+                self.telegram.send_signal(sig.symbol, sig.direction, sig.confidence, sig.strategy)
+                self.discord.send_signal(sig.symbol, sig.direction, sig.confidence, sig.strategy)
+
+    def _on_position_closed(self, event):
+        data = event.data
+        pnl = data.get("pnl", 0)
+        self.telegram.send_trade(data.get("symbol"), data.get("side"), pnl, data.get("reason", ""))
+        self.discord.send_trade(data.get("symbol"), data.get("side"), pnl, data.get("reason", ""))
+
+    def _on_risk_alert(self, event):
+        self.telegram.send_alert("Risk Alert", event.data.get("message", ""))
+
+    def start(self):
+        self.running = True
+        self.scanner.start_continuous_scan(self.scan_interval)
+        logger.info("Bot core started")
+
+    def stop(self):
+        self.running = False
+        self.scanner.stop_continuous_scan()
+        logger.info("Bot core stopped")
+
+    def tick(self):
+        self._tick_count += 1
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self.coro)
-            self.finished.emit(result)
+            closed = self.executor.update_positions()
+            for symbol, reason, pnl in closed:
+                self.risk_manager.update_pnl(pnl)
+                logger.pnl(f"{symbol} closed by {reason} | PnL: {pnl:+.2f}")
         except Exception as e:
-            self.error.emit(str(e))
+            logger.error("Position update: %s", e)
+
+        try:
+            balance = self.executor.get_balance()
+            self.risk_manager.update_balance(balance)
+        except Exception as e:
+            logger.error("Balance update: %s", e)
+
+        # ML retrain check
+        if self._tick_count % 3600 == 0 and self.ml_engine.should_retrain():
+            try:
+                self.ml_engine.train()
+            except Exception as e:
+                logger.error("ML retrain: %s", e)
+
 
 class MainWindow(QMainWindow):
-    log_signal = pyqtSignal(str)
-
-    def __init__(self, settings: Settings, logger: BotLogger = None, healing_monitor=None):
+    def __init__(self):
         super().__init__()
-        self.settings = settings
-        self.healing_monitor = healing_monitor
-        self.logger = logger
-        self.setWindowTitle("Crypto Trading Bot v4.0")
-        self.setGeometry(100, 100, 1500, 950)
+        self.setWindowTitle(get_config().ui.window_title)
+        self.setMinimumSize(get_config().ui.window_width, get_config().ui.window_height)
+        self.bot_core = BotCore()
+        self.worker = None
+        self._setup_menu()
+        self._setup_ui()
+        self._setup_log_handler()
+        self._setup_timers()
+        logger.info("MainWindow v5.0 initialized")
 
-        self.api_client = None
-        self.trading_engine = None
-        self.telegram = None
-        self._running = False
-        self._ui_logger_handler = None
+    def _setup_menu(self):
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("File")
 
-        self._init_ui()
-        self._init_timers()
-        self._init_tray()
-        self._apply_settings()
-        self._connect_logger()
+        action_export = QAction("Export Config", self)
+        action_export.triggered.connect(self._export_config)
+        file_menu.addAction(action_export)
 
-    def _connect_logger(self):
-        if self.logger:
-            self.log_signal.connect(self._append_log)
-            self._ui_logger_handler = QtLogHandler(lambda msg: self.log_signal.emit(msg))
-            self.logger.add_ui_handler(self._ui_logger_handler)
+        action_import = QAction("Import Config", self)
+        action_import.triggered.connect(self._import_config)
+        file_menu.addAction(action_import)
 
-    def _append_log(self, msg):
-        self.log_text.append(msg)
-        if self.log_text.document().blockCount() > 2000:
-            cursor = self.log_text.textCursor()
-            cursor.movePosition(cursor.Start)
-            cursor.select(cursor.BlockUnderCursor)
-            cursor.removeSelectedText()
+        file_menu.addSeparator()
 
-    def _init_ui(self):
+        action_exit = QAction("Exit", self)
+        action_exit.triggered.connect(self.close)
+        file_menu.addAction(action_exit)
+
+    def _setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
-        layout.setSpacing(8)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        layout.setContentsMargins(15, 15, 15, 15)
 
-        # Header
-        header = QHBoxLayout()
-        self.status_label = QLabel("⏹ Остановлен")
-        self.status_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #ff4444;")
-        header.addWidget(self.status_label)
+        # Control bar
+        control = QHBoxLayout()
+        self.btn_start = QPushButton("▶ START")
+        self.btn_start.setObjectName("startBtn")
+        self.btn_start.setStyleSheet("font-size: 14px;")
+        self.btn_start.clicked.connect(self._start_bot)
+        control.addWidget(self.btn_start)
 
-        self.balance_label = QLabel("Баланс: --")
-        self.balance_label.setStyleSheet("font-size: 14px; color: #00ff88;")
-        header.addWidget(self.balance_label)
-
-        self.pnl_label = QLabel("PnL: --")
-        self.pnl_label.setStyleSheet("font-size: 14px;")
-        header.addWidget(self.pnl_label)
-
-        self.win_rate_label = QLabel("Win Rate: --")
-        header.addWidget(self.win_rate_label)
-
-        header.addStretch()
-
-        self.btn_start = QPushButton("▶ СТАРТ")
-        self.btn_start.setStyleSheet("background-color: #00aa44; color: white; font-weight: bold; padding: 8px 20px;")
-        self.btn_start.clicked.connect(self.start_bot)
-        header.addWidget(self.btn_start)
-
-        self.btn_stop = QPushButton("⏹ СТОП")
-        self.btn_stop.setStyleSheet("background-color: #aa2222; color: white; font-weight: bold; padding: 8px 20px;")
-        self.btn_stop.clicked.connect(self.stop_bot)
+        self.btn_stop = QPushButton("⏹ STOP")
+        self.btn_stop.setObjectName("stopBtn")
+        self.btn_stop.setStyleSheet("font-size: 14px;")
+        self.btn_stop.clicked.connect(self._stop_bot)
         self.btn_stop.setEnabled(False)
-        header.addWidget(self.btn_stop)
+        control.addWidget(self.btn_stop)
 
-        self.btn_emergency = QPushButton("🚨 АВАРИЯ")
-        self.btn_emergency.setStyleSheet("background-color: #ff0000; color: white; font-weight: bold; padding: 8px 20px;")
-        self.btn_emergency.clicked.connect(self.emergency_stop)
-        self.btn_emergency.setEnabled(False)
-        header.addWidget(self.btn_emergency)
+        control.addSpacing(20)
 
-        layout.addLayout(header)
+        self.lbl_status = QLabel("● STOPPED")
+        self.lbl_status.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 14px;")
+        control.addWidget(self.lbl_status)
 
-        # Tabs
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-        self._init_dashboard_tab()
-        self._init_positions_tab()
-        self._init_history_tab()
-        self._init_signals_tab()
-        self._init_settings_tab()
-        self._init_logs_tab()
-        self._init_stats_tab()
+        control.addStretch()
 
-    def _init_dashboard_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        cards = QHBoxLayout()
-        self.card_positions = self._create_card("Открытые позиции", "0")
-        self.card_daily_pnl = self._create_card("Дневной PnL", "0.00")
-        self.card_total_trades = self._create_card("Всего сделок", "0")
-        self.card_win_rate = self._create_card("Win Rate", "0%")
-        self.card_api_health = self._create_card("API Health", "OK")
-        cards.addWidget(self.card_positions)
-        cards.addWidget(self.card_daily_pnl)
-        cards.addWidget(self.card_total_trades)
-        cards.addWidget(self.card_win_rate)
-        cards.addWidget(self.card_api_health)
-        layout.addLayout(cards)
-        self.scan_stats_label = QLabel("Последнее сканирование: --")
-        layout.addWidget(self.scan_stats_label)
-        self.health_label = QLabel("Статус: OK")
-        layout.addWidget(self.health_label)
-        layout.addStretch()
-        self.tabs.addTab(tab, "📊 Дашборд")
+        self.lbl_mode = QLabel("📋 PAPER TRADING")
+        self.lbl_mode.setStyleSheet("color: #ffaa00; font-weight: bold; padding: 4px 10px; background-color: #3a2a00; border-radius: 4px;")
+        if get_config().mode.value == "live":
+            self.lbl_mode.setText("🔴 LIVE TRADING")
+            self.lbl_mode.setStyleSheet("color: #ff3333; font-weight: bold; padding: 4px 10px; background-color: #3a0000; border-radius: 4px;")
+        control.addWidget(self.lbl_mode)
 
-    def _create_card(self, title: str, value: str) -> QGroupBox:
-        card = QGroupBox(title)
-        card.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #444; padding: 10px; }")
-        layout = QVBoxLayout(card)
-        label = QLabel(value)
-        label.setStyleSheet("font-size: 20px; color: #00ff88;")
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
-        card._value_label = label
-        return card
+        layout.addLayout(control)
 
-    def _init_positions_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        self.positions_table = QTableWidget()
-        self.positions_table.setColumnCount(9)
-        self.positions_table.setHorizontalHeaderLabels([
-            "Пара", "Напр.", "Вход", "Текущая", "Кол-во", "Плечо",
-            "SL", "TP", "PnL %"
-        ])
-        self.positions_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.positions_table)
-        self.tabs.addTab(tab, "📈 Позиции")
+        # Main splitter
+        splitter = QSplitter(Qt.Horizontal)
 
-    def _init_history_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        self.history_table = QTableWidget()
-        self.history_table.setColumnCount(8)
-        self.history_table.setHorizontalHeaderLabels([
-            "Пара", "Напр.", "Вход", "Выход", "PnL", "PnL %", "Причина", "Время"
-        ])
-        layout.addWidget(self.history_table)
-        self.tabs.addTab(tab, "📜 История")
+        # Left panel
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
 
-    def _init_signals_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        self.signals_table = QTableWidget()
-        self.signals_table.setColumnCount(7)
-        self.signals_table.setHorizontalHeaderLabels([
-            "Пара", "Напр.", "Цена", "ADX", "ATR %", "Сила", "Режим"
-        ])
-        layout.addWidget(self.signals_table)
-        self.tabs.addTab(tab, "📡 Сигналы")
+        account = QGroupBox("💰 Account")
+        acct_grid = QGridLayout()
+        acct_grid.addWidget(QLabel("Balance:"), 0, 0)
+        self.lbl_balance = QLabel("0.00 USDT")
+        self.lbl_balance.setStyleSheet("font-size: 16px; font-weight: bold; color: #4ade80;")
+        acct_grid.addWidget(self.lbl_balance, 0, 1)
+        acct_grid.addWidget(QLabel("Daily PnL:"), 1, 0)
+        self.lbl_daily_pnl = QLabel("+0.00 USDT")
+        self.lbl_daily_pnl.setStyleSheet("font-size: 14px; color: #888;")
+        acct_grid.addWidget(self.lbl_daily_pnl, 1, 1)
+        acct_grid.addWidget(QLabel("Positions:"), 2, 0)
+        self.lbl_pos_count = QLabel("0")
+        acct_grid.addWidget(self.lbl_pos_count, 2, 1)
+        account.setLayout(acct_grid)
+        left_layout.addWidget(account)
 
-    def _init_settings_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        grid = QGridLayout(content)
-        row = 0
-        grid.addWidget(QLabel("API Key:"), row, 0)
-        self.api_key_input = QLineEdit(self.settings.get("api_key", ""))
-        self.api_key_input.setEchoMode(QLineEdit.Password)
-        grid.addWidget(self.api_key_input, row, 1); row += 1
-        grid.addWidget(QLabel("API Secret:"), row, 0)
-        self.api_secret_input = QLineEdit(self.settings.get("api_secret", ""))
-        self.api_secret_input.setEchoMode(QLineEdit.Password)
-        grid.addWidget(self.api_secret_input, row, 1); row += 1
-        self.demo_check = QCheckBox("Демо-режим")
-        self.demo_check.setChecked(self.settings.get("demo_mode", True))
-        grid.addWidget(self.demo_check, row, 0, 1, 2); row += 1
-        grid.addWidget(QLabel("Интервал сканирования (мин):"), row, 0)
-        self.scan_interval_spin = QSpinBox()
-        self.scan_interval_spin.setRange(1, 60)
-        self.scan_interval_spin.setValue(self.settings.get("scan_interval_minutes", 5))
-        grid.addWidget(self.scan_interval_spin, row, 1); row += 1
-        grid.addWidget(QLabel("Макс. позиций:"), row, 0)
-        self.max_pos_spin = QSpinBox()
-        self.max_pos_spin.setRange(1, 20)
-        self.max_pos_spin.setValue(self.settings.get("max_positions", 3))
-        grid.addWidget(self.max_pos_spin, row, 1); row += 1
-        grid.addWidget(QLabel("Макс. плечо:"), row, 0)
-        self.leverage_spin = QSpinBox()
-        self.leverage_spin.setRange(1, 125)
-        self.leverage_spin.setValue(self.settings.get("max_leverage", 10))
-        grid.addWidget(self.leverage_spin, row, 1); row += 1
-        grid.addWidget(QLabel("Риск на сделку %:"), row, 0)
-        self.risk_spin = QDoubleSpinBox()
-        self.risk_spin.setRange(0.1, 10.0)
-        self.risk_spin.setSingleStep(0.1)
-        self.risk_spin.setValue(self.settings.get("max_risk_per_trade", 1.0))
-        grid.addWidget(self.risk_spin, row, 1); row += 1
-        grid.addWidget(QLabel("Мин. ADX:"), row, 0)
-        self.adx_spin = QDoubleSpinBox()
-        self.adx_spin.setRange(0, 50)
-        self.adx_spin.setSingleStep(0.5)
-        self.adx_spin.setValue(self.settings.get("min_adx", 10))
-        grid.addWidget(self.adx_spin, row, 1); row += 1
-        grid.addWidget(QLabel("Мин. ATR %:"), row, 0)
-        self.atr_spin = QDoubleSpinBox()
-        self.atr_spin.setRange(0.05, 5.0)
-        self.atr_spin.setSingleStep(0.05)
-        self.atr_spin.setValue(self.settings.get("min_atr_percent", 0.5))
-        grid.addWidget(self.atr_spin, row, 1); row += 1
-        grid.addWidget(QLabel("Мин. объём 24h:"), row, 0)
-        self.vol_spin = QSpinBox()
-        self.vol_spin.setRange(1000, 10000000)
-        self.vol_spin.setSingleStep(10000)
-        self.vol_spin.setValue(int(self.settings.get("min_volume_24h_usdt", 50000)))
-        grid.addWidget(self.vol_spin, row, 1); row += 1
-        grid.addWidget(QLabel("Мин. сила сигнала:"), row, 0)
-        self.signal_spin = QDoubleSpinBox()
-        self.signal_spin.setRange(0.05, 1.0)
-        self.signal_spin.setSingleStep(0.05)
-        self.signal_spin.setValue(self.settings.get("min_signal_strength", 0.25))
-        grid.addWidget(self.signal_spin, row, 1); row += 1
-        self.mtf_check = QCheckBox("Мультитаймфрейм (MTF)")
-        self.mtf_check.setChecked(self.settings.get("use_multi_timeframe", True))
-        grid.addWidget(self.mtf_check, row, 0, 1, 2); row += 1
-        self.trailing_check = QCheckBox("Trailing Stop")
-        self.trailing_check.setChecked(self.settings.get("trailing_stop_enabled", True))
-        grid.addWidget(self.trailing_check, row, 0, 1, 2); row += 1
-        self.partial_check = QCheckBox("Частичное закрытие")
-        self.partial_check.setChecked(self.settings.get("partial_close_enabled", True))
-        grid.addWidget(self.partial_check, row, 0, 1, 2); row += 1
-        self.aggressive_check = QCheckBox("Агрессивная адаптация")
-        self.aggressive_check.setChecked(self.settings.get("aggressive_adaptation", True))
-        grid.addWidget(self.aggressive_check, row, 0, 1, 2); row += 1
-        btn_save = QPushButton("💾 Сохранить настройки")
-        btn_save.clicked.connect(self.save_settings)
-        grid.addWidget(btn_save, row, 0, 1, 2); row += 1
-        btn_export = QPushButton("📤 Экспорт настроек")
-        btn_export.clicked.connect(self.export_settings)
-        grid.addWidget(btn_export, row, 0, 1, 2); row += 1
-        btn_import = QPushButton("📥 Импорт настроек")
-        btn_import.clicked.connect(self.import_settings)
-        grid.addWidget(btn_import, row, 0, 1, 2); row += 1
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
-        self.tabs.addTab(tab, "⚙️ Настройки")
+        risk = QGroupBox("🛡 Risk")
+        risk_grid = QGridLayout()
+        risk_grid.addWidget(QLabel("Win Rate:"), 0, 0)
+        self.lbl_win_rate = QLabel("0%")
+        risk_grid.addWidget(self.lbl_win_rate, 0, 1)
+        risk_grid.addWidget(QLabel("Trades:"), 1, 0)
+        self.lbl_total_trades = QLabel("0")
+        risk_grid.addWidget(self.lbl_total_trades, 1, 1)
+        risk_grid.addWidget(QLabel("Max DD:"), 2, 0)
+        self.lbl_max_dd = QLabel("0.0%")
+        self.lbl_max_dd.setStyleSheet("color: #ff6666;")
+        risk_grid.addWidget(self.lbl_max_dd, 2, 1)
+        risk_grid.addWidget(QLabel("Profit Factor:"), 3, 0)
+        self.lbl_pf = QLabel("0.00")
+        risk_grid.addWidget(self.lbl_pf, 3, 1)
+        risk.setLayout(risk_grid)
+        left_layout.addWidget(risk)
 
-    def _init_logs_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+        settings = QGroupBox("⚙ Settings")
+        set_grid = QGridLayout()
+        set_grid.addWidget(QLabel("Symbol:"), 0, 0)
+        self.cmb_symbol = QComboBox()
+        self.cmb_symbol.addItems(["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "BNB-USDT"])
+        set_grid.addWidget(self.cmb_symbol, 0, 1)
+        set_grid.addWidget(QLabel("Leverage:"), 1, 0)
+        self.spin_lev = QSpinBox()
+        self.spin_lev.setRange(1, 125)
+        self.spin_lev.setValue(get_config().trading.leverage)
+        set_grid.addWidget(self.spin_lev, 1, 1)
+        set_grid.addWidget(QLabel("Risk %:"), 2, 0)
+        self.spin_risk = QDoubleSpinBox()
+        self.spin_risk.setRange(0.1, 100)
+        self.spin_risk.setValue(get_config().trading.risk_per_trade_pct)
+        self.spin_risk.setDecimals(1)
+        set_grid.addWidget(self.spin_risk, 2, 1)
+        settings.setLayout(set_grid)
+        left_layout.addWidget(settings)
+
+        left_layout.addStretch()
+        splitter.addWidget(left)
+
+        # Center tabs
+        tabs = QTabWidget()
+
+        self.pos_table = QTableWidget()
+        self.pos_table.setColumnCount(8)
+        self.pos_table.setHorizontalHeaderLabels(["Symbol", "Side", "Entry", "Current", "Qty", "PnL", "PnL%", "SL/TP"])
+        self.pos_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tabs.addTab(self.pos_table, "📊 Positions")
+
+        self.sig_table = QTableWidget()
+        self.sig_table.setColumnCount(7)
+        self.sig_table.setHorizontalHeaderLabels(["Time", "Symbol", "Dir", "Conf", "Strategy", "Entry", "Reason"])
+        self.sig_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tabs.addTab(self.sig_table, "📡 Signals")
+
+        self.hist_table = QTableWidget()
+        self.hist_table.setColumnCount(6)
+        self.hist_table.setHorizontalHeaderLabels(["Time", "Symbol", "Side", "PnL", "Reason", "Duration"])
+        self.hist_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tabs.addTab(self.hist_table, "📜 History")
+
+        # ML Tab
+        self.ml_table = QTableWidget()
+        self.ml_table.setColumnCount(5)
+        self.ml_table.setHorizontalHeaderLabels(["Symbol", "Direction", "Confidence", "Probability", "Features"])
+        self.ml_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tabs.addTab(self.ml_table, "🤖 ML Predictions")
+
+        splitter.addWidget(tabs)
+
+        # Right log panel
+        log_panel = QWidget()
+        log_layout = QVBoxLayout(log_panel)
+        log_header = QHBoxLayout()
+        log_header.addWidget(QLabel("📝 Logs"))
+        log_header.addStretch()
+        self.btn_clear = QPushButton("Clear")
+        self.btn_clear.clicked.connect(self._clear_logs)
+        log_header.addWidget(self.btn_clear)
+        log_layout.addLayout(log_header)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setStyleSheet("background-color: #1a1a2e; color: #e0e0e0; font-family: monospace;")
-        layout.addWidget(self.log_text)
-        btn_clear = QPushButton("🗑 Очистить")
-        btn_clear.clicked.connect(self.log_text.clear)
-        layout.addWidget(btn_clear)
-        self.tabs.addTab(tab, "📝 Логи")
+        self.log_text.setMaximumBlockCount(5000)
+        log_layout.addWidget(self.log_text)
 
-    def _init_stats_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        self.stats_text = QTextEdit()
-        self.stats_text.setReadOnly(True)
-        self.stats_text.setStyleSheet("background-color: #1a1a2e; color: #e0e0e0; font-family: monospace;")
-        layout.addWidget(self.stats_text)
-        btn_export_csv = QPushButton("📊 Экспорт CSV")
-        btn_export_csv.clicked.connect(self.export_csv)
-        layout.addWidget(btn_export_csv)
-        self.tabs.addTab(tab, "📊 Статистика")
+        splitter.addWidget(log_panel)
+        splitter.setSizes([250, 750, 400])
+        layout.addWidget(splitter)
 
-    def _init_timers(self):
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update_ui)
-        self.update_timer.start(2000)
-        self.table_timer = QTimer()
-        self.table_timer.timeout.connect(self.update_tables)
-        self.table_timer.start(3000)
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Ready | v5.0")
 
-    def _init_tray(self):
-        if QSystemTrayIcon.isSystemTrayAvailable():
-            self.tray = QSystemTrayIcon(self)
-            self.tray.setToolTip("Crypto Trading Bot v4.0")
-            menu = QMenu()
-            action_show = QAction("Показать", self)
-            action_show.triggered.connect(self.show)
-            menu.addAction(action_show)
-            action_exit = QAction("Выход", self)
-            action_exit.triggered.connect(QApplication.quit)
-            menu.addAction(action_exit)
-            self.tray.setContextMenu(menu)
-            self.tray.show()
+    def _setup_log_handler(self):
+        log = get_logger()
+        self.qt_handler = log.add_qt_handler(self)
+        if self.qt_handler and self.qt_handler.log_signal:
+            self.qt_handler.log_signal.connect(self._on_log)
 
-    def _apply_settings(self):
-        pass
+    def _setup_timers(self):
+        self.ui_timer = QTimer(self)
+        self.ui_timer.timeout.connect(self._update_ui)
+        self.ui_timer.start(1000)
 
-    def start_bot(self):
-        if self._running: return
-        self.save_settings()
-        self.api_client = AsyncBingXClient(
-            api_key=self.settings.get("api_key", ""),
-            api_secret=self.settings.get("api_secret", ""),
-            demo_mode=self.settings.get("demo_mode", True),
-            settings=self.settings.to_dict(),
-        )
-        if self.settings.get("telegram_enabled", False):
-            self.telegram = TelegramNotifier(
-                token=self.settings.get("telegram_bot_token", ""),
-                chat_id=self.settings.get("telegram_chat_id", ""),
-                proxy=self.settings.get("telegram_proxy_url", ""),
-            )
-        self.trading_engine = TradingEngine(self.settings, self.logger, self.api_client, self.telegram)
-        self._running = True
-        self.status_label.setText("🟢 Работает")
-        self.status_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #00ff88;")
+        self.slow_timer = QTimer(self)
+        self.slow_timer.timeout.connect(self._update_slow)
+        self.slow_timer.start(5000)
+
+        self.ml_timer = QTimer(self)
+        self.ml_timer.timeout.connect(self._update_ml)
+        self.ml_timer.start(30000)
+
+    @pyqtSlot(str, str, str)
+    def _on_log(self, level, message, category):
+        color = "#c0c0c0"
+        if "ERROR" in level or "CRITICAL" in level:
+            color = "#ff6666"
+        elif "WARNING" in level:
+            color = "#ffaa44"
+        elif "TRADE" in message or "PnL" in message:
+            color = "#4ade80" if "+" in message and "PnL" in message else "#ff6666" if "-" in message and "PnL" in message else "#66ccff"
+        elif "SIGNAL" in message:
+            color = "#cc88ff"
+        elif "RISK" in message:
+            color = "#ffaa00"
+
+        self.log_text.append(f'<span style="color: {color}">{message}</span>')
+        sb = self.log_text.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _start_bot(self):
+        self.bot_core.start()
+        self.worker = BotWorker(self.bot_core)
+        self.worker.start()
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.btn_emergency.setEnabled(True)
-        worker = AsyncWorker(self.trading_engine.start())
-        worker.start()
+        self.lbl_status.setText("● RUNNING")
+        self.lbl_status.setStyleSheet("color: #4ade80; font-weight: bold; font-size: 14px;")
+        self.status_bar.showMessage("Bot running...")
+        logger.info("Bot started")
 
-    def stop_bot(self):
-        if not self._running or not self.trading_engine: return
-        self._running = False
-        self.status_label.setText("⏹ Остановка...")
-        self.status_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #ffaa00;")
-        self.btn_emergency.setEnabled(False)
-        worker = AsyncWorker(self.trading_engine.stop())
-        worker.finished.connect(self._on_stopped)
-        worker.start()
-
-    def emergency_stop(self):
-        if not self._running: return
-        reply = QMessageBox.question(self, "🚨 Аварийная остановка", "Закрыть ВСЕ позиции и остановить бота?", QMessageBox.Yes | QMessageBox.No)
-        if reply != QMessageBox.Yes: return
-        self.logger.critical("🚨 АВАРИЙНАЯ ОСТАНОВКА АКТИВИРОВАНА")
-        self._running = False
-        self.status_label.setText("🚨 АВАРИЯ")
-        self.status_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #ff0000;")
-        if self.trading_engine:
-            worker = AsyncWorker(self.trading_engine.emergency_stop())
-            worker.finished.connect(self._on_stopped)
-            worker.start()
-
-    def _on_stopped(self, result):
-        self.status_label.setText("⏹ Остановлен")
-        self.status_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #ff4444;")
+    def _stop_bot(self):
+        if self.worker:
+            self.worker.stop()
+            self.worker = None
+        self.bot_core.stop()
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.btn_emergency.setEnabled(False)
-        if self.api_client:
-            asyncio.create_task(self.api_client.close())
+        self.lbl_status.setText("● STOPPED")
+        self.lbl_status.setStyleSheet("color: #ff5555; font-weight: bold; font-size: 14px;")
+        self.status_bar.showMessage("Bot stopped")
+        logger.info("Bot stopped")
 
-    def save_settings(self):
-        self.settings.set("api_key", self.api_key_input.text())
-        self.settings.set("api_secret", self.api_secret_input.text())
-        self.settings.set("demo_mode", self.demo_check.isChecked())
-        self.settings.set("scan_interval_minutes", self.scan_interval_spin.value())
-        self.settings.set("max_positions", self.max_pos_spin.value())
-        self.settings.set("max_leverage", self.leverage_spin.value())
-        self.settings.set("max_risk_per_trade", self.risk_spin.value())
-        self.settings.set("min_adx", self.adx_spin.value())
-        self.settings.set("min_atr_percent", self.atr_spin.value())
-        self.settings.set("min_volume_24h_usdt", float(self.vol_spin.value()))
-        self.settings.set("min_signal_strength", self.signal_spin.value())
-        self.settings.set("use_multi_timeframe", self.mtf_check.isChecked())
-        self.settings.set("trailing_stop_enabled", self.trailing_check.isChecked())
-        self.settings.set("partial_close_enabled", self.partial_check.isChecked())
-        self.settings.set("aggressive_adaptation", self.aggressive_check.isChecked())
-        QMessageBox.information(self, "Сохранено", "Настройки сохранены")
-
-    def export_settings(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Экспорт", "bot_config.json", "JSON (*.json)")
-        if path:
-            if self.settings.export(path):
-                QMessageBox.information(self, "Экспорт", f"Сохранено: {path}")
-
-    def import_settings(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Импорт", "", "JSON (*.json)")
-        if path:
-            if self.settings.import_from(path):
-                self._apply_settings()
-                QMessageBox.information(self, "Импорт", "Настройки загружены")
-
-    def export_csv(self):
-        if not self.trading_engine: return
-        path, _ = QFileDialog.getSaveFileName(self, "Экспорт CSV", f"trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", "CSV (*.csv)")
-        if not path: return
+    def _update_ui(self):
         try:
-            history = self.trading_engine.get_closed_positions()
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Пара", "Напр.", "Вход", "Выход", "PnL", "PnL %", "Причина", "Время"])
-                for h in history:
-                    writer.writerow([
-                        h.get("symbol", ""), h.get("side", ""), h.get("entry_price", 0),
-                        h.get("exit_price", 0), h.get("realized_pnl", 0), h.get("realized_pnl_percent", 0),
-                        h.get("exit_reason", ""), h.get("exit_time", "")
-                    ])
-            QMessageBox.information(self, "Экспорт", f"CSV сохранён: {path}")
+            balance = self.bot_core.executor.get_balance()
+            self.lbl_balance.setText(f"{balance:,.2f} USDT")
+
+            positions = self.bot_core.executor.get_positions()
+            self.lbl_pos_count.setText(str(len(positions)))
+
+            self.pos_table.setRowCount(len(positions))
+            for i, pos in enumerate(positions):
+                price = self.bot_core.data_fetcher.get_current_price(pos.symbol)
+                pnl = pos.calculate_pnl(price)
+                pnl_pct = pos.calculate_pnl_percent(price)
+
+                self.pos_table.setItem(i, 0, QTableWidgetItem(pos.symbol))
+                self.pos_table.setItem(i, 1, QTableWidgetItem(pos.side.value))
+                self.pos_table.setItem(i, 2, QTableWidgetItem(f"{pos.avg_entry_price:.2f}"))
+                self.pos_table.setItem(i, 3, QTableWidgetItem(f"{price:.2f}"))
+                self.pos_table.setItem(i, 4, QTableWidgetItem(f"{pos.quantity:.6f}"))
+
+                pi = QTableWidgetItem(f"{pnl:+.2f}")
+                pi.setForeground(QColor("#4ade80" if pnl >= 0 else "#ff6666"))
+                self.pos_table.setItem(i, 5, pi)
+
+                pi2 = QTableWidgetItem(f"{pnl_pct:+.2f}%")
+                pi2.setForeground(QColor("#4ade80" if pnl_pct >= 0 else "#ff6666"))
+                self.pos_table.setItem(i, 6, pi2)
+
+                self.pos_table.setItem(i, 7, QTableWidgetItem(f"SL:{pos.stop_loss_price:.1f}/TP:{pos.take_profit_price:.1f}"))
+
+            signals = self.bot_core.scanner.get_latest_signals()
+            self.sig_table.setRowCount(min(len(signals), 20))
+            for i, sig in enumerate(signals[:20]):
+                self.sig_table.setItem(i, 0, QTableWidgetItem(datetime.now().strftime("%H:%M:%S")))
+                self.sig_table.setItem(i, 1, QTableWidgetItem(sig.symbol))
+                di = QTableWidgetItem(sig.direction)
+                di.setForeground(QColor("#4ade80" if sig.direction == "LONG" else "#ff6666"))
+                self.sig_table.setItem(i, 2, di)
+                ci = QTableWidgetItem(f"{sig.confidence:.2f}")
+                ci.setForeground(QColor("#4ade80" if sig.confidence > 0.8 else "#ffaa44" if sig.confidence > 0.6 else "#ff6666"))
+                self.sig_table.setItem(i, 3, ci)
+                self.sig_table.setItem(i, 4, QTableWidgetItem(sig.strategy))
+                self.sig_table.setItem(i, 5, QTableWidgetItem(f"{sig.entry_price:.2f}"))
+                self.sig_table.setItem(i, 6, QTableWidgetItem(sig.reason))
+
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            logger.error("UI update: %s", e)
 
-    def update_ui(self):
-        if not self.trading_engine: return
-        stats = self.trading_engine.get_stats()
-        self.balance_label.setText(f"Баланс: ${stats.get('balance', 0):.2f}")
-        self.pnl_label.setText(f"PnL: ${stats.get('total_pnl', 0):.2f}")
-        self.win_rate_label.setText(f"Win Rate: {stats.get('win_rate', 0):.1f}%")
-        self.card_positions._value_label.setText(str(stats.get("positions_count", 0)))
-        self.card_daily_pnl._value_label.setText(f"{stats.get('daily_pnl', 0):.2f}")
-        self.card_total_trades._value_label.setText(str(stats.get("total_trades", 0)))
-        self.card_win_rate._value_label.setText(f"{stats.get('win_rate', 0):.1f}%")
-        self.card_api_health._value_label.setText(stats.get("health_status", "OK"))
-        scan_stats = stats.get("scan_stats", {})
-        self.scan_stats_label.setText(f"Последнее сканирование: всего={scan_stats.get('total', 0)}, прошло={scan_stats.get('passed', 0)}")
-        self.health_label.setText(f"Статус: {stats.get('health_status', 'OK')} | Latency: {stats.get('api_latency_ms', 0):.0f}ms")
-        risk_stats = stats.get("risk_stats", {})
-        strat_stats = stats.get("strategy_stats", {})
-        self.stats_text.setHtml(f"""
-        <h3>Статистика</h3>
-        <b>Баланс:</b> ${stats.get('balance', 0):.2f}<br>
-        <b>Начальный баланс:</b> ${stats.get('start_balance', 0):.2f}<br>
-        <b>Дневной PnL:</b> ${stats.get('daily_pnl', 0):.2f}<br>
-        <b>Всего сделок:</b> {stats.get('total_trades', 0)}<br>
-        <b>Побед:</b> {stats.get('winning_trades', 0)}<br>
-        <b>Win Rate:</b> {stats.get('win_rate', 0):.1f}%<br>
-        <b>Последов. убытков:</b> {risk_stats.get('consecutive_losses', 0)}<br>
-        <b>Общий риск:</b> {risk_stats.get('total_risk_exposure', 0):.2f}<br>
-        <b>Стратегия:</b> {strat_stats.get('best_strategy', 'default')}<br>
-        <b>API Latency:</b> {stats.get('api_latency_ms', 0):.0f}ms<br>
-        <b>Uptime:</b> {stats.get('uptime_seconds', 0):.0f}s<br>
-        """)
+    def _update_slow(self):
+        try:
+            stats = self.bot_core.risk_manager.get_stats()
+            self.lbl_win_rate.setText(f"{stats.get('win_rate', 0):.1f}%")
+            self.lbl_total_trades.setText(str(stats.get('total_trades', 0)))
+            self.lbl_max_dd.setText(f"{stats.get('max_drawdown', 0):.1f}%")
+            self.lbl_pf.setText(f"{stats.get('profit_factor', 0):.2f}")
 
-    def update_tables(self):
-        if not self.trading_engine: return
-        positions = self.trading_engine.get_open_positions()
-        self.positions_table.setRowCount(len(positions))
-        for i, p in enumerate(positions):
-            self.positions_table.setItem(i, 0, QTableWidgetItem(p.get("symbol", "")))
-            self.positions_table.setItem(i, 1, QTableWidgetItem(p.get("side", "")))
-            self.positions_table.setItem(i, 2, QTableWidgetItem(f"{p.get('entry_price', 0):.4f}"))
-            self.positions_table.setItem(i, 3, QTableWidgetItem(f"{p.get('current_price', 0):.4f}"))
-            self.positions_table.setItem(i, 4, QTableWidgetItem(f"{p.get('quantity', 0):.6f}"))
-            self.positions_table.setItem(i, 5, QTableWidgetItem(str(p.get("leverage", 1))))
-            self.positions_table.setItem(i, 6, QTableWidgetItem(f"{p.get('stop_loss_price', 0):.4f}"))
-            self.positions_table.setItem(i, 7, QTableWidgetItem(f"{p.get('take_profit_price', 0):.4f}"))
-            pnl = p.get("unrealized_pnl_percent", 0)
-            item = QTableWidgetItem(f"{pnl:.2f}%")
-            item.setForeground(QColor("#00ff88" if pnl >= 0 else "#ff4444"))
-            self.positions_table.setItem(i, 8, item)
-        history = self.trading_engine.get_closed_positions()
-        self.history_table.setRowCount(len(history))
-        for i, h in enumerate(history):
-            self.history_table.setItem(i, 0, QTableWidgetItem(h.get("symbol", "")))
-            self.history_table.setItem(i, 1, QTableWidgetItem(h.get("side", "")))
-            self.history_table.setItem(i, 2, QTableWidgetItem(f"{h.get('entry_price', 0):.4f}"))
-            self.history_table.setItem(i, 3, QTableWidgetItem(f"{h.get('exit_price', 0):.4f}"))
-            pnl = h.get("realized_pnl", 0)
-            item = QTableWidgetItem(f"{pnl:.4f}")
-            item.setForeground(QColor("#00ff88" if pnl >= 0 else "#ff4444"))
-            self.history_table.setItem(i, 4, item)
-            self.history_table.setItem(i, 5, QTableWidgetItem(f"{h.get('realized_pnl_percent', 0):.2f}%"))
-            self.history_table.setItem(i, 6, QTableWidgetItem(h.get("exit_reason", "")))
-            self.history_table.setItem(i, 7, QTableWidgetItem(str(h.get("exit_time", ""))))
-        signals = self.trading_engine.get_last_scan_signals()
-        self.signals_table.setRowCount(len(signals))
-        for i, s in enumerate(signals):
-            ind = s.get("indicators", {})
-            self.signals_table.setItem(i, 0, QTableWidgetItem(s.get("symbol", "")))
-            self.signals_table.setItem(i, 1, QTableWidgetItem(ind.get("signal_direction", "")))
-            self.signals_table.setItem(i, 2, QTableWidgetItem(f"{ind.get('close_price', 0):.4f}"))
-            self.signals_table.setItem(i, 3, QTableWidgetItem(f"{ind.get('adx', 0):.1f}"))
-            self.signals_table.setItem(i, 4, QTableWidgetItem(f"{ind.get('atr_percent', 0):.2f}%"))
-            self.signals_table.setItem(i, 5, QTableWidgetItem(f"{ind.get('signal_strength', 0):.2f}"))
-            self.signals_table.setItem(i, 6, QTableWidgetItem(ind.get("market_regime", "")))
+            self.lbl_daily_pnl.setText(f"{stats.get('daily_pnl', 0):+.2f} USDT")
+            self.lbl_daily_pnl.setStyleSheet(
+                f"font-size: 14px; color: {'#4ade80' if stats.get('daily_pnl', 0) >= 0 else '#ff6666'}; font-weight: bold;"
+            )
+        except Exception as e:
+            logger.error("Slow update: %s", e)
+
+    def _update_ml(self):
+        try:
+            if not self.bot_core.ml_engine._models:
+                return
+            predictions = []
+            for symbol in ["BTC-USDT", "ETH-USDT", "SOL-USDT"]:
+                pred = self.bot_core.ml_engine.predict(symbol)
+                if pred:
+                    predictions.append(pred)
+
+            self.ml_table.setRowCount(len(predictions))
+            for i, p in enumerate(predictions):
+                self.ml_table.setItem(i, 0, QTableWidgetItem(p.symbol))
+                di = QTableWidgetItem(p.direction)
+                di.setForeground(QColor("#4ade80" if p.direction == "UP" else "#ff6666" if p.direction == "DOWN" else "#888"))
+                self.ml_table.setItem(i, 1, di)
+                self.ml_table.setItem(i, 2, QTableWidgetItem(f"{p.confidence:.2f}"))
+                self.ml_table.setItem(i, 3, QTableWidgetItem(f"{p.probability:.3f}"))
+                self.ml_table.setItem(i, 4, QTableWidgetItem(",".join(p.features_used[:5])))
+        except Exception as e:
+            logger.error("ML update: %s", e)
+
+    def _clear_logs(self):
+        self.log_text.clear()
+
+    def _export_config(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export Config", "config.json", "JSON (*.json)")
+        if path:
+            get_config().save(path)
+            logger.info("Config exported to %s", path)
+
+    def _import_config(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import Config", "", "JSON (*.json)")
+        if path:
+            from src.core.config import set_config, Config
+            set_config(Config.load(path))
+            logger.info("Config imported from %s", path)
 
     def closeEvent(self, event):
-        if self._running and self.trading_engine:
-            self.stop_bot()
-        if self.logger and self._ui_logger_handler:
-            self.logger.remove_ui_handler(self._ui_logger_handler)
-        event.accept()
-
-def apply_dark_theme(app):
-    app.setStyleSheet("""
-    QMainWindow, QWidget { background-color: #0f0f1a; color: #e0e0e0; }
-    QTabWidget::pane { border: 1px solid #333; background-color: #0f0f1a; }
-    QTabBar::tab { background-color: #1a1a2e; color: #aaa; padding: 8px 16px; border: 1px solid #333; }
-    QTabBar::tab:selected { background-color: #2a2a4e; color: #fff; }
-    QPushButton { background-color: #2a2a4e; color: #fff; border: 1px solid #444; padding: 6px 12px; border-radius: 4px; }
-    QPushButton:hover { background-color: #3a3a5e; }
-    QTableWidget { background-color: #1a1a2e; color: #e0e0e0; gridline-color: #333; }
-    QHeaderView::section { background-color: #2a2a4e; color: #fff; padding: 6px; border: 1px solid #333; }
-    QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #1a1a2e; color: #e0e0e0; border: 1px solid #444; padding: 4px; }
-    QCheckBox { color: #e0e0e0; }
-    QGroupBox { color: #e0e0e0; border: 1px solid #444; margin-top: 8px; padding-top: 8px; }
-    QTextEdit { background-color: #1a1a2e; color: #e0e0e0; border: 1px solid #333; }
-    QScrollArea { border: none; }
-    """)
+        reply = QMessageBox.question(self, "Exit", "Stop bot and exit?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            self._stop_bot()
+            event.accept()
+        else:
+            event.ignore()

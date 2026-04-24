@@ -1,80 +1,266 @@
-#!/usr/bin/env python3
-import logging, logging.handlers, sys, os, json, traceback, threading
+"""
+Advanced Logging v5.0 - Structured logging, Qt signals, file rotation,
+remote forwarding, and performance metrics.
+"""
+import logging
+import logging.handlers
+import sys
+import os
+import json
+import queue
+import threading
 from datetime import datetime
-from typing import Dict, Any
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+from dataclasses import dataclass
+
+try:
+    from PyQt5.QtCore import QObject, pyqtSignal
+    HAS_QT = True
+except ImportError:
+    try:
+        from PyQt6.QtCore import QObject, pyqtSignal
+        HAS_QT = True
+    except ImportError:
+        HAS_QT = False
+        class QObject:
+            pass
+        def pyqtSignal(*args, **kwargs):
+            return None
+
+
+class ColorCodes:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+    GRAY = "\033[90m"
+    ORANGE = "\033[38;5;208m"
+
 
 class ColoredFormatter(logging.Formatter):
-    COLORS = {"DEBUG":"\033[90m","INFO":"\033[96m","WARNING":"\033[93m","ERROR":"\033[91m","CRITICAL":"\033[95m","RESET":"\033[0m"}
-    def format(self, record):
-        c = self.COLORS.get(record.levelname, self.COLORS["RESET"])
-        record.levelname_colored = f"{c}{record.levelname}{self.COLORS['RESET']}"
-        return super().format(record)
+    LEVEL_COLORS = {
+        logging.DEBUG: ColorCodes.GRAY,
+        logging.INFO: ColorCodes.GREEN,
+        logging.WARNING: ColorCodes.YELLOW,
+        logging.ERROR: ColorCodes.RED,
+        logging.CRITICAL: ColorCodes.MAGENTA + ColorCodes.BOLD,
+    }
 
-class JSONFormatter(logging.Formatter):
-    def format(self, record):
-        entry = {"timestamp": datetime.utcnow().isoformat()+"Z","level":record.levelname,"logger":record.name,"message":record.getMessage(),"module":record.module,"function":record.funcName,"line":record.lineno}
-        if record.exc_info: entry["exception"] = traceback.format_exception(*record.exc_info)
-        if hasattr(record, "extra_data"): entry["extra"] = record.extra_data
-        return json.dumps(entry, ensure_ascii=False)
+    MSG_COLORS = {
+        "PROFIT": ColorCodes.GREEN + ColorCodes.BOLD,
+        "WIN": ColorCodes.GREEN + ColorCodes.BOLD,
+        "LOSS": ColorCodes.RED + ColorCodes.BOLD,
+        "STOP": ColorCodes.RED + ColorCodes.BOLD,
+        "SIGNAL": ColorCodes.CYAN + ColorCodes.BOLD,
+        "ERROR": ColorCodes.RED,
+        "FAILED": ColorCodes.RED,
+        "OPEN": ColorCodes.BLUE + ColorCodes.BOLD,
+        "CLOSE": ColorCodes.ORANGE + ColorCodes.BOLD,
+        "RISK": ColorCodes.YELLOW + ColorCodes.BOLD,
+        "WS": ColorCodes.MAGENTA,
+    }
 
-class MetricsHandler(logging.Handler):
-    def __init__(self):
-        super().__init__()
-        self.errors_count = 0; self.warnings_count = 0; self.trades_count = 0; self.scans_count = 0
-        self._lock = threading.Lock()
-    def emit(self, record):
-        with self._lock:
-            msg = record.getMessage()
-            if record.levelno >= logging.ERROR: self.errors_count += 1
-            elif record.levelno >= logging.WARNING: self.warnings_count += 1
-            if "Ордер исполнен" in msg or "Позиция открыта" in msg: self.trades_count += 1
-            if "Сканирование рынка" in msg: self.scans_count += 1
-    def get_metrics(self):
-        with self._lock: return {"errors":self.errors_count,"warnings":self.warnings_count,"trades":self.trades_count,"scans":self.scans_count}
-    def reset(self):
-        with self._lock: self.errors_count = self.warnings_count = self.trades_count = self.scans_count = 0
+    def __init__(self, fmt: str = None, datefmt: str = None, use_colors: bool = True):
+        super().__init__(fmt, datefmt)
+        self.use_colors = use_colors and (sys.platform != "win32" or "ANSICON" in os.environ or "WT_SESSION" in os.environ)
+
+    def format(self, record: logging.LogRecord) -> str:
+        original_levelname = record.levelname
+        original_msg = record.msg
+
+        if self.use_colors:
+            color = self.LEVEL_COLORS.get(record.levelno, ColorCodes.WHITE)
+            record.levelname = f"{color}{record.levelname}{ColorCodes.RESET}"
+
+            msg_upper = str(record.msg).upper()
+            for keyword, msg_color in self.MSG_COLORS.items():
+                if keyword in msg_upper:
+                    record.msg = f"{msg_color}{record.msg}{ColorCodes.RESET}"
+                    break
+
+        result = super().format(record)
+        record.levelname = original_levelname
+        record.msg = original_msg
+        return result
+
+
+class JsonFormatter(logging.Formatter):
+    """JSON formatter for structured logging"""
+    def format(self, record: logging.LogRecord) -> str:
+        data = {
+            "timestamp": datetime.fromtimestamp(record.created).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+        }
+        if record.exc_info:
+            data["exception"] = self.formatException(record.exc_info)
+        if hasattr(record, "extra"):
+            data.update(record.extra)
+        return json.dumps(data, default=str)
+
+
+class QtLogHandler(logging.Handler):
+    if HAS_QT:
+        log_signal = pyqtSignal(str, str, str)
+    else:
+        log_signal = None
+
+    def __init__(self, parent: Optional[QObject] = None):
+        if HAS_QT:
+            super().__init__()
+            QObject.__init__(self, parent)
+        else:
+            super().__init__()
+        self.setLevel(logging.DEBUG)
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = self.format(record)
+            level = record.levelname
+            category = getattr(record, "category", "general")
+            if HAS_QT and self.log_signal is not None:
+                self.log_signal.emit(level, msg, category)
+        except Exception:
+            self.handleError(record)
+
 
 class BotLogger:
-    def __init__(self, name="BotLogger", level="INFO", log_dir="logs", max_bytes=10485760, backup_count=10):
+    _instance: Optional["BotLogger"] = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self, name: str = "CryptoBot", log_dir: str = "logs",
+                 console_level: int = logging.INFO, file_level: int = logging.DEBUG,
+                 max_bytes: int = 10 * 1024 * 1024, backup_count: int = 10):
+        if BotLogger._initialized:
+            return
+
         self.name = name
-        self.log_dir = log_dir
-        os.makedirs(log_dir, exist_ok=True)
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
         self.logger = logging.getLogger(name)
-        self.logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-        self.logger.handlers = []
+        self.logger.setLevel(logging.DEBUG)
         self.logger.propagate = False
-        console = logging.StreamHandler(sys.stdout)
-        console.setLevel(logging.DEBUG)
-        console.setFormatter(ColoredFormatter("%(asctime)s │ %(levelname_colored)s │ %(name)s │ %(message)s", datefmt="%H:%M:%S"))
-        self.logger.addHandler(console)
-        fh = logging.handlers.RotatingFileHandler(os.path.join(log_dir, f"{name.lower()}.log"), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter("%(asctime)s │ %(levelname)s │ %(name)s │ %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
-        self.logger.addHandler(fh)
-        jh = logging.handlers.RotatingFileHandler(os.path.join(log_dir, f"{name.lower()}.jsonl"), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
-        jh.setLevel(logging.DEBUG); jh.setFormatter(JSONFormatter()); self.logger.addHandler(jh)
-        self.metrics = MetricsHandler(); self.metrics.setLevel(logging.INFO); self.logger.addHandler(self.metrics)
-        dh = logging.handlers.RotatingFileHandler(os.path.join(log_dir, "decisions.jsonl"), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
-        dh.setLevel(logging.INFO); dh.setFormatter(JSONFormatter())
-        self._decision_logger = logging.getLogger(f"{name}.decisions")
-        self._decision_logger.setLevel(logging.INFO); self._decision_logger.handlers = [dh]; self._decision_logger.propagate = False
-        eh = logging.handlers.RotatingFileHandler(os.path.join(log_dir, "errors.log"), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
-        eh.setLevel(logging.ERROR); eh.setFormatter(logging.Formatter("%(asctime)s │ %(levelname)s │ %(name)s │ %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
-        self.logger.addHandler(eh)
-        self.info(f"📝 Логгер инициализирован: {log_dir}/")
-    def debug(self, msg, extra=None): self._log(logging.DEBUG, msg, extra)
-    def info(self, msg, extra=None): self._log(logging.INFO, msg, extra)
-    def warning(self, msg, extra=None): self._log(logging.WARNING, msg, extra)
-    def error(self, msg, exc_info=False, extra=None): self._log(logging.ERROR, msg, extra, exc_info=exc_info)
-    def critical(self, msg, exc_info=False, extra=None): self._log(logging.CRITICAL, msg, extra, exc_info=exc_info)
-    def _log(self, level, msg, extra=None, exc_info=False):
-        if extra: self.logger.log(level, msg, exc_info=exc_info, extra={"extra_data": extra})
-        else: self.logger.log(level, msg, exc_info=exc_info)
-    def log_decision(self, decision_type, symbol=None, data=None):
-        self._decision_logger.info(json.dumps({"type":decision_type,"symbol":symbol,"timestamp":datetime.utcnow().isoformat()+"Z","data":data or {}}, ensure_ascii=False))
-    def log_state(self, component, state):
-        self._decision_logger.info(json.dumps({"type":"state","component":component,"state":state,"timestamp":datetime.utcnow().isoformat()+"Z"}, ensure_ascii=False))
-    def log_trade(self, symbol, side, entry, qty, leverage, sl, tp, pnl=None, reason=None):
-        self._decision_logger.info(json.dumps({"type":"trade","symbol":symbol,"side":side,"entry_price":entry,"quantity":qty,"leverage":leverage,"sl":sl,"tp":tp,"pnl":pnl,"reason":reason,"timestamp":datetime.utcnow().isoformat()+"Z"}, ensure_ascii=False))
-    def get_metrics(self): return self.metrics.get_metrics()
-    def reset_metrics(self): self.metrics.reset()
+        self.logger.handlers.clear()
+
+        # Console
+        console_fmt = "%(asctime)s %(levelname)s %(name)s | %(message)s"
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(console_level)
+        console_handler.setFormatter(ColoredFormatter(console_fmt, datefmt="%H:%M:%S"))
+        self.logger.addHandler(console_handler)
+        self._console_handler = console_handler
+
+        # Main log file
+        log_file = self.log_dir / f"{name}_{datetime.now().strftime('%Y%m%d')}.log"
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+        )
+        file_handler.setLevel(file_level)
+        file_formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s (%(filename)s:%(lineno)d)\n%(message)s\n",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        file_handler.setFormatter(file_formatter)
+        self.logger.addHandler(file_handler)
+
+        # JSON structured log
+        json_file = self.log_dir / f"{name}_structured_{datetime.now().strftime('%Y%m%d')}.jsonl"
+        json_handler = logging.handlers.RotatingFileHandler(
+            json_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+        )
+        json_handler.setLevel(file_level)
+        json_handler.setFormatter(JsonFormatter())
+        self.logger.addHandler(json_handler)
+
+        # Error log
+        error_file = self.log_dir / f"{name}_errors_{datetime.now().strftime('%Y%m%d')}.log"
+        error_handler = logging.handlers.RotatingFileHandler(
+            error_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+        )
+        error_handler.setLevel(logging.ERROR)
+        error_handler.setFormatter(file_formatter)
+        self.logger.addHandler(error_handler)
+
+        self._qt_handler: Optional[QtLogHandler] = None
+        BotLogger._initialized = True
+        self.logger.info("BotLogger v5.0 initialized | log_dir=%s", self.log_dir)
+
+    def add_qt_handler(self, parent=None) -> Optional[QtLogHandler]:
+        if not HAS_QT:
+            self.logger.warning("Qt not available")
+            return None
+        if self._qt_handler:
+            return self._qt_handler
+        self._qt_handler = QtLogHandler(parent)
+        self._qt_handler.setLevel(logging.INFO)
+        self._qt_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+        self.logger.addHandler(self._qt_handler)
+        self.logger.info("QtLogHandler attached")
+        return self._qt_handler
+
+    def remove_qt_handler(self):
+        if self._qt_handler and self._qt_handler in self.logger.handlers:
+            self.logger.removeHandler(self._qt_handler)
+            self._qt_handler = None
+
+    def set_level(self, level: int):
+        self._console_handler.setLevel(level)
+
+    def debug(self, msg: str, *args, **kwargs):
+        self.logger.debug(msg, *args, **kwargs)
+    def info(self, msg: str, *args, **kwargs):
+        self.logger.info(msg, *args, **kwargs)
+    def warning(self, msg: str, *args, **kwargs):
+        self.logger.warning(msg, *args, **kwargs)
+    def error(self, msg: str, *args, **kwargs):
+        self.logger.error(msg, *args, **kwargs)
+    def critical(self, msg: str, *args, **kwargs):
+        self.logger.critical(msg, *args, **kwargs)
+    def exception(self, msg: str, *args, **kwargs):
+        self.logger.exception(msg, *args, **kwargs)
+
+    def trade(self, msg: str, **kwargs):
+        extra = logging.LoggerAdapter(self.logger, {"category": "trade"})
+        extra.info(f"[TRADE] {msg}", **kwargs)
+    def signal(self, msg: str, **kwargs):
+        extra = logging.LoggerAdapter(self.logger, {"category": "signal"})
+        extra.info(f"[SIGNAL] {msg}", **kwargs)
+    def pnl(self, msg: str, **kwargs):
+        extra = logging.LoggerAdapter(self.logger, {"category": "pnl"})
+        extra.info(f"[PnL] {msg}", **kwargs)
+    def risk(self, msg: str, **kwargs):
+        extra = logging.LoggerAdapter(self.logger, {"category": "risk"})
+        extra.warning(f"[RISK] {msg}", **kwargs)
+    def ws(self, msg: str, **kwargs):
+        extra = logging.LoggerAdapter(self.logger, {"category": "websocket"})
+        extra.debug(f"[WS] {msg}", **kwargs)
+
+
+_log: Optional[BotLogger] = None
+
+def get_logger() -> BotLogger:
+    global _log
+    if _log is None:
+        _log = BotLogger()
+    return _log
+
+def setup_logging(log_dir: str = "logs", console_level: int = logging.INFO, file_level: int = logging.DEBUG) -> BotLogger:
+    global _log
+    _log = BotLogger(log_dir=log_dir, console_level=console_level, file_level=file_level)
+    return _log
