@@ -56,19 +56,25 @@ class ExitManager:
                     pos.trailing_activated = True; pos.update_trailing_stop(self.trailing_distance)
                 if pos.stop_loss_price > 0:
                     if (pos.side.value == "BUY" and current_price <= pos.stop_loss_price) or (pos.side.value == "SELL" and current_price >= pos.stop_loss_price):
-                        await self._close_position(pos, current_price, ExitReason.STOP_LOSS, positions, on_close); continue
+                        await self._close_position(pos, current_price, ExitReason.STOP_LOSS, positions, on_close)
+                        continue
                 if pos.take_profit_price > 0:
                     if (pos.side.value == "BUY" and current_price >= pos.take_profit_price) or (pos.side.value == "SELL" and current_price <= pos.take_profit_price):
-                        await self._close_position(pos, current_price, ExitReason.TAKE_PROFIT, positions, on_close); continue
+                        await self._close_position(pos, current_price, ExitReason.TAKE_PROFIT, positions, on_close)
+                        continue
                 if self.trailing_enabled and pos.trailing_activated and pos.trailing_stop_price > 0:
                     if pos.side.value == "BUY" and current_price <= pos.trailing_stop_price:
-                        await self._close_position(pos, current_price, ExitReason.TRAILING_STOP, positions, on_close); continue
+                        await self._close_position(pos, current_price, ExitReason.TRAILING_STOP, positions, on_close)
+                        continue
                     elif pos.side.value == "SELL" and current_price >= pos.trailing_stop_price:
-                        await self._close_position(pos, current_price, ExitReason.TRAILING_STOP, positions, on_close); continue
+                        await self._close_position(pos, current_price, ExitReason.TRAILING_STOP, positions, on_close)
+                        continue
                 if self.max_hold_time > 0 and hold_time >= self.max_hold_time:
-                    await self._close_position(pos, current_price, ExitReason.TIME_EXIT, positions, on_close); continue
+                    await self._close_position(pos, current_price, ExitReason.TIME_EXIT, positions, on_close)
+                    continue
                 if self.dead_weight_enabled and hold_time > self.max_hold_time * 0.75 and abs(pnl_pct) < 0.3:
-                    await self._close_position(pos, current_price, ExitReason.TIME_EXIT, positions, on_close); continue
+                    await self._close_position(pos, current_price, ExitReason.TIME_EXIT, positions, on_close)
+                    continue
             except Exception as e: self.logger.error(f"Ошибка проверки выхода {symbol}: {e}")
 
     async def _close_position(self, pos, exit_price, reason, positions, on_close=None):

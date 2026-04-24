@@ -64,7 +64,8 @@ class Position:
         margin = self.entry_price * self.quantity / self.leverage if self.quantity > 0 else 1.0
         self.unrealized_pnl_percent = (self.unrealized_pnl / margin) * 100 if margin > 0 else 0.0
 
-    def calculate_pnl_percent(self): return self.unrealized_pnl_percent
+    def calculate_pnl_percent(self): 
+        return self.unrealized_pnl_percent
 
     def update_trailing_stop(self, distance_pct):
         if self.side == OrderSide.BUY:
@@ -91,7 +92,13 @@ class Position:
             pnl = (exit_price - self.entry_price) * close_qty - commission
         else:
             pnl = (self.entry_price - exit_price) * close_qty - commission
-        self.partial_closes.append({"time": datetime.datetime.utcnow().isoformat(), "price": exit_price, "quantity": close_qty, "percent": percent, "pnl": pnl})
+        self.partial_closes.append({
+            "time": datetime.datetime.utcnow().isoformat(),
+            "price": exit_price,
+            "quantity": close_qty,
+            "percent": percent,
+            "pnl": pnl
+        })
         self.realized_pnl += pnl
         return pnl
 
@@ -110,11 +117,53 @@ class Position:
         self.quantity = 0
 
     def to_dict(self):
-        return {"symbol":self.symbol,"side":self.side.value,"initial_quantity":self.initial_quantity,"quantity":self.quantity,"entry_price":self.entry_price,"leverage":self.leverage,"current_price":self.current_price,"stop_loss_price":self.stop_loss_price,"take_profit_price":self.take_profit_price,"trailing_stop_price":self.trailing_stop_price,"unrealized_pnl":self.unrealized_pnl,"unrealized_pnl_percent":self.unrealized_pnl_percent,"max_price_seen":self.max_price_seen,"min_price_seen":self.min_price_seen,"entry_time":self.entry_time.isoformat() if self.entry_time else None,"strategy":self.strategy,"closed":self.closed,"exit_reason":self.exit_reason.value if self.exit_reason else None,"exit_price":self.exit_price,"exit_time":self.exit_time.isoformat() if self.exit_time else None,"realized_pnl":self.realized_pnl,"realized_pnl_percent":self.realized_pnl_percent,"partial_closes":self.partial_closes,"breakeven_moved":self.breakeven_moved,"trailing_activated":self.trailing_activated,"order_id":self.order_id,"sl_order_id":self.sl_order_id,"tp_order_id":self.tp_order_id}
+        return {
+            "symbol": self.symbol,
+            "side": self.side.value,
+            "initial_quantity": self.initial_quantity,
+            "quantity": self.quantity,
+            "entry_price": self.entry_price,
+            "leverage": self.leverage,
+            "current_price": self.current_price,
+            "stop_loss_price": self.stop_loss_price,
+            "take_profit_price": self.take_profit_price,
+            "trailing_stop_price": self.trailing_stop_price,
+            "unrealized_pnl": self.unrealized_pnl,
+            "unrealized_pnl_percent": self.unrealized_pnl_percent,
+            "max_price_seen": self.max_price_seen,
+            "min_price_seen": self.min_price_seen,
+            "entry_time": self.entry_time.isoformat() if self.entry_time else None,
+            "strategy": self.strategy,
+            "closed": self.closed,
+            "exit_reason": self.exit_reason.value if self.exit_reason else None,
+            "exit_price": self.exit_price,
+            "exit_time": self.exit_time.isoformat() if self.exit_time else None,
+            "realized_pnl": self.realized_pnl,
+            "realized_pnl_percent": self.realized_pnl_percent,
+            "partial_closes": self.partial_closes,
+            "breakeven_moved": self.breakeven_moved,
+            "trailing_activated": self.trailing_activated,
+            "order_id": self.order_id,
+            "sl_order_id": self.sl_order_id,
+            "tp_order_id": self.tp_order_id
+        }
 
     @classmethod
     def from_dict(cls, data):
-        pos = cls(symbol=data.get("symbol",""), side=OrderSide(data.get("side","BUY")), quantity=float(data.get("quantity",0)), entry_price=float(data.get("entry_price",0)), leverage=int(data.get("leverage",1)), stop_loss_price=float(data.get("stop_loss_price",0)), take_profit_price=float(data.get("take_profit_price",0)), strategy=data.get("strategy","default"), entry_time=datetime.datetime.fromisoformat(data["entry_time"]) if data.get("entry_time") else None, order_id=data.get("order_id",""), sl_order_id=data.get("sl_order_id",""), tp_order_id=data.get("tp_order_id",""))
+        pos = cls(
+            symbol=data.get("symbol", ""),
+            side=OrderSide(data.get("side", "BUY")),
+            quantity=float(data.get("quantity", 0)),
+            entry_price=float(data.get("entry_price", 0)),
+            leverage=int(data.get("leverage", 1)),
+            stop_loss_price=float(data.get("stop_loss_price", 0)),
+            take_profit_price=float(data.get("take_profit_price", 0)),
+            strategy=data.get("strategy", "default"),
+            entry_time=datetime.datetime.fromisoformat(data["entry_time"]) if data.get("entry_time") else None,
+            order_id=data.get("order_id", ""),
+            sl_order_id=data.get("sl_order_id", ""),
+            tp_order_id=data.get("tp_order_id", "")
+        )
         pos.initial_quantity = float(data.get("initial_quantity", pos.quantity))
         pos.current_price = float(data.get("current_price", pos.entry_price))
         pos.max_price_seen = float(data.get("max_price_seen", pos.entry_price))
@@ -129,6 +178,8 @@ class Position:
         pos.breakeven_moved = data.get("breakeven_moved", False)
         pos.trailing_activated = data.get("trailing_activated", False)
         pos.trailing_stop_price = float(data.get("trailing_stop_price", 0))
-        if data.get("exit_time"): pos.exit_time = datetime.datetime.fromisoformat(data["exit_time"])
-        if data.get("exit_reason"): pos.exit_reason = ExitReason(data["exit_reason"])
+        if data.get("exit_time"):
+            pos.exit_time = datetime.datetime.fromisoformat(data["exit_time"])
+        if data.get("exit_reason"):
+            pos.exit_reason = ExitReason(data["exit_reason"])
         return pos
