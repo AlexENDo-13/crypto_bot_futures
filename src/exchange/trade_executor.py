@@ -1,7 +1,5 @@
 """
 CryptoBot v7.1 - Trade Executor
-Fixed: live trading, balance sync, trailing stop, notifications,
-proper qty calculation, volume validation
 """
 import logging
 import time
@@ -13,12 +11,14 @@ from enum import Enum
 from exchange.api_client import BingXAPIClient
 from risk.risk_manager import RiskManager, Position, RiskLimits
 
+
 class OrderStatus(Enum):
     PENDING = "pending"
     FILLED = "filled"
     PARTIAL = "partial"
     REJECTED = "rejected"
     CANCELLED = "cancelled"
+
 
 @dataclass
 class Order:
@@ -36,6 +36,7 @@ class Order:
     fill_time: str = ""
     pnl: float = 0.0
     metadata: Dict = field(default_factory=dict)
+
 
 class TradeExecutor:
     """Executes trades with full live/paper support."""
@@ -56,7 +57,10 @@ class TradeExecutor:
         self.positions: Dict[str, Position] = {}
         self.order_counter = 0
 
-        self.logger.info(f"TradeExecutor v7.1 | paper={paper_trading} balance=${balance:,.2f}")
+        self.logger.info(
+            "TradeExecutor v7.1 | paper=%s balance=$%.2f",
+            paper_trading, balance
+        )
 
     @property
     def balance(self) -> float:
@@ -77,6 +81,10 @@ class TradeExecutor:
     def balance(self, value: float):
         self._balance = value
 
+    def get_balance(self) -> Dict:
+        """Return balance info dict for UI."""
+        return {"balance": self.balance, "available": self.balance}
+
     def execute_signal(self, signal: Any, price: float = 0) -> Optional[Order]:
         """Execute a trading signal."""
         symbol = getattr(signal, "symbol", "")
@@ -85,7 +93,7 @@ class TradeExecutor:
 
         entry_price = price or getattr(signal, "price", 0)
         if entry_price <= 0:
-            self.logger.warning(f"Invalid entry price for {symbol}")
+            self.logger.warning("Invalid entry price for %s", symbol)
             return None
 
         # Get real balance
@@ -93,11 +101,12 @@ class TradeExecutor:
 
         can_trade, reason = self.risk.can_open_position(
             symbol, position_side, 1.0, entry_price,
-            leverage=self.risk.limits.max_leverage, balance=current_balance
+            leverage=self.risk.limits.max_leverage,
+            balance=current_balance
         )
 
         if not can_trade:
-            self.logger.info(f"Trade rejected: {symbol} - {reason}")
+            self.logger.info("Trade rejected: %s - %s", symbol, reason)
             return None
 
         size = self.risk.calculate_position_size(
@@ -108,7 +117,10 @@ class TradeExecutor:
 
         # Validate size
         if size <= 0 or size * entry_price < 5.0:
-            self.logger.warning(f"Trade rejected: {symbol} - calculated size too small ({size:.6f})")
+            self.logger.warning(
+                "Trade rejected: %s - calculated size too small (%.6f)",
+                symbol, size
+            )
             return None
 
         order = Order(
@@ -131,7 +143,7 @@ class TradeExecutor:
 
     def _execute_paper(self, order: Order, price: float) -> Order:
         self.order_counter += 1
-        order.order_id = f"PAPER_{self.order_counter}"
+        order.order_id = "PAPER_%d" % self.order_counter
         order.status = OrderStatus.FILLED
         order.fill_price = price
         order.fill_time = datetime.now().isoformat()
@@ -144,9 +156,11 @@ class TradeExecutor:
             size=order.quantity,
             entry_price=price,
             leverage=order.leverage,
-            stop_loss=price * (1 - self.risk.limits.default_sl_percent / 100) if order.position_side == "LONG"
+            stop_loss=price * (1 - self.risk.limits.default_sl_percent / 100)
+            if order.position_side == "LONG"
             else price * (1 + self.risk.limits.default_sl_percent / 100),
-            take_profit=price * (1 + self.risk.limits.default_tp_percent / 100) if order.position_side == "LONG"
+            take_profit=price * (1 + self.risk.limits.default_tp_percent / 100)
+            if order.position_side == "LONG"
             else price * (1 - self.risk.limits.default_tp_percent / 100),
             margin=margin
         )
@@ -155,11 +169,15 @@ class TradeExecutor:
         self.risk.add_position(position)
         self.orders.append(order)
 
-        msg = f"Paper trade: {order.symbol} {order.position_side} qty={order.quantity:.4f} @ ${price:.2f}"
+        msg = "Paper trade: %s %s qty=%.4f @ $%.2f" % (
+            order.symbol, order.position_side, order.quantity, price
+        )
         self.logger.info(msg)
 
         if self.notifier:
-            self.notifier.send_trade_open(order.symbol, order.position_side, price, order.quantity)
+            self.notifier.send_trade_open(
+                order.symbol, order.position_side, price, order.quantity
+            )
 
         return order
 
@@ -169,7 +187,10 @@ class TradeExecutor:
             self.logger.error("No API client for live trading")
             return order
 
-        self.logger.info(f"LIVE ORDER: {order.symbol} {order.side} qty={order.quantity:.4f}")
+        self.logger.info(
+            "LIVE ORDER: %s %s qty=%.4f",
+            order.symbol, order.side, order.quantity
+        )
 
         result = self.api.place_order(
             symbol=order.symbol,
@@ -196,23 +217,31 @@ class TradeExecutor:
                 size=order.quantity,
                 entry_price=order.fill_price,
                 leverage=order.leverage,
-                stop_loss=order.fill_price * (1 - self.risk.limits.default_sl_percent / 100) if order.position_side == "LONG"
-                else order.fill_price * (1 + self.risk.limits.default_sl_percent / 100),
-                take_profit=order.fill_price * (1 + self.risk.limits.default_tp_percent / 100) if order.position_side == "LONG"
-                else order.fill_price * (1 - self.risk.limits.default_tp_percent / 100),
+                stop_loss=order.fill_price * (
+                    1 - self.risk.limits.default_sl_percent / 100
+                ) if order.position_side == "LONG" else order.fill_price * (
+                    1 + self.risk.limits.default_sl_percent / 100
+                ),
+                take_profit=order.fill_price * (
+                    1 + self.risk.limits.default_tp_percent / 100
+                ) if order.position_side == "LONG" else order.fill_price * (
+                    1 - self.risk.limits.default_tp_percent / 100
+                ),
                 margin=margin
             )
             self.positions[order.symbol] = position
             self.risk.add_position(position)
 
-            self.logger.info(f"LIVE filled: {order.order_id} @ ${order.fill_price:.2f}")
+            self.logger.info("LIVE filled: %s @ $%.2f", order.order_id, order.fill_price)
 
             if self.notifier:
-                self.notifier.send_trade_open(order.symbol, order.position_side, order.fill_price, order.quantity)
+                self.notifier.send_trade_open(
+                    order.symbol, order.position_side, order.fill_price, order.quantity
+                )
         else:
             order.status = OrderStatus.REJECTED
             err = result.get("msg", result.get("message", "unknown"))
-            self.logger.error(f"LIVE rejected: {err}")
+            self.logger.error("LIVE rejected: %s", err)
 
         self.orders.append(order)
         return order
@@ -242,9 +271,11 @@ class TradeExecutor:
             self.risk.remove_position(symbol, close_price)
             del self.positions[symbol]
 
-            self.logger.info(f"Paper close: {symbol} P&L=${pnl:+.2f}")
+            self.logger.info("Paper close: %s P&L=$%+.2f", symbol, pnl)
             if self.notifier:
-                self.notifier.send_trade_close(symbol, position.side, position.entry_price, close_price, pnl)
+                self.notifier.send_trade_close(
+                    symbol, position.side, position.entry_price, close_price, pnl
+                )
         else:
             if self.api:
                 result = self.api.close_position(symbol, position.side)
@@ -259,12 +290,15 @@ class TradeExecutor:
                     self.risk.remove_position(symbol, order.fill_price)
                     del self.positions[symbol]
 
-                    self.logger.info(f"LIVE close: {symbol} P&L=${pnl:+.2f}")
+                    self.logger.info("LIVE close: %s P&L=$%+.2f", symbol, pnl)
                     if self.notifier:
-                        self.notifier.send_trade_close(symbol, position.side, position.entry_price, order.fill_price, pnl)
+                        self.notifier.send_trade_close(
+                            symbol, position.side, position.entry_price,
+                            order.fill_price, pnl
+                        )
                 else:
                     order.status = OrderStatus.REJECTED
-                    self.logger.error(f"Close failed: {result.get('msg', 'unknown')}")
+                    self.logger.error("Close failed: %s", result.get("msg", "unknown"))
 
         self.orders.append(order)
         return order
@@ -287,20 +321,24 @@ class TradeExecutor:
 
         sl_hits = self.risk.check_stop_losses(prices)
         for symbol in sl_hits:
-            self.logger.info(f"Stop loss: {symbol}")
+            self.logger.info("Stop loss: %s", symbol)
             self.close_position(symbol, prices.get(symbol, 0))
 
         tp_hits = self.risk.check_take_profits(prices)
         for symbol in tp_hits:
-            self.logger.info(f"Take profit: {symbol}")
+            self.logger.info("Take profit: %s", symbol)
             self.close_position(symbol, prices.get(symbol, 0))
 
     def get_open_positions(self) -> List[Dict]:
         return [
             {
-                "symbol": p.symbol, "side": p.side, "size": p.size,
-                "entry": p.entry_price, "pnl": p.pnl,
-                "pnl_percent": p.pnl_percent, "margin": p.margin
+                "symbol": p.symbol,
+                "side": p.side,
+                "size": p.size,
+                "entry": p.entry_price,
+                "pnl": p.pnl,
+                "pnl_percent": p.pnl_percent,
+                "margin": p.margin
             }
             for p in self.positions.values()
         ]
@@ -308,10 +346,14 @@ class TradeExecutor:
     def get_trade_history(self) -> List[Dict]:
         return [
             {
-                "symbol": o.symbol, "side": o.position_side,
-                "type": o.order_type, "qty": o.quantity,
-                "price": o.fill_price, "pnl": o.pnl,
-                "status": o.status.value, "time": o.fill_time
+                "symbol": o.symbol,
+                "side": o.position_side,
+                "type": o.order_type,
+                "qty": o.quantity,
+                "price": o.fill_price,
+                "pnl": o.pnl,
+                "status": o.status.value,
+                "time": o.fill_time
             }
             for o in self.orders
         ]

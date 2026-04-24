@@ -1,6 +1,5 @@
 """
-CryptoBot v7.0 - State Manager
-SQLite-based state persistence
+CryptoBot v7.1 - State Manager
 """
 import sqlite3
 import json
@@ -8,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
+
 
 class StateManager:
     """Manages bot state persistence."""
@@ -17,7 +17,7 @@ class StateManager:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.logger = logging.getLogger("CryptoBot.State")
         self._init_db()
-        self.logger.info(f"StateManager v7.0 | db={db_path}")
+        self.logger.info("StateManager v7.1 | db=%s", db_path)
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:

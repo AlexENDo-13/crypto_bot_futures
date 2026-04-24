@@ -1,6 +1,5 @@
 """
 CryptoBot v7.1 - Risk Manager
-Fixed: update_pnl method, zero division protection, position validation
 """
 import logging
 from typing import Dict, List, Optional, Any
@@ -8,11 +7,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+
 class RiskLevel(Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
 
 @dataclass
 class RiskLimits:
@@ -26,6 +27,7 @@ class RiskLimits:
     min_risk_reward: float = 1.5
     max_drawdown: float = 15.0
     max_correlation: float = 0.8
+
 
 @dataclass
 class Position:
@@ -92,6 +94,7 @@ class Position:
             if new_sl < self.stop_loss or self.stop_loss == 0:
                 self.stop_loss = new_sl
 
+
 class RiskManager:
     """Advanced risk management."""
 
@@ -110,28 +113,30 @@ class RiskManager:
 
     def can_open_position(self, symbol: str, side: str, size: float,
                           price: float, leverage: int = 1,
-                          balance: float = 10000.0) -> tuple[bool, str]:
+                          balance: float = 10000.0) -> tuple:
         if leverage > self.limits.max_leverage:
-            return False, f"Leverage {leverage}x exceeds max {self.limits.max_leverage}x"
+            return False, "Leverage %dx exceeds max %dx" % (leverage, self.limits.max_leverage)
 
         position_value = size * price
         if position_value > self.limits.max_position_size:
-            return False, f"Position ${position_value:.2f} exceeds max ${self.limits.max_position_size:.2f}"
+            return False, "Position $%.2f exceeds max $%.2f" % (
+                position_value, self.limits.max_position_size
+            )
 
         if self.daily_loss >= balance * (self.limits.max_daily_loss / 100):
-            return False, f"Daily loss limit reached: ${self.daily_loss:.2f}"
+            return False, "Daily loss limit reached: $%.2f" % self.daily_loss
 
         if len(self.positions) >= 5:
             return False, "Max concurrent positions (5) reached"
 
         if symbol in self.positions:
-            return False, f"Already in position: {symbol}"
+            return False, "Already in position: %s" % symbol
 
         # Drawdown check
         if self.peak_balance > 0:
             drawdown = (self.peak_balance - (balance + self.daily_pnl)) / self.peak_balance * 100
             if drawdown > self.limits.max_drawdown:
-                return False, f"Max drawdown reached: {drawdown:.1f}%"
+                return False, "Max drawdown reached: %.1f%%" % drawdown
 
         risk_amount = position_value * (self.limits.max_risk_per_trade / 100)
         if self.total_risk + risk_amount > balance * (self.limits.max_total_risk / 100):
@@ -156,15 +161,24 @@ class RiskManager:
     def add_position(self, position: Position) -> bool:
         # Validate entry price
         if position.entry_price <= 0:
-            self.logger.warning(f"Invalid entry price for {position.symbol}: {position.entry_price}")
+            self.logger.warning(
+                "Invalid entry price for %s: %s",
+                position.symbol, position.entry_price
+            )
             return False
         if position.size <= 0:
-            self.logger.warning(f"Invalid size for {position.symbol}: {position.size}")
+            self.logger.warning(
+                "Invalid size for %s: %s",
+                position.symbol, position.size
+            )
             return False
 
         self.positions[position.symbol] = position
         self.total_risk += position.margin * (self.limits.max_risk_per_trade / 100)
-        self.logger.info(f"Position added: {position.symbol} {position.side} @ {position.entry_price:.2f}")
+        self.logger.info(
+            "Position added: %s %s @ %.2f",
+            position.symbol, position.side, position.entry_price
+        )
         return True
 
     def remove_position(self, symbol: str, exit_price: float = 0) -> Optional[Position]:
@@ -180,13 +194,16 @@ class RiskManager:
                 self.daily_loss += abs(pnl)
 
         self.trade_history.append({
-            "symbol": symbol, "side": pos.side,
-            "entry": pos.entry_price, "exit": exit_price,
-            "pnl": pnl, "pnl_percent": pos.pnl_percent,
+            "symbol": symbol,
+            "side": pos.side,
+            "entry": pos.entry_price,
+            "exit": exit_price,
+            "pnl": pnl,
+            "pnl_percent": pos.pnl_percent,
             "close_time": datetime.now().isoformat()
         })
 
-        self.logger.info(f"Position closed: {symbol} P&L=${pnl:+.2f}")
+        self.logger.info("Position closed: %s P&L=$%+.2f", symbol, pnl)
 
         return pos
 
@@ -195,7 +212,9 @@ class RiskManager:
             if symbol in prices:
                 position.calculate_pnl(prices[symbol])
                 # Update trailing stop
-                position.update_trailing_stop(prices[symbol], self.limits.default_sl_percent)
+                position.update_trailing_stop(
+                    prices[symbol], self.limits.default_sl_percent
+                )
 
     def check_stop_losses(self, prices: Dict[str, float]) -> List[str]:
         triggered = []
@@ -204,8 +223,10 @@ class RiskManager:
                 if position.is_stop_loss_hit(prices[symbol]):
                     triggered.append(symbol)
                     self.risk_events.append({
-                        "type": "stop_loss", "symbol": symbol,
-                        "price": prices[symbol], "time": datetime.now().isoformat()
+                        "type": "stop_loss",
+                        "symbol": symbol,
+                        "price": prices[symbol],
+                        "time": datetime.now().isoformat()
                     })
         return triggered
 
@@ -216,8 +237,10 @@ class RiskManager:
                 if position.is_take_profit_hit(prices[symbol]):
                     triggered.append(symbol)
                     self.risk_events.append({
-                        "type": "take_profit", "symbol": symbol,
-                        "price": prices[symbol], "time": datetime.now().isoformat()
+                        "type": "take_profit",
+                        "symbol": symbol,
+                        "price": prices[symbol],
+                        "time": datetime.now().isoformat()
                     })
         return triggered
 
@@ -249,4 +272,6 @@ class RiskManager:
         if symbol in self.positions:
             self.positions[symbol].pnl = pnl
             if self.positions[symbol].margin > 0:
-                self.positions[symbol].pnl_percent = (pnl / self.positions[symbol].margin) * 100
+                self.positions[symbol].pnl_percent = (
+                    pnl / self.positions[symbol].margin
+                ) * 100

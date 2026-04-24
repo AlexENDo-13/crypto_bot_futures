@@ -1,6 +1,5 @@
 """
 CryptoBot v7.1 - Advanced Logging System
-Fixed: singleton duplication, proper handler management
 """
 import logging
 import sys
@@ -9,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Callable
+
 
 class CallbackLogHandler(logging.Handler):
     """GUI callback handler - no Qt dependencies."""
@@ -33,11 +33,12 @@ class CallbackLogHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
+
 class BotLogger:
     """Centralized logging manager - proper singleton."""
 
     _instance = None
-    _lock = False
+    _initialized = False
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -45,9 +46,9 @@ class BotLogger:
         return cls._instance
 
     def __init__(self, log_dir: str = "logs", level: int = logging.INFO):
-        if BotLogger._lock:
+        if BotLogger._initialized:
             return
-        BotLogger._lock = True
+        BotLogger._initialized = True
 
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -70,19 +71,20 @@ class BotLogger:
             self.logger.addHandler(console)
 
             # File handler
-            log_file = self.log_dir / f"bot_{datetime.now().strftime('%Y%m%d')}.log"
-            file_h = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+            log_file = self.log_dir / ("bot_" + datetime.now().strftime("%Y%m%d") + ".log")
+            file_h = RotatingFileHandler(
+                log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'
+            )
             file_h.setLevel(logging.DEBUG)
             file_h.setFormatter(logging.Formatter(
                 "%(asctime)s [%(levelname)s] %(name)s - %(filename)s:%(lineno)d | %(message)s"
             ))
             self.logger.addHandler(file_h)
 
-        self.logger.info(f"BotLogger v7.1 initialized | log_dir={log_dir}")
+        self.logger.info("BotLogger v7.1 initialized | log_dir=%s", log_dir)
 
     def add_gui_handler(self, callback: Callable[[str, int], None]):
         """Add GUI callback - replaces existing if any."""
-        # Remove old callback handler
         if self._callback_handler:
             self.logger.removeHandler(self._callback_handler)
             self._callback_handler = None
@@ -93,10 +95,11 @@ class BotLogger:
             self.logger.addHandler(self._callback_handler)
             self.logger.info("GUI log handler added")
         except Exception as e:
-            self.logger.warning(f"GUI handler error: {e}")
+            self.logger.warning("GUI handler error: %s", e)
 
     def get_logger(self, name: str = "CryptoBot") -> logging.Logger:
         return logging.getLogger(name)
+
 
 def get_logger(name: str = "CryptoBot") -> logging.Logger:
     return BotLogger().get_logger(name)

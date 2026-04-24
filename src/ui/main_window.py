@@ -1,7 +1,7 @@
 """
 CryptoBot v7.1 - Main GUI Window
-Fixed: no crash on start, proper error handling in worker,
-graceful shutdown, removed useless dark theme button
+Fixed: no crash on start, proper init order, safe cross-references,
+graceful shutdown, no f-string issues
 """
 import sys
 import os
@@ -39,12 +39,16 @@ except ImportError:
     from PyQt5.QtGui import QFont, QColor, QAction, QKeySequence
     PYQT_VER = 5
 
+
 class LogWidget(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
         font = QFont("Consolas", 9)
-        font.setStyleHint(QFont.StyleHint.Monospace if PYQT_VER == 6 else QFont.Monospace)
+        if PYQT_VER == 6:
+            font.setStyleHint(QFont.StyleHint.Monospace)
+        else:
+            font.setStyleHint(QFont.Monospace)
         self.setFont(font)
         self.colors = {
             "DEBUG": "#888888", "INFO": "#00AA00", "WARNING": "#FF8800",
@@ -55,15 +59,22 @@ class LogWidget(QTextEdit):
 
     def append_log(self, message: str, level: int = 20):
         level_name = "INFO"
-        if level <= 10: level_name = "DEBUG"
-        elif level <= 20: level_name = "INFO"
-        elif level <= 30: level_name = "WARNING"
-        elif level <= 40: level_name = "ERROR"
-        else: level_name = "CRITICAL"
+        if level <= 10:
+            level_name = "DEBUG"
+        elif level <= 20:
+            level_name = "INFO"
+        elif level <= 30:
+            level_name = "WARNING"
+        elif level <= 40:
+            level_name = "ERROR"
+        else:
+            level_name = "CRITICAL"
 
         color = self.colors.get(level_name, "#000000")
         timestamp = datetime.now().strftime("%H:%M:%S")
-        html = f'[<span style="color:#888">{timestamp}</span>] <b style="color:{color}">{level_name}</b> {message}'
+        html = '[<span style="color:#888">%s</span>] <b style="color:%s">%s</b> %s' % (
+            timestamp, color, level_name, message
+        )
         self.append(html)
 
         self._line_count += 1
@@ -72,6 +83,7 @@ class LogWidget(QTextEdit):
             self._line_count = 0
 
         self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
 
 class BotWorker(QThread):
     signal_log = pyqtSignal(str, int)
@@ -98,32 +110,35 @@ class BotWorker(QThread):
             if not self._paused:
                 try:
                     self._cycle_count += 1
-                    self.signal_status.emit(f"Cycle #{self._cycle_count}: Scanning...")
+                    self.signal_status.emit("Cycle #%d: Scanning..." % self._cycle_count)
 
                     if self.scanner:
                         try:
                             signals = self.scanner.scan_all()
                             if signals:
-                                self.signal_log.emit(f"Found {len(signals)} signals", 20)
+                                self.signal_log.emit("Found %d signals" % len(signals), 20)
                                 for sig in signals[:3]:
                                     self.signal_log.emit(
-                                        f"Signal: {sig.symbol} {sig.type.value.upper()} "
-                                        f"({sig.strategy}) conf={sig.confidence:.2f}", 20)
+                                        "Signal: %s %s (%s) conf=%.2f" % (
+                                            sig.symbol, sig.type.value.upper(),
+                                            sig.strategy, sig.confidence
+                                        ), 20
+                                    )
                                 if self.executor:
                                     for sig in signals[:3]:
                                         try:
                                             self.executor.execute_signal(sig)
                                         except Exception as e:
-                                            self.signal_log.emit(f"Execute error: {e}", 40)
+                                            self.signal_log.emit("Execute error: %s" % e, 40)
                         except Exception as e:
-                            self.signal_log.emit(f"Scan error: {e}", 40)
+                            self.signal_log.emit("Scan error: %s" % e, 40)
 
                     if self.executor:
                         try:
                             bal = self.executor.balance
                             self.signal_balance.emit(bal, bal)
                         except Exception as e:
-                            self.signal_log.emit(f"Balance update error: {e}", 40)
+                            self.signal_log.emit("Balance update error: %s" % e, 40)
 
                     if self.data_fetcher and self.executor:
                         try:
@@ -136,12 +151,12 @@ class BotWorker(QThread):
                                 self.executor.update_positions(prices)
                                 self.signal_positions.emit(self.executor.get_open_positions())
                         except Exception as e:
-                            self.signal_log.emit(f"Position update error: {e}", 40)
+                            self.signal_log.emit("Position update error: %s" % e, 40)
 
-                    self.signal_status.emit(f"Cycle #{self._cycle_count}: Idle")
+                    self.signal_status.emit("Cycle #%d: Idle" % self._cycle_count)
 
                 except Exception as e:
-                    err_msg = f"Worker error: {e}"
+                    err_msg = "Worker error: %s" % e
                     self.signal_log.emit(err_msg, 40)
                     traceback_str = traceback.format_exc()
                     for line in traceback_str.split("\n")[:5]:
@@ -167,6 +182,7 @@ class BotWorker(QThread):
         self._paused = False
         self.signal_status.emit("Running")
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -177,6 +193,7 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.start_time = None
 
+        # Core components - init to None first
         self.settings = None
         self.api_client = None
         self.data_fetcher = None
@@ -193,16 +210,19 @@ class MainWindow(QMainWindow):
         self._setup_timers()
         self._apply_dark_theme()
 
-        from core.logger import BotLogger
-        BotLogger().add_gui_handler(self.append_log)
+        # Connect logger AFTER UI setup
+        from core.logger import BotLogger, get_logger
+        logger_instance = BotLogger(log_dir="logs", level=20)
+        logger_instance.add_gui_handler(self.append_log)
 
+        # Init core ONCE
         try:
             self._init_core()
             self._load_settings_to_ui()
             self.append_log("CryptoBot v7.1 initialized", 20)
             self.append_log("Configure API keys in Settings before live trading", 20)
         except Exception as e:
-            self.append_log(f"Init error: {e}", 40)
+            self.append_log("Init error: %s" % e, 40)
             traceback_str = traceback.format_exc()
             for line in traceback_str.split("\n")[:5]:
                 if line.strip():
@@ -269,7 +289,7 @@ class MainWindow(QMainWindow):
         )
 
         mode = "PAPER" if self.settings.paper_trading else "LIVE"
-        self.append_log(f"Core ready | Mode={mode} | Testnet={self.settings.testnet}", 20)
+        self.append_log("Core ready | Mode=%s | Testnet=%s" % (mode, self.settings.testnet), 20)
 
     def _setup_ui(self):
         central = QWidget()
@@ -280,7 +300,10 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(self._create_control_bar())
 
-        splitter = QSplitter(Qt.Orientation.Horizontal if PYQT_VER == 6 else Qt.Horizontal)
+        if PYQT_VER == 6:
+            splitter = QSplitter(Qt.Orientation.Horizontal)
+        else:
+            splitter = QSplitter(Qt.Horizontal)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._create_dashboard_tab(), "Dashboard")
@@ -324,7 +347,9 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout()
 
         self.status_indicator = QLabel("STOPPED")
-        self.status_indicator.setStyleSheet("color: #FF4444; font-size: 14px; font-weight: bold;")
+        self.status_indicator.setStyleSheet(
+            "color: #FF4444; font-size: 14px; font-weight: bold;"
+        )
         layout.addWidget(self.status_indicator)
 
         layout.addSpacing(20)
@@ -339,12 +364,21 @@ class MainWindow(QMainWindow):
         layout.addSpacing(20)
 
         self.btn_start = QPushButton("START BOT")
-        self.btn_start.setStyleSheet("QPushButton{background-color:#00AA00;color:white;font-weight:bold;padding:8px 20px;border-radius:4px}QPushButton:hover{background-color:#00CC00}")
+        self.btn_start.setStyleSheet(
+            "QPushButton{background-color:#00AA00;color:white;font-weight:bold;"
+            "padding:8px 20px;border-radius:4px}"
+            "QPushButton:hover{background-color:#00CC00}"
+        )
         self.btn_start.clicked.connect(self._on_start)
         layout.addWidget(self.btn_start)
 
         self.btn_stop = QPushButton("STOP BOT")
-        self.btn_stop.setStyleSheet("QPushButton{background-color:#AA0000;color:white;font-weight:bold;padding:8px 20px;border-radius:4px}QPushButton:hover{background-color:#CC0000}QPushButton:disabled{background-color:#666666}")
+        self.btn_stop.setStyleSheet(
+            "QPushButton{background-color:#AA0000;color:white;font-weight:bold;"
+            "padding:8px 20px;border-radius:4px}"
+            "QPushButton:hover{background-color:#CC0000}"
+            "QPushButton:disabled{background-color:#666666}"
+        )
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
         layout.addWidget(self.btn_stop)
@@ -395,7 +429,9 @@ class MainWindow(QMainWindow):
         sl = QVBoxLayout(signals)
         self.signals_table = QTableWidget()
         self.signals_table.setColumnCount(6)
-        self.signals_table.setHorizontalHeaderLabels(["Time", "Symbol", "Strategy", "Side", "Confidence", "Price"])
+        self.signals_table.setHorizontalHeaderLabels(
+            ["Time", "Symbol", "Strategy", "Side", "Confidence", "Price"]
+        )
         self.signals_table.horizontalHeader().setStretchLastSection(True)
         self.signals_table.setMaximumHeight(200)
         sl.addWidget(self.signals_table)
@@ -405,7 +441,9 @@ class MainWindow(QMainWindow):
         tl = QVBoxLayout(trades)
         self.trades_table = QTableWidget()
         self.trades_table.setColumnCount(7)
-        self.trades_table.setHorizontalHeaderLabels(["Time", "Symbol", "Side", "Entry", "Exit", "P&L", "Status"])
+        self.trades_table.setHorizontalHeaderLabels(
+            ["Time", "Symbol", "Side", "Entry", "Exit", "P&L", "Status"]
+        )
         self.trades_table.horizontalHeader().setStretchLastSection(True)
         self.trades_table.setMaximumHeight(200)
         tl.addWidget(self.trades_table)
@@ -414,7 +452,9 @@ class MainWindow(QMainWindow):
         market = QGroupBox("Market")
         ml = QVBoxLayout(market)
         self.market_tree = QTreeWidget()
-        self.market_tree.setHeaderLabels(["Symbol", "Price", "24h %", "Volume", "Signal"])
+        self.market_tree.setHeaderLabels(
+            ["Symbol", "Price", "24h %", "Volume", "Signal"]
+        )
         self.market_tree.setMaximumHeight(250)
         ml.addWidget(self.market_tree)
         layout.addWidget(market, 0, 2, 3, 1)
@@ -431,7 +471,10 @@ class MainWindow(QMainWindow):
             "Symbol", "Side", "Size", "Entry", "Mark", "Liquidation",
             "P&L ($)", "P&L (%)", "Margin", "Actions"
         ])
-        mode = QHeaderView.ResizeMode.Stretch if PYQT_VER == 6 else QHeaderView.Stretch
+        if PYQT_VER == 6:
+            mode = QHeaderView.ResizeMode.Stretch
+        else:
+            mode = QHeaderView.Stretch
         self.positions_table.horizontalHeader().setSectionResizeMode(mode)
         layout.addWidget(self.positions_table)
 
@@ -475,7 +518,10 @@ class MainWindow(QMainWindow):
         self.scanner_table.setHorizontalHeaderLabels([
             "Symbol", "Price", "24h Vol", "Trend", "RSI", "Signal", "Strength", "Action"
         ])
-        mode = QHeaderView.ResizeMode.Stretch if PYQT_VER == 6 else QHeaderView.Stretch
+        if PYQT_VER == 6:
+            mode = QHeaderView.ResizeMode.Stretch
+        else:
+            mode = QHeaderView.Stretch
         self.scanner_table.horizontalHeader().setSectionResizeMode(mode)
         layout.addWidget(self.scanner_table)
 
@@ -486,7 +532,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(w)
 
         self.strategy_list = QTreeWidget()
-        self.strategy_list.setHeaderLabels(["Strategy", "Status", "Win Rate", "Trades", "P&L"])
+        self.strategy_list.setHeaderLabels(
+            ["Strategy", "Status", "Win Rate", "Trades", "P&L"]
+        )
 
         strategies = [
             ("EMA Cross", True, "62%", 45, "+$1,234"),
@@ -498,7 +546,9 @@ class MainWindow(QMainWindow):
             ("DCA", True, "65%", 20, "+$900"),
         ]
         for name, active, wr, trades, pnl in strategies:
-            item = QTreeWidgetItem([name, "Active" if active else "Inactive", wr, str(trades), pnl])
+            item = QTreeWidgetItem([
+                name, "Active" if active else "Inactive", wr, str(trades), pnl
+            ])
             if active:
                 item.setBackground(1, QColor("#00AA00"))
             self.strategy_list.addTopLevelItem(item)
@@ -584,10 +634,16 @@ class MainWindow(QMainWindow):
         api = QGroupBox("API Configuration")
         al = QFormLayout(api)
         self.api_key = QLineEdit()
-        self.api_key.setEchoMode(QLineEdit.EchoMode.Password if PYQT_VER == 6 else QLineEdit.Password)
+        if PYQT_VER == 6:
+            self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        else:
+            self.api_key.setEchoMode(QLineEdit.Password)
         al.addRow("API Key:", self.api_key)
         self.api_secret = QLineEdit()
-        self.api_secret.setEchoMode(QLineEdit.EchoMode.Password if PYQT_VER == 6 else QLineEdit.Password)
+        if PYQT_VER == 6:
+            self.api_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        else:
+            self.api_secret.setEchoMode(QLineEdit.Password)
         al.addRow("API Secret:", self.api_secret)
         self.api_testnet = QCheckBox("Use Testnet")
         self.api_testnet.setChecked(True)
@@ -646,7 +702,10 @@ class MainWindow(QMainWindow):
         self.email_login.setPlaceholderText("your.email@gmail.com")
         el.addRow("Login:", self.email_login)
         self.email_password = QLineEdit()
-        self.email_password.setEchoMode(QLineEdit.EchoMode.Password if PYQT_VER == 6 else QLineEdit.Password)
+        if PYQT_VER == 6:
+            self.email_password.setEchoMode(QLineEdit.EchoMode.Password)
+        else:
+            self.email_password.setEchoMode(QLineEdit.Password)
         self.email_password.setPlaceholderText("App Password")
         el.addRow("Password:", self.email_password)
         self.email_to = QLineEdit()
@@ -694,7 +753,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(results, 0, 1, 2, 1)
 
         self.btn_run_bt = QPushButton("RUN BACKTEST")
-        self.btn_run_bt.setStyleSheet("QPushButton{background-color:#0066CC;color:white;font-weight:bold;padding:10px;border-radius:4px}QPushButton:hover{background-color:#0088FF}")
+        self.btn_run_bt.setStyleSheet(
+            "QPushButton{background-color:#0066CC;color:white;font-weight:bold;"
+            "padding:10px;border-radius:4px}"
+            "QPushButton:hover{background-color:#0088FF}"
+        )
         self.btn_run_bt.clicked.connect(self._on_run_backtest)
         layout.addWidget(self.btn_run_bt, 1, 0)
 
@@ -705,7 +768,10 @@ class MainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("File")
         action_save = QAction("Save State", self)
-        action_save.setShortcut(QKeySequence("Ctrl+S") if PYQT_VER == 6 else QKeySequence("Ctrl+S"))
+        if PYQT_VER == 6:
+            action_save.setShortcut(QKeySequence("Ctrl+S"))
+        else:
+            action_save.setShortcut(QKeySequence("Ctrl+S"))
         action_save.triggered.connect(self._on_save_state)
         file_menu.addAction(action_save)
         action_load = QAction("Load State", self)
@@ -713,7 +779,10 @@ class MainWindow(QMainWindow):
         file_menu.addAction(action_load)
         file_menu.addSeparator()
         action_exit = QAction("Exit", self)
-        action_exit.setShortcut(QKeySequence("Ctrl+Q") if PYQT_VER == 6 else QKeySequence("Ctrl+Q"))
+        if PYQT_VER == 6:
+            action_exit.setShortcut(QKeySequence("Ctrl+Q"))
+        else:
+            action_exit.setShortcut(QKeySequence("Ctrl+Q"))
         action_exit.triggered.connect(self.close)
         file_menu.addAction(action_exit)
 
@@ -811,8 +880,10 @@ class MainWindow(QMainWindow):
         self.email_password.setText(self.settings.email_password)
         self.email_to.setText(self.settings.email_to)
 
+        self.mode_combo.blockSignals(True)
         idx = 0 if self.settings.paper_trading else 1
         self.mode_combo.setCurrentIndex(idx)
+        self.mode_combo.blockSignals(False)
 
     def _on_save_settings(self):
         if not self.settings:
@@ -845,10 +916,14 @@ class MainWindow(QMainWindow):
     def _reinit_core(self):
         from core.notifications import NotificationManager, NotificationConfig
         from exchange.api_client import BingXAPIClient
+        from exchange.data_fetcher import DataFetcher
+        from exchange.market_scanner import MarketScanner
         from exchange.trade_executor import TradeExecutor
         from risk.risk_manager import RiskManager, RiskLimits
 
-        self.api_client.update_credentials(self.settings.api_key, self.settings.api_secret)
+        self.api_client.update_credentials(
+            self.settings.api_key, self.settings.api_secret
+        )
 
         limits = RiskLimits(
             max_position_size=self.settings.max_position_size,
@@ -883,16 +958,24 @@ class MainWindow(QMainWindow):
             notifier=self.notifier
         )
 
+        self.data_fetcher = DataFetcher(api_client=self.api_client)
+        self.scanner = MarketScanner(
+            data_fetcher=self.data_fetcher,
+            max_workers=4
+        )
+
         mode = "PAPER" if self.settings.paper_trading else "LIVE"
-        self.append_log(f"Core reinitialized | Mode={mode}", 20)
+        self.append_log("Core reinitialized | Mode=%s" % mode, 20)
 
     def _on_mode_changed(self, text):
         is_paper = (text == "Paper Trading")
-        self.set_paper.setChecked(is_paper)
+        if hasattr(self, 'set_paper'):
+            self.set_paper.setChecked(is_paper)
         if self.executor:
             self.executor.paper = is_paper
-        self.settings.paper_trading = is_paper
-        self.append_log(f"Mode: {text}", 20)
+        if self.settings:
+            self.settings.paper_trading = is_paper
+        self.append_log("Mode: %s" % text, 20)
 
     def _on_start(self):
         if self.bot_running:
@@ -900,17 +983,24 @@ class MainWindow(QMainWindow):
 
         if not self.settings.paper_trading:
             if not self.settings.api_key or not self.settings.api_secret:
-                QMessageBox.warning(self, "API Keys", "Enter API keys in Settings for live trading")
+                QMessageBox.warning(
+                    self, "API Keys",
+                    "Enter API keys in Settings for live trading"
+                )
                 return
             if PYQT_VER == 6:
-                reply = QMessageBox.question(self, "LIVE TRADING",
+                reply = QMessageBox.question(
+                    self, "LIVE TRADING",
                     "START LIVE TRADING WITH REAL MONEY?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
                 yes = QMessageBox.StandardButton.Yes
             else:
-                reply = QMessageBox.question(self, "LIVE TRADING",
+                reply = QMessageBox.question(
+                    self, "LIVE TRADING",
                     "START LIVE TRADING WITH REAL MONEY?",
-                    QMessageBox.Yes | QMessageBox.No)
+                    QMessageBox.Yes | QMessageBox.No
+                )
                 yes = QMessageBox.Yes
             if reply != yes:
                 return
@@ -919,7 +1009,9 @@ class MainWindow(QMainWindow):
         self.start_time = datetime.now()
 
         self.status_indicator.setText("RUNNING")
-        self.status_indicator.setStyleSheet("color: #00AA00; font-size: 14px; font-weight: bold;")
+        self.status_indicator.setStyleSheet(
+            "color: #00AA00; font-size: 14px; font-weight: bold;"
+        )
 
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -961,16 +1053,16 @@ class MainWindow(QMainWindow):
                 else:
                     self.conn_status.setText("API: Error")
                     self.conn_status.setStyleSheet("color: #FF4444;")
-                    self.append_log(f"API error: {result.get('msg', 'unknown')}", 40)
+                    self.append_log("API error: %s" % result.get("msg", "unknown"), 40)
             except Exception as e:
                 self.conn_status.setText("API: Failed")
                 self.conn_status.setStyleSheet("color: #FF4444;")
-                self.append_log(f"API failed: {e}", 40)
+                self.append_log("API failed: %s" % e, 40)
 
     def _on_balance_update(self, balance: float, available: float):
-        self.lbl_balance.setText(f"Balance: ${balance:,.2f}")
-        self.dash_total_balance.setText(f"${balance:,.2f}")
-        self.dash_available.setText(f"${available:,.2f}")
+        self.lbl_balance.setText("Balance: $%.2f" % balance)
+        self.dash_total_balance.setText("$%.2f" % balance)
+        self.dash_available.setText("$%.2f" % available)
         if self.executor:
             self.executor.balance = balance
 
@@ -978,23 +1070,42 @@ class MainWindow(QMainWindow):
         self.positions_table.setRowCount(len(positions))
         total_pnl = 0.0
         for i, pos in enumerate(positions):
-            self.positions_table.setItem(i, 0, QTableWidgetItem(pos.get("symbol", "")))
-            self.positions_table.setItem(i, 1, QTableWidgetItem(pos.get("side", "")))
-            self.positions_table.setItem(i, 2, QTableWidgetItem(f"{pos.get('size', 0):.4f}"))
-            self.positions_table.setItem(i, 3, QTableWidgetItem(f"${pos.get('entry', 0):.2f}"))
+            self.positions_table.setItem(
+                i, 0, QTableWidgetItem(pos.get("symbol", ""))
+            )
+            self.positions_table.setItem(
+                i, 1, QTableWidgetItem(pos.get("side", ""))
+            )
+            self.positions_table.setItem(
+                i, 2, QTableWidgetItem("%.4f" % pos.get("size", 0))
+            )
+            self.positions_table.setItem(
+                i, 3, QTableWidgetItem("$%.2f" % pos.get("entry", 0))
+            )
             self.positions_table.setItem(i, 4, QTableWidgetItem("-"))
             self.positions_table.setItem(i, 5, QTableWidgetItem("-"))
-            self.positions_table.setItem(i, 6, QTableWidgetItem(f"${pos.get('pnl', 0):+.2f}"))
-            self.positions_table.setItem(i, 7, QTableWidgetItem(f"{pos.get('pnl_percent', 0):+.2f}%"))
-            self.positions_table.setItem(i, 8, QTableWidgetItem(f"${pos.get('margin', 0):.2f}"))
+            self.positions_table.setItem(
+                i, 6, QTableWidgetItem("$%+.2f" % pos.get("pnl", 0))
+            )
+            self.positions_table.setItem(
+                i, 7, QTableWidgetItem("%+.2f%%" % pos.get("pnl_percent", 0))
+            )
+            self.positions_table.setItem(
+                i, 8, QTableWidgetItem("$%.2f" % pos.get("margin", 0))
+            )
             self.positions_table.setItem(i, 9, QTableWidgetItem("Close"))
             total_pnl += pos.get("pnl", 0)
 
-        self.lbl_positions.setText(f"Positions: {len(positions)}")
-        self.lbl_pnl.setText(f"P&L: ${total_pnl:+.2f}")
-        self.lbl_pnl.setStyleSheet(f"font-size:12px;font-weight:bold;color:{'#00AA00' if total_pnl >= 0 else '#FF4444'}")
-        self.dash_daily_pnl.setText(f"${total_pnl:+.2f}")
-        self.dash_daily_pnl.setStyleSheet(f"font-size:18px;font-weight:bold;color:{'#00AA00' if total_pnl >= 0 else '#FF4444'}")
+        self.lbl_positions.setText("Positions: %d" % len(positions))
+        self.lbl_pnl.setText("P&L: $%+.2f" % total_pnl)
+        color = "#00AA00" if total_pnl >= 0 else "#FF4444"
+        self.lbl_pnl.setStyleSheet(
+            "font-size:12px;font-weight:bold;color:%s" % color
+        )
+        self.dash_daily_pnl.setText("$%+.2f" % total_pnl)
+        self.dash_daily_pnl.setStyleSheet(
+            "font-size:18px;font-weight:bold;color:%s" % color
+        )
 
     def _on_stop(self):
         if not self.bot_running:
@@ -1004,7 +1115,9 @@ class MainWindow(QMainWindow):
             self.worker.stop()
             self.worker = None
         self.status_indicator.setText("STOPPED")
-        self.status_indicator.setStyleSheet("color: #FF4444; font-size: 14px; font-weight: bold;")
+        self.status_indicator.setStyleSheet(
+            "color: #FF4444; font-size: 14px; font-weight: bold;"
+        )
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.btn_pause.setEnabled(False)
@@ -1035,15 +1148,27 @@ class MainWindow(QMainWindow):
                 signals = self.scanner.scan_all(self.scan_timeframe.currentText())
                 self.signals_table.setRowCount(min(len(signals), 20))
                 for i, sig in enumerate(signals[:20]):
-                    self.signals_table.setItem(i, 0, QTableWidgetItem(str(sig.timestamp)[:19]))
-                    self.signals_table.setItem(i, 1, QTableWidgetItem(sig.symbol))
-                    self.signals_table.setItem(i, 2, QTableWidgetItem(sig.strategy))
-                    self.signals_table.setItem(i, 3, QTableWidgetItem(sig.type.value.upper()))
-                    self.signals_table.setItem(i, 4, QTableWidgetItem(f"{sig.confidence:.2f}"))
-                    self.signals_table.setItem(i, 5, QTableWidgetItem(f"${sig.price:.4f}"))
-                self.append_log(f"Scan: {len(signals)} signals", 20)
+                    self.signals_table.setItem(
+                        i, 0, QTableWidgetItem(str(sig.timestamp)[:19])
+                    )
+                    self.signals_table.setItem(
+                        i, 1, QTableWidgetItem(sig.symbol)
+                    )
+                    self.signals_table.setItem(
+                        i, 2, QTableWidgetItem(sig.strategy)
+                    )
+                    self.signals_table.setItem(
+                        i, 3, QTableWidgetItem(sig.type.value.upper())
+                    )
+                    self.signals_table.setItem(
+                        i, 4, QTableWidgetItem("%.2f" % sig.confidence)
+                    )
+                    self.signals_table.setItem(
+                        i, 5, QTableWidgetItem("$%.4f" % sig.price)
+                    )
+                self.append_log("Scan: %d signals" % len(signals), 20)
             except Exception as e:
-                self.append_log(f"Scan error: {e}", 40)
+                self.append_log("Scan error: %s" % e, 40)
         else:
             self.append_log("Scanner not ready", 40)
 
@@ -1093,7 +1218,9 @@ Final: $14,530
             elapsed = datetime.now() - self.start_time
             hours, rem = divmod(int(elapsed.total_seconds()), 3600)
             mins, secs = divmod(rem, 60)
-            self.lbl_uptime.setText(f"Uptime: {hours:02d}:{mins:02d}:{secs:02d}")
+            self.lbl_uptime.setText(
+                "Uptime: %02d:%02d:%02d" % (hours, mins, secs)
+            )
 
     def _update_data(self):
         if not self.bot_running:
@@ -1101,8 +1228,8 @@ Final: $14,530
         if self.risk_manager:
             try:
                 stats = self.risk_manager.get_stats()
-                self.dash_total_pnl.setText(f"${stats.get('total_pnl', 0):+.2f}")
-                self.dash_winrate.setText(f"{stats.get('win_rate', 0):.1f}%")
+                self.dash_total_pnl.setText("$%+.2f" % stats.get("total_pnl", 0))
+                self.dash_winrate.setText("%.1f%%" % stats.get("win_rate", 0))
             except Exception:
                 pass
 
@@ -1113,12 +1240,16 @@ Final: $14,530
     def closeEvent(self, event):
         if self.bot_running:
             if PYQT_VER == 6:
-                reply = QMessageBox.question(self, "Exit", "Bot running. Stop and exit?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                reply = QMessageBox.question(
+                    self, "Exit", "Bot running. Stop and exit?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
                 yes = QMessageBox.StandardButton.Yes
             else:
-                reply = QMessageBox.question(self, "Exit", "Bot running. Stop and exit?",
-                    QMessageBox.Yes | QMessageBox.No)
+                reply = QMessageBox.question(
+                    self, "Exit", "Bot running. Stop and exit?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
                 yes = QMessageBox.Yes
             if reply == yes:
                 self._on_stop()

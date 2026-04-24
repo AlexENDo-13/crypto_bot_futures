@@ -2,7 +2,7 @@
 CryptoBot v7.1 - ML Engine
 """
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
@@ -14,6 +14,7 @@ try:
 except ImportError:
     pass
 
+
 class MLEngine:
     def __init__(self):
         self.logger = logging.getLogger("CryptoBot.ML")
@@ -22,7 +23,9 @@ class MLEngine:
         self.trained = False
 
         if SKLEARN_OK:
-            self.model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
+            self.model = RandomForestClassifier(
+                n_estimators=100, max_depth=10, random_state=42, n_jobs=-1
+            )
             self.scaler = StandardScaler()
             self.logger.info("MLEngine v7.1 | sklearn=True")
         else:
@@ -31,12 +34,18 @@ class MLEngine:
     def extract_features(self, df: pd.DataFrame) -> np.ndarray:
         features = []
         features.append(float(df["close"].iloc[-1]))
-        features.append(float((df["close"].iloc[-1] - df["open"].iloc[-1]) / max(df["open"].iloc[-1], 1e-9)))
-        features.append(float(df["high"].iloc[-1] / max(df["low"].iloc[-1], 1e-9) - 1))
+        features.append(float(
+            (df["close"].iloc[-1] - df["open"].iloc[-1]) / max(df["open"].iloc[-1], 1e-9)
+        ))
+        features.append(float(
+            df["high"].iloc[-1] / max(df["low"].iloc[-1], 1e-9) - 1
+        ))
         vol_sma = df["volume"].rolling(20).mean().iloc[-1]
         features.append(float(df["volume"].iloc[-1] / max(vol_sma, 1e-9)))
         if len(df) >= 20:
-            features.append(float((df["close"].iloc[-1] - df["close"].iloc[-20]) / max(df["close"].iloc[-20], 1e-9)))
+            features.append(float(
+                (df["close"].iloc[-1] - df["close"].iloc[-20]) / max(df["close"].iloc[-20], 1e-9)
+            ))
         else:
             features.append(0.0)
         delta = df["close"].diff()
@@ -55,11 +64,11 @@ class MLEngine:
             proba = self.model.predict_proba(features_scaled)[0]
             return float(proba[1])
         except Exception as e:
-            self.logger.debug(f"ML predict error: {e}")
+            self.logger.debug("ML predict error: %s", e)
             return 0.5
 
     def filter_signal(self, signal_confidence: float, features: np.ndarray,
-                      threshold: float = 0.5) -> tuple[bool, float]:
+                      threshold: float = 0.5) -> Tuple[bool, float]:
         if not self.trained:
             return signal_confidence >= threshold, signal_confidence
         ml_score = self.predict(features)

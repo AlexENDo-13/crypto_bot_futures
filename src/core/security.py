@@ -1,5 +1,5 @@
 """
-CryptoBot v7.0 - Security utilities
+CryptoBot v7.1 - Security utilities
 """
 import os
 import base64
@@ -7,6 +7,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
 
 class KeyEncryption:
     """Encrypts API keys with a password-derived key."""

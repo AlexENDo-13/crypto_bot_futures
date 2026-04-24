@@ -1,6 +1,5 @@
 """
-Global Configuration v5.0 - Pydantic-style validation, environment overrides,
-profile system, and hot-reload support.
+Global Configuration v5.0
 """
 import os
 import json
@@ -9,14 +8,17 @@ from typing import List, Dict, Optional, Any
 from pathlib import Path
 from enum import Enum
 
+
 class TradingMode(Enum):
     PAPER = "paper"
     LIVE = "live"
     BACKTEST = "backtest"
 
+
 class MarginMode(Enum):
     ISOLATED = "ISOLATED"
     CROSSED = "CROSSED"
+
 
 @dataclass
 class ExchangeConfig:
@@ -34,6 +36,7 @@ class ExchangeConfig:
         self.api_key = os.getenv("BINGX_API_KEY", self.api_key)
         self.api_secret = os.getenv("BINGX_API_SECRET", self.api_secret)
 
+
 @dataclass
 class TradingConfig:
     symbols: List[str] = field(default_factory=lambda: ["BTC-USDT", "ETH-USDT"])
@@ -41,12 +44,10 @@ class TradingConfig:
     leverage: int = 10
     margin_mode: str = "ISOLATED"
     order_type: str = "MARKET"
-
     max_position_usdt: float = 100.0
     risk_per_trade_pct: float = 1.0
     max_open_positions: int = 5
     max_positions_per_symbol: int = 1
-
     use_trailing_stop: bool = True
     trailing_stop_pct: float = 0.5
     trailing_stop_atr_mult: float = 2.0
@@ -54,22 +55,20 @@ class TradingConfig:
     stop_loss_pct: float = 1.0
     use_breakeven: bool = True
     breakeven_trigger_pct: float = 0.8
-
     use_partial_tp: bool = True
     partial_tp_levels: List[Dict] = field(default_factory=lambda: [
         {"pct": 1.0, "close": 0.25},
         {"pct": 2.0, "close": 0.25},
         {"pct": 3.0, "close": 0.25},
     ])
-
     max_daily_loss_pct: float = 5.0
     cooldown_after_loss_sec: int = 300
     min_volume_24h: float = 500000.0
     max_spread_pct: float = 0.1
-
     trade_asia: bool = True
     trade_london: bool = True
     trade_new_york: bool = True
+
 
 @dataclass
 class RiskConfig:
@@ -77,19 +76,16 @@ class RiskConfig:
     max_consecutive_losses: int = 3
     max_drawdown_pct: float = 10.0
     emergency_stop_balance_pct: float = 20.0
-
     use_kelly: bool = False
     kelly_fraction: float = 0.25
     use_optimal_f: bool = False
-
     max_atr_pct: float = 5.0
     min_atr_pct: float = 0.05
-
     max_correlation_positions: int = 2
     correlation_threshold: float = 0.8
-
     avoid_high_impact_news: bool = True
     news_buffer_minutes: int = 15
+
 
 @dataclass
 class StrategyConfig:
@@ -101,26 +97,22 @@ class StrategyConfig:
     primary_timeframe: str = "15m"
     confirmation_timeframe: str = "1h"
     min_signal_confidence: float = 0.65
-
     ema_fast: int = 9
     ema_slow: int = 21
     ema_trend: int = 50
     ema_long: int = 200
-
     rsi_period: int = 14
     rsi_overbought: float = 70.0
     rsi_oversold: float = 30.0
-
     volume_ma_period: int = 20
     volume_breakout_mult: float = 2.0
-
     bb_period: int = 20
     bb_std: float = 2.0
     bb_squeeze_threshold: float = 0.1
-
     macd_fast: int = 12
     macd_slow: int = 26
     macd_signal: int = 9
+
 
 @dataclass
 class AIConfig:
@@ -138,6 +130,7 @@ class AIConfig:
     use_ensemble: bool = True
     ensemble_models: List[str] = field(default_factory=lambda: ["rf", "gb", "xgb"])
 
+
 @dataclass
 class BacktestConfig:
     enabled: bool = False
@@ -149,6 +142,7 @@ class BacktestConfig:
     walk_forward: bool = True
     walk_forward_window: int = 30
     walk_forward_step: int = 7
+
 
 @dataclass
 class NotificationConfig:
@@ -162,6 +156,7 @@ class NotificationConfig:
     notify_on_drawdown: bool = True
     drawdown_threshold_pct: float = 5.0
 
+
 @dataclass
 class UIConfig:
     window_title: str = "Crypto Bot Futures v5.0"
@@ -174,6 +169,7 @@ class UIConfig:
     show_equity_curve: bool = True
     show_drawdown_chart: bool = True
     auto_scroll_logs: bool = True
+
 
 @dataclass
 class Config:
@@ -223,37 +219,66 @@ class Config:
     def _from_dict(cls, data: Dict) -> "Config":
         cfg = cls()
         for key, val in data.items():
-            if hasattr(cfg, key) and key not in ["exchange", "trading", "risk", "strategy", "ai", "backtest", "notifications", "ui"]:
+            if hasattr(cfg, key) and key not in [
+                "exchange", "trading", "risk", "strategy", "ai", "backtest", "notifications", "ui"
+            ]:
                 if key == "mode":
                     cfg.mode = TradingMode(val) if isinstance(val, str) else val
                 else:
                     setattr(cfg, key, val)
 
         if "exchange" in data:
-            cfg.exchange = ExchangeConfig(**{k: v for k, v in data["exchange"].items() if k in ExchangeConfig.__dataclass_fields__})
+            cfg.exchange = ExchangeConfig(**{
+                k: v for k, v in data["exchange"].items()
+                if k in ExchangeConfig.__dataclass_fields__
+            })
         if "trading" in data:
-            cfg.trading = TradingConfig(**{k: v for k, v in data["trading"].items() if k in TradingConfig.__dataclass_fields__})
+            cfg.trading = TradingConfig(**{
+                k: v for k, v in data["trading"].items()
+                if k in TradingConfig.__dataclass_fields__
+            })
         if "risk" in data:
-            cfg.risk = RiskConfig(**{k: v for k, v in data["risk"].items() if k in RiskConfig.__dataclass_fields__})
+            cfg.risk = RiskConfig(**{
+                k: v for k, v in data["risk"].items()
+                if k in RiskConfig.__dataclass_fields__
+            })
         if "strategy" in data:
-            cfg.strategy = StrategyConfig(**{k: v for k, v in data["strategy"].items() if k in StrategyConfig.__dataclass_fields__})
+            cfg.strategy = StrategyConfig(**{
+                k: v for k, v in data["strategy"].items()
+                if k in StrategyConfig.__dataclass_fields__
+            })
         if "ai" in data:
-            cfg.ai = AIConfig(**{k: v for k, v in data["ai"].items() if k in AIConfig.__dataclass_fields__})
+            cfg.ai = AIConfig(**{
+                k: v for k, v in data["ai"].items()
+                if k in AIConfig.__dataclass_fields__
+            })
         if "backtest" in data:
-            cfg.backtest = BacktestConfig(**{k: v for k, v in data["backtest"].items() if k in BacktestConfig.__dataclass_fields__})
+            cfg.backtest = BacktestConfig(**{
+                k: v for k, v in data["backtest"].items()
+                if k in BacktestConfig.__dataclass_fields__
+            })
         if "notifications" in data:
-            cfg.notifications = NotificationConfig(**{k: v for k, v in data["notifications"].items() if k in NotificationConfig.__dataclass_fields__})
+            cfg.notifications = NotificationConfig(**{
+                k: v for k, v in data["notifications"].items()
+                if k in NotificationConfig.__dataclass_fields__
+            })
         if "ui" in data:
-            cfg.ui = UIConfig(**{k: v for k, v in data["ui"].items() if k in UIConfig.__dataclass_fields__})
+            cfg.ui = UIConfig(**{
+                k: v for k, v in data["ui"].items()
+                if k in UIConfig.__dataclass_fields__
+            })
         return cfg
 
+
 _config: Optional[Config] = None
+
 
 def get_config() -> Config:
     global _config
     if _config is None:
         _config = Config()
     return _config
+
 
 def set_config(cfg: Config):
     global _config

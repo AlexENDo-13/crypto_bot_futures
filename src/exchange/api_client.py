@@ -1,7 +1,5 @@
 """
 CryptoBot v7.1 - BingX API Client
-Fixed: proper signature generation, error codes 100412/100001 handling,
-retry logic, recvWindow support
 """
 import time
 import hmac
@@ -18,6 +16,7 @@ try:
 except ImportError:
     REQUESTS_OK = False
 
+
 class BingXAPIClient:
     """BingX Futures API Client v7.1"""
 
@@ -33,21 +32,26 @@ class BingXAPIClient:
         self.session = None
         if REQUESTS_OK:
             self.session = requests.Session()
-            retry = Retry(total=3, backoff_factor=0.5,
-                          status_forcelist=[500, 502, 503, 504, 429])
-            adapter = HTTPAdapter(max_retries=retry, pool_connections=pool_size,
-                                  pool_maxsize=pool_size)
+            retry = Retry(
+                total=3, backoff_factor=0.5,
+                status_forcelist=[500, 502, 503, 504, 429]
+            )
+            adapter = HTTPAdapter(
+                max_retries=retry,
+                pool_connections=pool_size,
+                pool_maxsize=pool_size
+            )
             self.session.mount("https://", adapter)
             self.session.mount("http://", adapter)
 
         has_key = "YES" if self.api_key else "NO"
-        self.logger.info(f"BingXAPIClient v7.1 | base={self.base_url} api_key={has_key}")
+        self.logger.info("BingXAPIClient v7.1 | base=%s api_key=%s", self.base_url, has_key)
 
     def update_credentials(self, api_key: str, api_secret: str):
         """Update API credentials without recreating client."""
         self.api_key = api_key or ""
         self.api_secret = api_secret or ""
-        self.logger.info(f"API credentials updated | key={'YES' if self.api_key else 'NO'}")
+        self.logger.info("API credentials updated | key=%s", "YES" if self.api_key else "NO")
 
     def _generate_signature(self, params: Dict[str, Any]) -> str:
         """Generate HMAC SHA256 signature for BingX API."""
@@ -63,7 +67,7 @@ class BingXAPIClient:
         if not REQUESTS_OK:
             return {"code": -1, "msg": "requests not installed"}
 
-        url = f"{self.base_url}{endpoint}"
+        url = "%s%s" % (self.base_url, endpoint)
         params = params or {}
         params["timestamp"] = int(time.time() * 1000)
         params["recvWindow"] = 5000
@@ -91,12 +95,12 @@ class BingXAPIClient:
                 # Handle specific BingX error codes
                 code = data.get("code")
                 if code in (100412, 100001):
-                    self.logger.warning(f"BingX error {code}: {data.get('msg', '')}, retrying...")
+                    self.logger.warning("BingX error %s: %s, retrying...", code, data.get("msg", ""))
                     time.sleep(0.5 * (attempt + 1))
                     continue
 
                 if code not in (0, None, 200):
-                    self.logger.warning(f"API error {code}: {data.get('msg', '')}")
+                    self.logger.warning("API error %s: %s", code, data.get("msg", ""))
 
                 return data
             except requests.exceptions.Timeout:
@@ -109,7 +113,7 @@ class BingXAPIClient:
                 last_error = str(e)
                 time.sleep(0.5 * (attempt + 1))
 
-        return {"code": -1, "msg": f"{last_error} after {retries} retries"}
+        return {"code": -1, "msg": "%s after %d retries" % (last_error, retries)}
 
     def get_server_time(self) -> Dict:
         return self._request("GET", "/openApi/swap/v2/server/time")
@@ -138,19 +142,25 @@ class BingXAPIClient:
             if isinstance(data, list) and len(data) > 0:
                 for asset in data:
                     if asset.get("asset", "").upper() in ("USDT", "USDC", ""):
-                        return {"code": 0, "data": {
-                            "balance": float(asset.get("balance", 0)),
-                            "available": float(asset.get("available", asset.get("free", 0))),
-                            "margin": float(asset.get("margin", 0)),
-                            "asset": asset.get("asset", "USDT")
-                        }}
+                        return {
+                            "code": 0,
+                            "data": {
+                                "balance": float(asset.get("balance", 0)),
+                                "available": float(asset.get("available", asset.get("free", 0))),
+                                "margin": float(asset.get("margin", 0)),
+                                "asset": asset.get("asset", "USDT")
+                            }
+                        }
                 asset = data[0]
-                return {"code": 0, "data": {
-                    "balance": float(asset.get("balance", 0)),
-                    "available": float(asset.get("available", asset.get("free", 0))),
-                    "margin": float(asset.get("margin", 0)),
-                    "asset": asset.get("asset", "USDT")
-                }}
+                return {
+                    "code": 0,
+                    "data": {
+                        "balance": float(asset.get("balance", 0)),
+                        "available": float(asset.get("available", asset.get("free", 0))),
+                        "margin": float(asset.get("margin", 0)),
+                        "asset": asset.get("asset", "USDT")
+                    }
+                }
             elif isinstance(data, dict):
                 return result
         return result
@@ -160,17 +170,24 @@ class BingXAPIClient:
                     price: float = 0, stop_price: float = 0,
                     leverage: int = 1) -> Dict:
         params = {
-            "symbol": symbol, "side": side, "positionSide": position_side,
-            "type": order_type, "leverage": leverage
+            "symbol": symbol,
+            "side": side,
+            "positionSide": position_side,
+            "type": order_type,
+            "leverage": leverage
         }
-        if quantity > 0: params["quantity"] = quantity
-        if price > 0: params["price"] = price
-        if stop_price > 0: params["stopPrice"] = stop_price
+        if quantity > 0:
+            params["quantity"] = quantity
+        if price > 0:
+            params["price"] = price
+        if stop_price > 0:
+            params["stopPrice"] = stop_price
         return self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
 
     def get_positions(self, symbol: str = "") -> List[Dict]:
         params = {}
-        if symbol: params["symbol"] = symbol
+        if symbol:
+            params["symbol"] = symbol
         data = self._request("GET", "/openApi/swap/v2/user/positions", params, signed=True)
         if data.get("code") == 0:
             return data.get("data", [])

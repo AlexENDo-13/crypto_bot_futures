@@ -1,7 +1,5 @@
 """
 CryptoBot v7.1 - Market Scanner
-Fixed: proper error handling, signal validation, multi-timeframe,
-graceful handling of missing data
 """
 import logging
 import time
@@ -12,6 +10,7 @@ import pandas as pd
 from exchange.data_fetcher import DataFetcher
 from strategies.strategies import StrategyManager, Signal
 from ml.ml_engine import MLEngine
+
 
 class MarketScanner:
     """Scans markets for trading opportunities."""
@@ -30,11 +29,14 @@ class MarketScanner:
         self.scan_results: List[Dict] = []
         self.last_scan_time: float = 0
 
-        self.logger.info(f"MarketScanner v7.1 | strategies={len(self.strategies.strategies)}")
+        self.logger.info(
+            "MarketScanner v7.1 | strategies=%d",
+            len(self.strategies.strategies)
+        )
 
     def load_symbols(self, count: int = 15) -> List[str]:
         self.symbols = self.data_fetcher.load_symbols(count)
-        self.logger.info(f"Loaded {len(self.symbols)} symbols for scanning")
+        self.logger.info("Loaded %d symbols for scanning", len(self.symbols))
         return self.symbols
 
     def scan_symbol(self, symbol: str, timeframe: str = "15m",
@@ -44,10 +46,15 @@ class MarketScanner:
         try:
             df = self.data_fetcher.get_klines(symbol, timeframe)
             if df is None or len(df) < 50:
-                self.logger.debug(f"{symbol}: insufficient data ({len(df) if df is not None else 0} rows)")
+                self.logger.debug(
+                    "%s: insufficient data (%d rows)",
+                    symbol, len(df) if df is not None else 0
+                )
                 return []
 
-            signals = self.strategies.analyze_all(df, symbol, min_confidence, enabled_strategies)
+            signals = self.strategies.analyze_all(
+                df, symbol, min_confidence, enabled_strategies
+            )
 
             # ML filtering
             filtered = []
@@ -59,13 +66,13 @@ class MarketScanner:
                         signal.confidence = score
                         filtered.append(signal)
                 except Exception as e:
-                    self.logger.debug(f"ML filter error: {e}")
+                    self.logger.debug("ML filter error: %s", e)
                     filtered.append(signal)
 
             return filtered
 
         except Exception as e:
-            self.logger.error(f"Scan error for {symbol}: {e}")
+            self.logger.error("Scan error for %s: %s", symbol, e)
             return []
 
     def scan_all(self, timeframe: str = "15m", min_confidence: float = 0.5,
@@ -73,12 +80,14 @@ class MarketScanner:
         if not self.symbols:
             self.load_symbols()
 
-        self.logger.info(f"Scanning {len(self.symbols)} symbols on {timeframe}...")
+        self.logger.info("Scanning %d symbols on %s...", len(self.symbols), timeframe)
         all_signals = []
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
-                executor.submit(self.scan_symbol, sym, timeframe, min_confidence, enabled_strategies): sym
+                executor.submit(
+                    self.scan_symbol, sym, timeframe, min_confidence, enabled_strategies
+                ): sym
                 for sym in self.symbols
             }
 
@@ -88,9 +97,9 @@ class MarketScanner:
                     signals = future.result(timeout=30)
                     if signals:
                         all_signals.extend(signals)
-                        self.logger.info(f"{symbol}: {len(signals)} signals")
+                        self.logger.info("%s: %d signals", symbol, len(signals))
                 except Exception as e:
-                    self.logger.error(f"Scan failed for {symbol}: {e}")
+                    self.logger.error("Scan failed for %s: %s", symbol, e)
 
         all_signals.sort(key=lambda s: s.confidence, reverse=True)
 
@@ -107,7 +116,7 @@ class MarketScanner:
         ]
 
         self.last_scan_time = time.time()
-        self.logger.info(f"Scan complete | {len(all_signals)} signals")
+        self.logger.info("Scan complete | %d signals", len(all_signals))
 
         return all_signals
 

@@ -1,6 +1,5 @@
 """
 CryptoBot v7.1 - Data Fetcher
-Fixed: proper klines parsing, volume/qty validation, mock data fallback
 """
 import time
 import logging
@@ -9,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
+
 
 @dataclass
 class Candle:
@@ -35,6 +35,7 @@ class Candle:
         except (ValueError, TypeError, IndexError):
             return None
 
+
 class DataFetcher:
     """Fetches and caches market data."""
 
@@ -52,23 +53,25 @@ class DataFetcher:
             try:
                 symbols_data = self.api.get_symbols()
                 if symbols_data:
-                    self._symbols = [s.get("symbol", "") for s in symbols_data if s.get("symbol")]
-                    self.logger.info(f"Loaded {len(self._symbols)} symbols from API")
+                    self._symbols = [
+                        s.get("symbol", "") for s in symbols_data if s.get("symbol")
+                    ]
+                    self.logger.info("Loaded %d symbols from API", len(self._symbols))
                     return self._symbols[:count]
             except Exception as e:
-                self.logger.warning(f"API symbols failed: {e}")
+                self.logger.warning("API symbols failed: %s", e)
 
         self._symbols = [
             "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "ADA-USDT",
             "DOGE-USDT", "AVAX-USDT", "LINK-USDT", "MATIC-USDT", "DOT-USDT",
             "LTC-USDT", "BCH-USDT", "UNI-USDT", "ETC-USDT", "FIL-USDT"
         ]
-        self.logger.info(f"Loaded {len(self._symbols)} default symbols")
+        self.logger.info("Loaded %d default symbols", len(self._symbols))
         return self._symbols[:count]
 
     def get_klines(self, symbol: str, timeframe: str = "15m",
                    limit: int = 100, use_cache: bool = True) -> Optional[pd.DataFrame]:
-        cache_key = f"{symbol}_{timeframe}"
+        cache_key = "%s_%s" % (symbol, timeframe)
 
         if use_cache and cache_key in self._klines_cache:
             if time.time() - self._last_update.get(cache_key, 0) < 30:
@@ -85,7 +88,7 @@ class DataFetcher:
                         self._last_update[cache_key] = time.time()
                         return df
             except Exception as e:
-                self.logger.debug(f"API klines failed for {symbol}: {e}")
+                self.logger.debug("API klines failed for %s: %s", symbol, e)
 
         # Fallback to mock data
         df = self._generate_mock_data(symbol, timeframe, limit)
@@ -102,13 +105,18 @@ class DataFetcher:
                 c = Candle.from_list(d)
                 if c:
                     candles.append({
-                        "timestamp": c.timestamp, "open": c.open,
-                        "high": c.high, "low": c.low,
-                        "close": c.close, "volume": c.volume
+                        "timestamp": c.timestamp,
+                        "open": c.open,
+                        "high": c.high,
+                        "low": c.low,
+                        "close": c.close,
+                        "volume": c.volume
                     })
 
             if len(candles) < 50:
-                self.logger.warning(f"Parse klines: only {len(candles)} candles, need >= 50")
+                self.logger.warning(
+                    "Parse klines: only %d candles, need >= 50", len(candles)
+                )
                 return None
 
             df = pd.DataFrame(candles)
@@ -116,12 +124,12 @@ class DataFetcher:
             df.set_index("datetime", inplace=True)
             return df
         except Exception as e:
-            self.logger.error(f"Parse klines error: {e}")
+            self.logger.error("Parse klines error: %s", e)
             return None
 
     def _generate_mock_data(self, symbol: str, timeframe: str, limit: int) -> Optional[pd.DataFrame]:
         try:
-            np.random.seed(hash(symbol) % 2**32)
+            np.random.seed(hash(symbol) % (2**32))
 
             base_prices = {
                 "BTC-USDT": 65000, "ETH-USDT": 3500, "SOL-USDT": 150,
@@ -136,18 +144,25 @@ class DataFetcher:
             deltas = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
             minutes = deltas.get(timeframe, 15)
 
-            timestamps = [now - timedelta(minutes=minutes * (limit - i)) for i in range(limit)]
+            timestamps = [
+                now - timedelta(minutes=minutes * (limit - i))
+                for i in range(limit)
+            ]
 
             returns = np.random.normal(0.0001, 0.015, limit)
-            trend = np.sin(np.linspace(0, 4*np.pi, limit)) * 0.005
+            trend = np.sin(np.linspace(0, 4 * np.pi, limit)) * 0.005
             prices = base * np.exp(np.cumsum(returns + trend))
 
             df = pd.DataFrame(index=timestamps)
             df["timestamp"] = [int(t.timestamp() * 1000) for t in timestamps]
             df["open"] = prices * (1 + np.random.normal(0, 0.002, limit))
             df["close"] = prices
-            df["high"] = np.maximum(df["open"], df["close"]) * (1 + np.abs(np.random.normal(0, 0.008, limit)))
-            df["low"] = np.minimum(df["open"], df["close"]) * (1 - np.abs(np.random.normal(0, 0.008, limit)))
+            df["high"] = np.maximum(df["open"], df["close"]) * (
+                1 + np.abs(np.random.normal(0, 0.008, limit))
+            )
+            df["low"] = np.minimum(df["open"], df["close"]) * (
+                1 - np.abs(np.random.normal(0, 0.008, limit))
+            )
             df["volume"] = np.random.uniform(base * 1000, base * 10000, limit)
 
             # Ensure OHLC consistency
@@ -156,7 +171,7 @@ class DataFetcher:
 
             return df
         except Exception as e:
-            self.logger.error(f"Mock data error: {e}")
+            self.logger.error("Mock data error: %s", e)
             return None
 
     def get_multi_timeframe(self, symbol: str, timeframes: List[str] = None) -> Dict[str, pd.DataFrame]:
