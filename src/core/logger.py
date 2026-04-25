@@ -1,5 +1,6 @@
 """
-CryptoBot v9.0 - Advanced Logging System
+CryptoBot v9.1 - Advanced Logging System (FIXED)
+Added proxy methods: info, warning, error, debug, critical, log
 """
 import logging
 import sys
@@ -8,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Callable
+
 
 class CallbackLogHandler(logging.Handler):
     def __init__(self, callback: Callable[[str, int], None] = None):
@@ -29,6 +31,7 @@ class CallbackLogHandler(logging.Handler):
                     pass
         except Exception:
             self.handleError(record)
+
 
 class BotLogger:
     _instance = None
@@ -72,8 +75,31 @@ class BotLogger:
             ))
             self.logger.addHandler(file_h)
 
-        self.logger.info("BotLogger v9.0 initialized | log_dir=%s level=%s", log_dir, logging.getLevelName(level))
+        self.logger.info("BotLogger v9.1 initialized | log_dir=%s level=%s", log_dir, logging.getLevelName(level))
 
+    # --- Proxy methods for standard logging interface ---
+    def info(self, msg, *args, **kwargs):
+        self.logger.info(msg, *args, **kwargs)
+
+    def warning(self, msg, *args, **kwargs):
+        self.logger.warning(msg, *args, **kwargs)
+
+    def error(self, msg, *args, **kwargs):
+        self.logger.error(msg, *args, **kwargs)
+
+    def debug(self, msg, *args, **kwargs):
+        self.logger.debug(msg, *args, **kwargs)
+
+    def critical(self, msg, *args, **kwargs):
+        self.logger.critical(msg, *args, **kwargs)
+
+    def log(self, level, msg, *args, **kwargs):
+        self.logger.log(level, msg, *args, **kwargs)
+
+    def exception(self, msg, *args, **kwargs):
+        self.logger.exception(msg, *args, **kwargs)
+
+    # --- Custom methods ---
     def set_level(self, level: int):
         self.level = level
         self.logger.setLevel(level)
@@ -95,6 +121,22 @@ class BotLogger:
 
     def get_logger(self, name: str = "CryptoBot") -> logging.Logger:
         return logging.getLogger(name)
+
+    def log_trade(self, **kwargs):
+        """Log a trade event."""
+        msg = " | ".join(f"{k}={v}" for k, v in kwargs.items())
+        self.logger.info("TRADE | %s", msg)
+
+    def log_signal(self, **kwargs):
+        """Log a signal event."""
+        msg = " | ".join(f"{k}={v}" for k, v in kwargs.items())
+        self.logger.info("SIGNAL | %s", msg)
+
+    def log_position_update(self, **kwargs):
+        """Log a position update."""
+        msg = " | ".join(f"{k}={v}" for k, v in kwargs.items())
+        self.logger.info("POSITION | %s", msg)
+
 
 def get_logger(name: str = "CryptoBot") -> logging.Logger:
     return BotLogger().get_logger(name)
