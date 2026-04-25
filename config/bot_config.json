@@ -14,10 +14,13 @@
   "partial_close_enabled": true,
   "aggressive_adaptation": true,
   "use_multi_timeframe": true,
-  "mtf_timeframes": [
-    "1h",
-    "4h"
-  ],
+  "mtf_timeframes": ["1h", "4h"],
   "telegram_enabled": false,
-  "export_trades_csv": true
+  "export_trades_csv": true,
+  "symbols_whitelist": [
+    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT",
+    "ADA-USDT", "AVAX-USDT", "LINK-USDT", "MATIC-USDT", "DOT-USDT",
+    "LTC-USDT", "BCH-USDT", "ETC-USDT", "UNI-USDT", "ATOM-USDT"
+  ],
+  "blacklist": ["SHIB-USDT", "PEPE-USDT", "FLOKI-USDT", "BONK-USDT"]
 }

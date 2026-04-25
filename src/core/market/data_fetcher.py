@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""DataFetcher — асинхронный загрузчик рыночных данных с кешированием."""
+"""DataFetcher — async market data loader with caching (FIXED)."""
 import time
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Optional
 
 from src.core.market.indicators import compute_indicators
-
 
 class DataFetcher:
     def __init__(self, client, logger, settings: dict):
@@ -109,8 +108,19 @@ class DataFetcher:
         try:
             data = await self.client.get_ticker(sym)
             if data:
-                self._ticker_cache[sym] = (now, data)
-                return data
+                # Normalize BingX ticker format
+                normalized = {
+                    "symbol": data.get("symbol", sym),
+                    "lastPrice": float(data.get("lastPrice", data.get("price", 0))),
+                    "bid": float(data.get("bidPrice", data.get("bid", 0))),
+                    "ask": float(data.get("askPrice", data.get("ask", 0))),
+                    "volume24h": float(data.get("volume", data.get("volume24h", 0))),
+                    "fundingRate": float(data.get("fundingRate", 0)),
+                    "high": float(data.get("highPrice", 0)),
+                    "low": float(data.get("lowPrice", 0)),
+                }
+                self._ticker_cache[sym] = (now, normalized)
+                return normalized
         except Exception as e:
             self.logger.debug(f"Ticker error {symbol}: {e}")
 

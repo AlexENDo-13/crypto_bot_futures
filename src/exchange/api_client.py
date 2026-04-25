@@ -1,6 +1,6 @@
 """
-BingX API Client v9.0
-Asynchronous REST client with robust event-loop handling.
+BingX API Client v9.1 (FIXED)
+Asynchronous REST client with all required methods for real trading.
 """
 import asyncio
 import hashlib
@@ -42,17 +42,15 @@ class BingXAPIClient:
             "force_close": False
         }
         self._timeout = aiohttp.ClientTimeout(total=15, connect=5)
+        self._symbol_specs: Dict[str, dict] = {}
 
     # ------------------------------------------------------------------
     # Core request infrastructure
     # ------------------------------------------------------------------
     async def _get_or_create_session(self) -> aiohttp.ClientSession:
-        """Return an active session tied to a running event loop."""
         try:
-            # Проверяем, запущен ли цикл
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # Если цикл отсутствует, создаём новый и устанавливаем как текущий
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             self._loop = loop
@@ -67,13 +65,11 @@ class BingXAPIClient:
         return self._session
 
     async def _close_session(self):
-        """Safely close the internal session."""
         if self._session and not self._session.closed:
             await self._session.close()
-        self._session = None
+            self._session = None
 
     def _generate_signature(self, params: dict) -> str:
-        """Generate HMAC-SHA256 signature for authenticated endpoints."""
         query_string = urllib.parse.urlencode(sorted(params.items()))
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
@@ -89,23 +85,15 @@ class BingXAPIClient:
         params: Optional[dict] = None,
         signed: bool = False
     ) -> dict:
-        """
-        Perform an HTTP request with automatic retry on event-loop errors.
-        """
         if not self.api_key and signed:
             return {"code": -1, "msg": "API key required for signed request"}
 
-        # Build full URL
         url = f"{self.base_url}{endpoint}"
-
-        # Prepare query parameters
         query_params = params.copy() if params else {}
         if signed:
-            # For BingX, timestamp in milliseconds is mandatory
             query_params["timestamp"] = str(int(time.time() * 1000))
             signature = self._generate_signature(query_params)
             query_params["signature"] = signature
-            # API key is sometimes passed as a parameter or header; here as parameter per BingX docs
             query_params["apiKey"] = self.api_key
 
         try:
@@ -124,7 +112,6 @@ class BingXAPIClient:
         except RuntimeError as e:
             if "Event loop is closed" in str(e) or "no running event loop" in str(e):
                 self.logger.debug(f"Event loop error, resetting and retrying: {e}")
-                # Явно сбрасываем сессию и создаём новый цикл
                 await self._close_session()
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
@@ -140,38 +127,23 @@ class BingXAPIClient:
     # Public API methods (Market Data)
     # ------------------------------------------------------------------
     async def get_klines(
-        self,
-        symbol: str,
-        interval: str = "15m",
-        limit: int = 100,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None
+        self, symbol: str, interval: str = "15m", limit: int = 100,
+        start_time: Optional[int] = None, end_time: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """
-        Fetch kline/candlestick data.
-        Returns list of OHLCV candles.
-        """
         endpoint = "/openApi/swap/v3/quote/klines"
-        params = {
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit
-        }
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
         if start_time:
             params["startTime"] = start_time
         if end_time:
             params["endTime"] = end_time
-
         response = await self._request("GET", endpoint, params, signed=False)
         if response.get("code") == 0 and "data" in response:
-            # Standard OHLCV format
             return response["data"]
         else:
             self.logger.warning(f"Klines error for {symbol}: {response.get('msg', 'Unknown')}")
             return []
 
     async def get_ticker(self, symbol: str) -> dict:
-        """Get 24hr ticker price change statistics."""
         endpoint = "/openApi/swap/v3/quote/ticker"
         params = {"symbol": symbol}
         response = await self._request("GET", endpoint, params, signed=False)
@@ -180,7 +152,6 @@ class BingXAPIClient:
         return {}
 
     async def get_orderbook(self, symbol: str, limit: int = 20) -> dict:
-        """Get orderbook depth."""
         endpoint = "/openApi/swap/v3/quote/depth"
         params = {"symbol": symbol, "limit": limit}
         response = await self._request("GET", endpoint, params, signed=False)
@@ -188,28 +159,108 @@ class BingXAPIClient:
             return response["data"]
         return {}
 
+    async def get_tickers_batch(self) -> dict:
+        """Fetch all tickers at once."""
+        endpoint = "/openApi/swap/v3/quote/ticker"
+        params = {}
+        response = await self._request("GET", endpoint, params, signed=False)
+        if response.get("code") == 0 and "data" in response:
+            data = response["data"]
+            result = {}
+            for item in data if isinstance(data, list) else [data]:
+                sym = item.get("symbol", "")
+                if sym:
+                    result[sym] = item
+            return result
+        return {}
+
+    # ------------------------------------------------------------------
+    # Symbol info / specs
+    # ------------------------------------------------------------------
+    async def get_symbol_info(self) -> dict:
+        """Fetch all trading symbols info (contracts)."""
+        endpoint = "/openApi/swap/v3/quote/contracts"
+        response = await self._request("GET", endpoint, signed=False)
+        if response.get("code") == 0 and "data" in response:
+            # Cache specs
+            for item in response.get("data", []):
+                sym = item.get("symbol", "")
+                if sym:
+                    self._symbol_specs[sym] = item
+            return response
+        return response
+
+    def get_symbol_specs(self, symbol: str) -> Optional[dict]:
+        """Get cached symbol specs (stepSize, minNotional, maxLeverage etc)."""
+        return self._symbol_specs.get(symbol)
+
     # ------------------------------------------------------------------
     # Account / Trading methods (signed)
     # ------------------------------------------------------------------
     async def get_account_balance(self) -> dict:
-        """Fetch USDT balance and positions."""
         endpoint = "/openApi/swap/v3/account/balance"
         response = await self._request("GET", endpoint, signed=True)
         if response.get("code") == 0 and "data" in response:
             return response["data"]
         return {}
 
+    async def get_account_info(self) -> dict:
+        """Alias for get_account_balance for compatibility."""
+        return await self.get_account_balance()
+
+    async def get_positions(self, symbol: Optional[str] = None) -> list:
+        """Fetch current positions."""
+        endpoint = "/openApi/swap/v3/user/positions"
+        params = {}
+        if symbol:
+            params["symbol"] = symbol
+        response = await self._request("GET", endpoint, params, signed=True)
+        if response.get("code") == 0 and "data" in response:
+            data = response["data"]
+            if isinstance(data, dict) and "positions" in data:
+                return data["positions"]
+            return data if isinstance(data, list) else []
+        return []
+
+    async def set_leverage(self, symbol: str, leverage: int, position_side: str = "BOTH") -> dict:
+        """Set leverage for a symbol."""
+        endpoint = "/openApi/swap/v3/trade/leverage"
+        params = {
+            "symbol": symbol,
+            "leverage": leverage,
+            "positionSide": position_side
+        }
+        response = await self._request("POST", endpoint, params, signed=True)
+        if response.get("code") == 0:
+            return response.get("data", {})
+        else:
+            self.logger.error(f"Set leverage failed: {response.get('msg')}")
+        return response
+
+    async def set_margin_mode(self, symbol: str, margin_mode: str) -> dict:
+        """Set margin mode (ISOLATED or CROSSED)."""
+        endpoint = "/openApi/swap/v3/trade/marginMode"
+        params = {
+            "symbol": symbol,
+            "marginMode": margin_mode
+        }
+        response = await self._request("POST", endpoint, params, signed=True)
+        if response.get("code") == 0:
+            return response.get("data", {})
+        else:
+            self.logger.error(f"Set margin mode failed: {response.get('msg')}")
+        return response
+
     async def place_order(
         self, symbol: str, side: str, position_side: str,
         order_type: str, quantity: float, price: Optional[float] = None
     ) -> dict:
-        """Place a futures order."""
         endpoint = "/openApi/swap/v3/trade/order"
         params = {
             "symbol": symbol,
-            "side": side,            # BUY or SELL
-            "positionSide": position_side,  # LONG or SHORT
-            "type": order_type,      # MARKET, LIMIT, etc.
+            "side": side,
+            "positionSide": position_side,
+            "type": order_type,
             "quantity": quantity
         }
         if order_type.upper() == "LIMIT" and price:
@@ -220,7 +271,31 @@ class BingXAPIClient:
             return response.get("data", {})
         else:
             self.logger.error(f"Order failed: {response.get('msg')}")
-            return {}
+            return {"error": True, "msg": response.get("msg", "Unknown"), "code": response.get("code", -1)}
+
+    async def place_stop_order(
+        self, symbol: str, side: str, stop_price: float,
+        order_type: str = "STOP_MARKET", position_side: str = "BOTH",
+        close_position: bool = True, quantity: Optional[float] = None
+    ) -> dict:
+        """Place stop-loss or take-profit market order."""
+        endpoint = "/openApi/swap/v3/trade/order"
+        params = {
+            "symbol": symbol,
+            "side": side,
+            "positionSide": position_side,
+            "type": order_type,
+            "stopPrice": stop_price,
+            "closePosition": "true" if close_position else "false"
+        }
+        if quantity is not None and not close_position:
+            params["quantity"] = quantity
+        response = await self._request("POST", endpoint, params, signed=True)
+        if response.get("code") == 0:
+            return response.get("data", {})
+        else:
+            self.logger.error(f"Stop order failed: {response.get('msg')}")
+            return {"error": True, "msg": response.get("msg", "Unknown"), "code": response.get("code", -1)}
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         endpoint = "/openApi/swap/v3/trade/order"
@@ -236,13 +311,31 @@ class BingXAPIClient:
             return response["data"].get("orders", [])
         return []
 
+    async def close_position(self, symbol: str, position_side: str) -> dict:
+        """Close position by placing opposite market order."""
+        # Determine opposite side
+        side = "SELL" if position_side == "LONG" else "BUY"
+        endpoint = "/openApi/swap/v3/trade/order"
+        params = {
+            "symbol": symbol,
+            "side": side,
+            "positionSide": position_side,
+            "type": "MARKET",
+            "closePosition": "true"
+        }
+        response = await self._request("POST", endpoint, params, signed=True)
+        if response.get("code") == 0:
+            return response.get("data", {})
+        else:
+            self.logger.error(f"Close position failed: {response.get('msg')}")
+            return {"error": True, "msg": response.get("msg", "Unknown"), "code": response.get("code", -1)}
+
     # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
     async def close(self):
-        """Close the client session and stop the loop if necessary."""
         self.logger.info("Closing API client...")
         await self._close_session()
         if self._loop and self._loop.is_running():
             self._loop.stop()
-        self._loop = None
+            self._loop = None
