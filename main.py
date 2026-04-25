@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 CryptoBot v9.1 - Neural Adaptive Trading System (FIXED)
-Proper qasync integration with PyQt6.
 """
 import sys
 import asyncio
@@ -42,11 +41,12 @@ async def main():
     logger.info("Starting CryptoBot v9.1 (FIXED)")
 
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)  # We control shutdown manually
+    app.setQuitOnLastWindowClosed(False)
 
     # Load settings
     settings = Settings("config/bot_config.json")
 
+    # Read API keys from settings (can be updated via GUI later)
     import os
     api_key = os.getenv("BINGX_API_KEY", settings.get("api_key", ""))
     api_secret = os.getenv("BINGX_API_SECRET", settings.get("api_secret", ""))
@@ -64,7 +64,7 @@ async def main():
     else:
         logger.info("PAPER / DEMO MODE")
 
-    # Init API client
+    # Init API client with keys from settings
     api_client = BingXAPIClient(
         api_key=api_key,
         api_secret=api_secret,
@@ -86,12 +86,11 @@ async def main():
 
     logger.info("MainWindow displayed")
 
-    # Keep asyncio responsive within Qt event loop
+    # Keep asyncio responsive
     timer = QTimer()
     timer.timeout.connect(lambda: None)
     timer.start(100)
 
-    # Wait for window to close
     future = asyncio.get_event_loop().create_future()
 
     def on_last_window_closed():
@@ -102,7 +101,7 @@ async def main():
 
     await future
 
-    # Cleanup BEFORE quitting the app
+    # Cleanup
     logger.info("Shutting down application...")
     if engine.running:
         await engine.stop()

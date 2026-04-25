@@ -61,12 +61,60 @@ class RiskManager:
         self._total_trades = 0
         self._winning_trades = 0
 
+        # Adaptive parameters
+        self._base_risk_per_trade = self.risk_per_trade
+        self._base_max_positions = self.max_positions
+        self._base_max_leverage = self.max_leverage
+        self._current_balance_tier = "medium"
+
     def _reset_daily_if_needed(self):
         now = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         if now > self._daily_reset_time:
             self.daily_pnl = self.daily_loss = self.consecutive_losses = self.total_risk_exposure = 0.0
             self._daily_reset_time = now
             logger.info("Daily stats reset")
+
+    def adapt_to_balance(self, balance: float):
+        """Adapt all risk parameters based on balance tier."""
+        if balance <= 0:
+            return
+
+        old_tier = self._current_balance_tier
+
+        if balance < 50:
+            self._current_balance_tier = "micro"
+            self.risk_per_trade = min(self._base_risk_per_trade, 0.5)
+            self.max_positions = 1
+            self.max_leverage = min(self._base_max_leverage, 5)
+            self.max_total_risk = 2.0
+        elif balance < 200:
+            self._current_balance_tier = "small"
+            self.risk_per_trade = min(self._base_risk_per_trade, 0.8)
+            self.max_positions = min(self._base_max_positions, 2)
+            self.max_leverage = min(self._base_max_leverage, 10)
+            self.max_total_risk = 3.0
+        elif balance < 1000:
+            self._current_balance_tier = "medium"
+            self.risk_per_trade = min(self._base_risk_per_trade, 1.0)
+            self.max_positions = min(self._base_max_positions, 3)
+            self.max_leverage = min(self._base_max_leverage, 15)
+            self.max_total_risk = 5.0
+        elif balance < 5000:
+            self._current_balance_tier = "large"
+            self.risk_per_trade = min(self._base_risk_per_trade, 1.5)
+            self.max_positions = min(self._base_max_positions, 5)
+            self.max_leverage = min(self._base_max_leverage, 20)
+            self.max_total_risk = 8.0
+        else:
+            self._current_balance_tier = "whale"
+            self.risk_per_trade = min(self._base_risk_per_trade, 2.0)
+            self.max_positions = min(self._base_max_positions, 7)
+            self.max_leverage = min(self._base_max_leverage, 25)
+            self.max_total_risk = 10.0
+
+        if old_tier != self._current_balance_tier:
+            logger.info(f"Balance tier changed: {old_tier} -> {self._current_balance_tier} "
+                       f"(balance=${balance:.2f}, risk={self.risk_per_trade}%, pos={self.max_positions}, lev={self.max_leverage}x)")
 
     async def get_account_balance(self):
         now = time.time()
@@ -75,13 +123,25 @@ class RiskManager:
         try:
             account = await self.client.get_account_balance()
             if account and isinstance(account, dict):
-                balance = float(account.get("balance", account.get("totalEquity", account.get("equity", 0))))
+                # Try multiple field names for balance
+                balance = float(account.get("balance", 
+                    account.get("totalEquity", 
+                        account.get("equity", 
+                            account.get("availableBalance", 
+                                account.get("totalWalletBalance", 0))))))
                 self._cached_balance = balance
                 self._balance_cache_time = now
+
+                # Adapt to new balance
+                self.adapt_to_balance(balance)
+
                 return {
                     "total_equity": balance,
-                    "available_balance": float(account.get("availableMargin", account.get("available", balance))),
-                    "used": float(account.get("usedMargin", account.get("used", 0))),
+                    "available_balance": float(account.get("availableMargin", 
+                        account.get("available", 
+                            account.get("availableBalance", balance)))),
+                    "used": float(account.get("usedMargin", 
+                        account.get("used", 0))),
                     "equity": float(account.get("equity", balance)),
                     "unrealizedProfit": float(account.get("unrealizedProfit", 0))
                 }
@@ -97,6 +157,10 @@ class RiskManager:
         if balance <= 0 or current_price <= 0:
             logger.warning(f"Invalid balance/price: balance={balance}, price={current_price}")
             return 0.0
+
+        # Auto-adapt if balance changed significantly
+        self.adapt_to_balance(balance)
+
         is_weekend = datetime.utcnow().weekday() >= 5
         if is_weekend and self.reduce_weekend:
             risk_percent *= self.weekend_risk_multiplier
@@ -213,5 +277,8 @@ class RiskManager:
             "max_positions": self.max_positions,
             "total_trades": self._total_trades,
             "winning_trades": self._winning_trades,
-            "win_rate": (self._winning_trades / self._total_trades * 100) if self._total_trades > 0 else 0
+            "win_rate": (self._winning_trades / self._total_trades * 100) if self._total_trades > 0 else 0,
+            "balance_tier": self._current_balance_tier,
+            "risk_per_trade": self.risk_per_trade,
+            "max_leverage": self.max_leverage,
         }

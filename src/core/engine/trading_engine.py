@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TradingEngine v5.0 — improved engine with emergency stop, CSV export and enhanced statistics."""
+"""TradingEngine v5.1 — Self-healing adaptive engine. Never stops, auto-recovers."""
 import asyncio
 import time
 import logging
@@ -59,15 +59,21 @@ class TradingEngine:
         self._last_error = ""
         self._total_trades = 0
         self._winning_trades = 0
-        self._positions_hash = ""
-        self._history_hash = ""
-        self._signals_hash = ""
         self._loop_count = 0
         self._start_time = time.time()
         self._health_status = "OK"
         self._emergency = False
         self._csv_path = os.path.join("logs", "trades.csv")
         self._ensure_csv()
+
+        # Adaptive parameters
+        self._adaptive_scan_interval = self.scan_interval
+        self._consecutive_scan_errors = 0
+        self._consecutive_empty_scans = 0
+        self._api_error_streak = 0
+        self._last_successful_scan = time.time()
+        self._market_volatility = 0.5  # 0-1 scale
+        self._recovery_mode = False
 
     def _ensure_csv(self):
         if not os.path.exists(self._csv_path):
@@ -79,8 +85,10 @@ class TradingEngine:
     async def start(self):
         self.running = True
         self._stop_event.clear()
-        self.logger.info("Starting TradingEngine v5.0...")
-        for attempt in range(3):
+        self.logger.info("Starting TradingEngine v5.1 (Self-Healing)...")
+
+        # Try to get balance with multiple attempts and fallbacks
+        for attempt in range(5):
             try:
                 bal_info = await self.risk_manager.get_account_balance()
                 self.balance = bal_info.get("total_equity", 0)
@@ -90,18 +98,21 @@ class TradingEngine:
                     self._balance_fetch_failures = 0
                     break
                 else:
-                    self.logger.warning(f"Balance = 0 (attempt {attempt + 1}/3)")
-                    if attempt < 2:
-                        await asyncio.sleep(2)
+                    self.logger.warning(f"Balance = 0 (attempt {attempt + 1}/5)")
+                    if attempt < 4:
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
             except Exception as e:
-                self.logger.error(f"Balance error (attempt {attempt + 1}/3): {e}")
-                if attempt < 2:
-                    await asyncio.sleep(2)
+                self.logger.error(f"Balance error (attempt {attempt + 1}/5): {e}")
+                if attempt < 4:
+                    await asyncio.sleep(2 ** attempt)
+
         if self.balance <= 0:
             self.logger.warning("Balance not received. Running in monitoring mode.")
+            # Don't stop - continue in monitoring mode
+
         await self._sync_positions()
         self._task = asyncio.create_task(self._main_loop())
-        self.logger.info("Engine started")
+        self.logger.info("Engine started - self-healing active")
 
     async def stop(self):
         self.running = False
@@ -141,40 +152,101 @@ class TradingEngine:
             try:
                 loop_start = time.time()
                 self._loop_count += 1
-                await self._update_balance()
-                await self._sync_positions()
-                await self._update_positions_pnl()
-                await self.exit_manager.check_exits(self.positions, self._on_position_closed)
+
+                # Core operations with individual error handling
+                try:
+                    await self._update_balance()
+                except Exception as e:
+                    self.logger.error(f"Balance update error (non-critical): {e}")
+
+                try:
+                    await self._sync_positions()
+                except Exception as e:
+                    self.logger.error(f"Position sync error (non-critical): {e}")
+
+                try:
+                    await self._update_positions_pnl()
+                except Exception as e:
+                    self.logger.error(f"PnL update error (non-critical): {e}")
+
+                try:
+                    await self.exit_manager.check_exits(self.positions, self._on_position_closed)
+                except Exception as e:
+                    self.logger.error(f"Exit check error (non-critical): {e}")
+
+                # Adaptive scan interval
                 now = time.time()
-                adaptive_interval = self.scan_interval
-                if self.settings.get("adaptive_scan_interval", True):
-                    if len(self.positions) >= self.settings.get("max_positions", 3):
-                        adaptive_interval = self.scan_interval * 1.5
-                    elif not self._last_scan_result:
-                        adaptive_interval = max(30, self.scan_interval * 0.6)
-                if now - self.last_scan_time >= adaptive_interval:
+                self._adapt_scan_interval()
+
+                if now - self.last_scan_time >= self._adaptive_scan_interval:
                     self.last_scan_time = now
-                    await self._scan_and_trade()
-                self.logger.log_state("positions", {
-                    "count": len(self.positions),
-                    "symbols": list(self.positions.keys()),
-                    "total_unrealized_pnl": sum(p.unrealized_pnl for p in self.positions.values()),
-                    "loop": self._loop_count,
-                    "uptime": time.time() - self._start_time,
-                })
+                    try:
+                        await self._scan_and_trade()
+                        self._consecutive_scan_errors = 0
+                        self._api_error_streak = max(0, self._api_error_streak - 1)
+                    except Exception as e:
+                        self._consecutive_scan_errors += 1
+                        self._api_error_streak += 1
+                        self.logger.error(f"Scan error (non-critical, streak={self._api_error_streak}): {e}")
+                        # Increase interval on errors
+                        self._adaptive_scan_interval = min(300, self._adaptive_scan_interval * 1.5)
+
+                # Log state
+                try:
+                    self.logger.log_state("positions", {
+                        "count": len(self.positions),
+                        "symbols": list(self.positions.keys()),
+                        "total_unrealized_pnl": sum(p.unrealized_pnl for p in self.positions.values()),
+                        "loop": self._loop_count,
+                        "uptime": time.time() - self._start_time,
+                        "scan_interval": self._adaptive_scan_interval,
+                        "api_health": self.api_client.get_health(),
+                    })
+                except Exception:
+                    pass
+
                 self._api_latency_ms = (time.time() - loop_start) * 1000
-                self._health_status = "OK"
+                self._health_status = "OK" if self._api_error_streak < 3 else f"DEGRADED (errors: {self._api_error_streak})"
+
+                # Sleep with early wake on stop
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=5)
                 except asyncio.TimeoutError:
                     pass
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self._last_error = str(e)
                 self._health_status = f"ERROR: {str(e)[:50]}"
-                self.logger.error(f"Main loop error: {e}")
+                self.logger.error(f"Main loop error (recovering): {e}")
+                # NEVER STOP - just sleep and continue
                 await asyncio.sleep(10)
+
+    def _adapt_scan_interval(self):
+        """Adapt scan interval based on market conditions and errors."""
+        base = self.scan_interval
+
+        # More positions = slower scanning
+        pos_count = len(self.positions)
+        if pos_count >= self.settings.get("max_positions", 3):
+            base *= 2.0
+        elif pos_count > 0:
+            base *= 1.3
+
+        # API errors = slower scanning
+        if self._api_error_streak > 0:
+            base *= (1 + self._api_error_streak * 0.5)
+
+        # Empty scans = faster scanning (market is quiet)
+        if self._consecutive_empty_scans > 2:
+            base *= 0.7
+
+        # High volatility = faster scanning
+        if self._market_volatility > 0.7:
+            base *= 0.8
+
+        self._adaptive_scan_interval = max(15, min(300, base))
 
     async def _update_balance(self):
         try:
@@ -184,6 +256,8 @@ class TradingEngine:
                 if new_balance > 0:
                     self.balance = new_balance
                     self._balance_fetch_failures = 0
+                    # Adapt risk based on balance
+                    self._adapt_to_balance(new_balance)
                 else:
                     self._balance_fetch_failures += 1
         except Exception as e:
@@ -191,20 +265,47 @@ class TradingEngine:
                 self._balance_fetch_failures += 1
             self.logger.error(f"Balance update error: {e}")
 
+    def _adapt_to_balance(self, balance: float):
+        """Adapt trading parameters based on balance size."""
+        if balance < 50:
+            # Micro account - minimal risk
+            self.risk_manager.risk_per_trade = 0.5
+            self.risk_manager.max_positions = 1
+        elif balance < 200:
+            # Small account
+            self.risk_manager.risk_per_trade = 0.8
+            self.risk_manager.max_positions = 2
+        elif balance < 1000:
+            # Medium account
+            self.risk_manager.risk_per_trade = 1.0
+            self.risk_manager.max_positions = 3
+        elif balance < 5000:
+            # Large account
+            self.risk_manager.risk_per_trade = 1.5
+            self.risk_manager.max_positions = 5
+        else:
+            # Whale account
+            self.risk_manager.risk_per_trade = 2.0
+            self.risk_manager.max_positions = 7
+
     async def _sync_positions(self):
         try:
             exchange_positions = await self.api_client.get_positions()
-            current_symbols = {p["symbol"] for p in exchange_positions}
+            current_symbols = {p.get("symbol", "").replace("-", "/") for p in exchange_positions if p.get("positionAmt", 0) != 0}
+
             with self._lock:
+                # Remove closed positions
                 for sym in list(self.positions.keys()):
-                    if sym.replace("/", "-") not in current_symbols:
+                    if sym not in current_symbols:
                         pos = self.positions.pop(sym)
                         self.risk_manager.register_position_close(pos)
                         self.risk_controller.register_position_close(sym)
                         self._record_closed_position(pos, "EXCHANGE_CLOSE")
                         self.logger.info(f"Position {sym} closed on exchange")
+
+                # Add new positions
                 for p in exchange_positions:
-                    symbol = p["symbol"].replace("-", "/")
+                    symbol = p.get("symbol", "").replace("-", "/")
                     amt = float(p.get("positionAmt", 0))
                     if amt == 0:
                         continue
@@ -294,26 +395,36 @@ class TradingEngine:
     async def _scan_and_trade(self):
         self.logger.info("Starting market scan...")
         self.logger.log_decision("scan_start", None, {"balance": self.balance, "positions": len(self.positions)})
+
         ok, reason = self.risk_manager.can_open_position(len(self.positions), self.balance)
         if not ok:
             self.logger.info(f"Scan skipped: {reason}")
             return
+
         candidates = await self.market_scanner.scan_async(
             balance=self.balance, max_pairs=100,
             ignore_session_check=self.settings.get("force_ignore_session", True),
         )
+
         with self._lock:
             self._last_scan_result = candidates
+
         if not candidates:
-            self.logger.info("No signals found")
+            self._consecutive_empty_scans += 1
+            self.logger.info(f"No signals found (empty streak: {self._consecutive_empty_scans})")
             self.logger.log_decision("scan_empty", None, {"filters": "adx/atr/volume/signal"})
             return
+
+        self._consecutive_empty_scans = 0
+        self._last_successful_scan = time.time()
+
         candidates = self.risk_controller.filter_signals(candidates, list(self.positions.values()), self.balance)
         if not candidates:
             self.logger.info("Signals filtered by risk controller")
             return
+
         for candidate in candidates:
-            if len(self.positions) >= self.settings.get("max_positions", 3):
+            if len(self.positions) >= self.risk_manager.max_positions:
                 self.logger.info("Max positions reached")
                 break
             try:
@@ -329,7 +440,7 @@ class TradingEngine:
                         self.positions[pos.symbol] = pos
                         self.risk_controller.register_position_open(pos.symbol)
             except Exception as e:
-                self.logger.error(f"Trade execution error: {e}")
+                self.logger.error(f"Trade execution error (non-critical): {e}")
 
     def get_stats(self) -> dict:
         with self._lock:
@@ -357,6 +468,8 @@ class TradingEngine:
                 "scan_result_count": len(self._last_scan_result),
                 "scan_stats": self.market_scanner.get_scan_stats(),
                 "fetch_health": self.data_fetcher.get_fetch_health(),
+                "adaptive_interval": self._adaptive_scan_interval,
+                "api_health": self.api_client.get_health(),
             }
 
     def get_closed_positions(self) -> List[Dict]:
@@ -379,4 +492,6 @@ class TradingEngine:
             "loop_count": self._loop_count,
             "balance_failures": self._balance_fetch_failures,
             "positions": len(self.positions),
+            "api_errors": self._api_error_streak,
+            "adaptive_interval": self._adaptive_scan_interval,
         }

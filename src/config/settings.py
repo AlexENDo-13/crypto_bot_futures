@@ -65,7 +65,7 @@ class Settings:
                     with open(self.config_path, "r", encoding="utf-8") as f:
                         self._data.update(json.load(f))
                 except Exception as e:
-                    print(f"⚠️ Ошибка загрузки конфига: {e}")
+                    print(f"⚠️ Config load error: {e}")
             for k, v in self.DEFAULTS.items():
                 if k not in self._data: self._data[k] = v
     def save(self):
@@ -75,7 +75,7 @@ class Settings:
                 with open(self.config_path, "w", encoding="utf-8") as f:
                     json.dump(self._data, f, indent=2, ensure_ascii=False)
             except Exception as e:
-                print(f"⚠️ Ошибка сохранения: {e}")
+                print(f"⚠️ Config save error: {e}")
     def get(self, key: str, default: Any = None):
         with self._lock: return self._data.get(key, default)
     def set(self, key: str, value: Any):

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QTableWidget, QTableWidgetItem,
     QPlainTextEdit, QSplitter, QStatusBar, QMessageBox,
-    QStackedWidget, QFrame, QSizePolicy
+    QStackedWidget, QFrame
 )
 
 from src.exchange.api_client import BingXAPIClient
@@ -37,12 +37,10 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._connect_signals()
 
-        # Periodic UI update (every 2 seconds)
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self._update_stats)
         self.update_timer.start(2000)
 
-        # Periodic auto-scan (every 60 seconds)
         self.scan_timer = QTimer()
         self.scan_timer.timeout.connect(self.run_scan)
         self.scan_timer.start(60000)
@@ -73,7 +71,6 @@ class MainWindow(QMainWindow):
         sidebar_layout.setContentsMargins(0, 10, 0, 10)
         sidebar_layout.setSpacing(2)
 
-        # Mode label
         demo = self.settings.get("demo_mode", True)
         self.mode_label = QLabel("MODE: PAPER" if demo else "MODE: LIVE")
         self.mode_label.setStyleSheet(
@@ -82,7 +79,6 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.mode_label)
         sidebar_layout.addSpacing(10)
 
-        # Navigation buttons
         self.nav_buttons = {}
         pages = [
             ("dashboard", "📊 Dashboard"),
@@ -99,7 +95,6 @@ class MainWindow(QMainWindow):
 
         sidebar_layout.addStretch()
 
-        # Engine control
         self.engine_btn = QPushButton("▶ Start Engine")
         self.engine_btn.setStyleSheet("color: #a6e3a1; font-weight: bold;")
         self.engine_btn.clicked.connect(self.toggle_engine)
@@ -121,23 +116,19 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(sidebar)
 
-        # --- Main content area ---
+        # --- Main content ---
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("background-color: #1e1e2e;")
 
-        # Dashboard page
         self.page_dashboard = self._create_dashboard_page()
         self.stack.addWidget(self.page_dashboard)
 
-        # Positions page
         self.page_positions = self._create_positions_page()
         self.stack.addWidget(self.page_positions)
 
-        # Config page
         self.page_config = self._create_config_page()
         self.stack.addWidget(self.page_config)
 
-        # Logs page
         self.page_logs = self._create_logs_page()
         self.stack.addWidget(self.page_logs)
 
@@ -145,7 +136,6 @@ class MainWindow(QMainWindow):
         self._switch_page("dashboard")
         self.nav_buttons["dashboard"].setChecked(True)
 
-        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("CryptoBot v9.1 Ready")
@@ -154,7 +144,6 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        # Stats cards
         cards = QHBoxLayout()
         self.dash_balance = QLabel("Balance: --")
         self.dash_pnl = QLabel("Daily PnL: --")
@@ -170,7 +159,6 @@ class MainWindow(QMainWindow):
             cards.addWidget(lbl)
         layout.addLayout(cards)
 
-        # Signals table
         self.dash_signals_table = QTableWidget()
         self.dash_signals_table.setColumnCount(5)
         self.dash_signals_table.setHorizontalHeaderLabels(["Symbol", "Direction", "Strength", "Price", "Time"])
@@ -180,7 +168,6 @@ class MainWindow(QMainWindow):
         """)
         layout.addWidget(self.dash_signals_table)
 
-        # Recent log
         self.dash_log = QPlainTextEdit()
         self.dash_log.setReadOnly(True)
         self.dash_log.setMaximumBlockCount(100)
@@ -284,6 +271,12 @@ class MainWindow(QMainWindow):
         trade_layout.addWidget(QLabel("Risk per Trade %:"))
         trade_layout.addWidget(self.cfg_risk)
 
+        self.cfg_scan_interval = QComboBox()
+        self.cfg_scan_interval.addItems(["1", "3", "5", "10", "15", "30", "60"])
+        self.cfg_scan_interval.setCurrentText("5")
+        trade_layout.addWidget(QLabel("Scan Interval (min):"))
+        trade_layout.addWidget(self.cfg_scan_interval)
+
         layout.addWidget(trade_group)
 
         # Save button
@@ -299,9 +292,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_save)
         layout.addStretch()
 
-        # Load current settings
         self._load_settings()
-
         return page
 
     def _create_logs_page(self):
@@ -354,16 +345,13 @@ class MainWindow(QMainWindow):
         positions = stats.get("positions_count", 0)
         win_rate = stats.get("win_rate", 0)
 
-        # Dashboard
         self.dash_balance.setText(f"Balance: {balance:.2f} USDT")
         self.dash_pnl.setText(f"Daily PnL: {pnl:+.2f} USDT")
         self.dash_positions.setText(f"Positions: {positions}")
         self.dash_winrate.setText(f"Win Rate: {win_rate:.1f}%")
 
-        # Positions
         self._update_positions_table()
 
-        # Status bar
         health = stats.get("health_status", "OK")
         self.status_bar.showMessage(
             f"Balance: {balance:.2f} USDT | Positions: {positions} | "
@@ -452,22 +440,38 @@ class MainWindow(QMainWindow):
         self.cfg_leverage.setCurrentText(str(self.settings.get("max_leverage", 10)))
         self.cfg_positions.setCurrentText(str(self.settings.get("max_positions", 3)))
         self.cfg_risk.setCurrentText(str(self.settings.get("max_risk_per_trade", 1.0)))
+        self.cfg_scan_interval.setCurrentText(str(self.settings.get("scan_interval_minutes", 5)))
 
     def _toggle_demo_mode(self):
         checked = self.cfg_demo.isChecked()
         self.cfg_demo.setText("Demo Mode: ON" if checked else "Demo Mode: OFF")
 
     def _save_settings(self):
+        api_key = self.cfg_api_key.toPlainText().strip()
+        api_secret = self.cfg_api_secret.toPlainText().strip()
+
         updates = {
-            "api_key": self.cfg_api_key.toPlainText().strip(),
-            "api_secret": self.cfg_api_secret.toPlainText().strip(),
+            "api_key": api_key,
+            "api_secret": api_secret,
             "demo_mode": self.cfg_demo.isChecked(),
             "max_leverage": int(self.cfg_leverage.currentText()),
             "max_positions": int(self.cfg_positions.currentText()),
             "max_risk_per_trade": float(self.cfg_risk.currentText()),
+            "scan_interval_minutes": int(self.cfg_scan_interval.currentText()),
         }
         self.settings.update(updates)
-        QMessageBox.information(self, "Saved", "Settings saved! Restart required for some changes.")
+
+        # Update API client credentials immediately
+        self.api_client.update_credentials(api_key, api_secret)
+
+        # Update mode label
+        demo = self.cfg_demo.isChecked()
+        self.mode_label.setText("MODE: PAPER" if demo else "MODE: LIVE")
+        self.mode_label.setStyleSheet(
+            "color: #a6e3a1; font-weight: bold;" if demo else "color: #f38ba8; font-weight: bold;"
+        )
+
+        QMessageBox.information(self, "Saved", "Settings saved! API credentials updated.")
         self.logger.info("Settings saved via GUI")
 
     def _clear_logs(self):
