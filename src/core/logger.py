@@ -1,5 +1,5 @@
 """
-CryptoBot v7.1 - Advanced Logging System
+CryptoBot v9.0 - Advanced Logging System
 """
 import logging
 import sys
@@ -10,8 +10,6 @@ from logging.handlers import RotatingFileHandler
 from typing import Optional, Callable
 
 class CallbackLogHandler(logging.Handler):
-    """GUI callback handler - no Qt dependencies."""
-
     def __init__(self, callback: Callable[[str, int], None] = None):
         super().__init__()
         self.callback = callback
@@ -33,8 +31,6 @@ class CallbackLogHandler(logging.Handler):
             self.handleError(record)
 
 class BotLogger:
-    """Centralized logging manager - proper singleton."""
-
     _instance = None
     _initialized = False
 
@@ -57,9 +53,7 @@ class BotLogger:
         self.logger.setLevel(level)
         self.logger.propagate = False
 
-        # Only add handlers if none exist
         if not self.logger.handlers:
-            # Console handler
             console = logging.StreamHandler(sys.stdout)
             console.setLevel(level)
             console.setFormatter(logging.Formatter(
@@ -68,7 +62,6 @@ class BotLogger:
             ))
             self.logger.addHandler(console)
 
-            # File handler
             log_file = self.log_dir / ("bot_" + datetime.now().strftime("%Y%m%d") + ".log")
             file_h = RotatingFileHandler(
                 log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'
@@ -79,17 +72,22 @@ class BotLogger:
             ))
             self.logger.addHandler(file_h)
 
-        self.logger.info("BotLogger v7.1 initialized | log_dir=%s", log_dir)
+        self.logger.info("BotLogger v9.0 initialized | log_dir=%s level=%s", log_dir, logging.getLevelName(level))
+
+    def set_level(self, level: int):
+        self.level = level
+        self.logger.setLevel(level)
+        for h in self.logger.handlers:
+            h.setLevel(level)
+        self.logger.info("Log level changed to %s", logging.getLevelName(level))
 
     def add_gui_handler(self, callback: Callable[[str, int], None]):
-        """Add GUI callback - replaces existing if any."""
         if self._callback_handler:
             self.logger.removeHandler(self._callback_handler)
             self._callback_handler = None
-
         try:
             self._callback_handler = CallbackLogHandler(callback=callback)
-            self._callback_handler.setLevel(logging.INFO)
+            self._callback_handler.setLevel(logging.DEBUG)
             self.logger.addHandler(self._callback_handler)
             self.logger.info("GUI log handler added")
         except Exception as e:

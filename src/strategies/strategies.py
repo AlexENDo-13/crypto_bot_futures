@@ -8,12 +8,10 @@ from dataclasses import dataclass
 from enum import Enum
 import logging
 
-
 class SignalType(Enum):
     BUY = "buy"
     SELL = "sell"
     HOLD = "hold"
-
 
 @dataclass
 class Signal:
@@ -29,10 +27,7 @@ class Signal:
         if self.metadata is None:
             self.metadata = {}
 
-
 class BaseStrategy:
-    """Base class for all strategies."""
-
     def __init__(self, name: str, params: Dict = None):
         self.name = name
         self.params = params or {}
@@ -49,7 +44,6 @@ class BaseStrategy:
             if col not in df.columns:
                 return False
         return True
-
 
 class EMACrossStrategy(BaseStrategy):
     def __init__(self, fast: int = 9, slow: int = 21):
@@ -74,27 +68,20 @@ class EMACrossStrategy(BaseStrategy):
             if prev_fast <= prev_slow and curr_fast > curr_slow:
                 diff = abs(curr_fast - curr_slow) / curr_price
                 confidence = min(diff * 50, 1.0)
-                return Signal(
-                    symbol, self.name, SignalType.BUY, confidence, curr_price,
-                    str(df.index[-1]), {"ema_fast": curr_fast, "ema_slow": curr_slow}
-                )
+                return Signal(symbol, self.name, SignalType.BUY, confidence, curr_price,
+                              str(df.index[-1]), {"ema_fast": curr_fast, "ema_slow": curr_slow})
             if prev_fast >= prev_slow and curr_fast < curr_slow:
                 diff = abs(curr_fast - curr_slow) / curr_price
                 confidence = min(diff * 50, 1.0)
-                return Signal(
-                    symbol, self.name, SignalType.SELL, confidence, curr_price,
-                    str(df.index[-1]), {"ema_fast": curr_fast, "ema_slow": curr_slow}
-                )
+                return Signal(symbol, self.name, SignalType.SELL, confidence, curr_price,
+                              str(df.index[-1]), {"ema_fast": curr_fast, "ema_slow": curr_slow})
         except Exception as e:
             self.logger.debug("EMA error: %s", e)
         return None
 
-
 class RSIDivergenceStrategy(BaseStrategy):
     def __init__(self, period: int = 14, overbought: int = 70, oversold: int = 30):
-        super().__init__("rsi_divergence", {
-            "period": period, "overbought": overbought, "oversold": oversold
-        })
+        super().__init__("rsi_divergence", {"period": period, "overbought": overbought, "oversold": oversold})
         self.period = period
         self.overbought = overbought
         self.oversold = oversold
@@ -115,26 +102,19 @@ class RSIDivergenceStrategy(BaseStrategy):
                 return None
             if rsi < self.oversold:
                 conf = (self.oversold - rsi) / self.oversold
-                return Signal(
-                    symbol, self.name, SignalType.BUY, conf, curr_price,
-                    str(df.index[-1]), {"rsi": rsi}
-                )
+                return Signal(symbol, self.name, SignalType.BUY, conf, curr_price,
+                              str(df.index[-1]), {"rsi": rsi})
             if rsi > self.overbought:
                 conf = (rsi - self.overbought) / (100 - self.overbought)
-                return Signal(
-                    symbol, self.name, SignalType.SELL, conf, curr_price,
-                    str(df.index[-1]), {"rsi": rsi}
-                )
+                return Signal(symbol, self.name, SignalType.SELL, conf, curr_price,
+                              str(df.index[-1]), {"rsi": rsi})
         except Exception as e:
             self.logger.debug("RSI error: %s", e)
         return None
 
-
 class VolumeBreakoutStrategy(BaseStrategy):
     def __init__(self, volume_mult: float = 2.0, lookback: int = 20):
-        super().__init__("volume_breakout", {
-            "volume_mult": volume_mult, "lookback": lookback
-        })
+        super().__init__("volume_breakout", {"volume_mult": volume_mult, "lookback": lookback})
         self.volume_mult = volume_mult
         self.lookback = lookback
 
@@ -150,25 +130,18 @@ class VolumeBreakoutStrategy(BaseStrategy):
                 prev_close = df["close"].iloc[-2]
                 conf = min((vol_ratio - self.volume_mult) / self.volume_mult, 1.0)
                 if curr_price > prev_close * 1.001:
-                    return Signal(
-                        symbol, self.name, SignalType.BUY, conf, curr_price,
-                        str(df.index[-1]), {"volume_ratio": vol_ratio}
-                    )
+                    return Signal(symbol, self.name, SignalType.BUY, conf, curr_price,
+                                  str(df.index[-1]), {"volume_ratio": vol_ratio})
                 elif curr_price < prev_close * 0.999:
-                    return Signal(
-                        symbol, self.name, SignalType.SELL, conf, curr_price,
-                        str(df.index[-1]), {"volume_ratio": vol_ratio}
-                    )
+                    return Signal(symbol, self.name, SignalType.SELL, conf, curr_price,
+                                  str(df.index[-1]), {"volume_ratio": vol_ratio})
         except Exception as e:
             self.logger.debug("Volume error: %s", e)
         return None
 
-
 class SupportResistanceStrategy(BaseStrategy):
     def __init__(self, lookback: int = 50, threshold: float = 0.02):
-        super().__init__("support_resistance", {
-            "lookback": lookback, "threshold": threshold
-        })
+        super().__init__("support_resistance", {"lookback": lookback, "threshold": threshold})
         self.lookback = lookback
         self.threshold = threshold
 
@@ -182,25 +155,18 @@ class SupportResistanceStrategy(BaseStrategy):
             if pd.isna(support) or pd.isna(resistance) or support <= 0:
                 return None
             if price <= support * (1 + self.threshold):
-                return Signal(
-                    symbol, self.name, SignalType.BUY, 0.7, price,
-                    str(df.index[-1]), {"support": support, "resistance": resistance}
-                )
+                return Signal(symbol, self.name, SignalType.BUY, 0.7, price,
+                              str(df.index[-1]), {"support": support, "resistance": resistance})
             if price >= resistance * (1 - self.threshold):
-                return Signal(
-                    symbol, self.name, SignalType.SELL, 0.7, price,
-                    str(df.index[-1]), {"support": support, "resistance": resistance}
-                )
+                return Signal(symbol, self.name, SignalType.SELL, 0.7, price,
+                              str(df.index[-1]), {"support": support, "resistance": resistance})
         except Exception as e:
             self.logger.debug("S/R error: %s", e)
         return None
 
-
 class MACDMomentumStrategy(BaseStrategy):
     def __init__(self, fast: int = 12, slow: int = 26, signal: int = 9):
-        super().__init__("macd_momentum", {
-            "fast": fast, "slow": slow, "signal": signal
-        })
+        super().__init__("macd_momentum", {"fast": fast, "slow": slow, "signal": signal})
         self.fast = fast
         self.slow = slow
         self.signal = signal
@@ -222,30 +188,19 @@ class MACDMomentumStrategy(BaseStrategy):
             curr_price = df["close"].iloc[-1]
             if prev_hist < 0 and curr_hist > 0:
                 conf = min(abs(curr_hist) / curr_price * 100, 1.0)
-                return Signal(
-                    symbol, self.name, SignalType.BUY, conf, curr_price,
-                    str(df.index[-1]), {
-                        "macd": macd.iloc[-1], "signal": macd_signal.iloc[-1]
-                    }
-                )
+                return Signal(symbol, self.name, SignalType.BUY, conf, curr_price,
+                              str(df.index[-1]), {"macd": macd.iloc[-1], "signal": macd_signal.iloc[-1]})
             if prev_hist > 0 and curr_hist < 0:
                 conf = min(abs(curr_hist) / curr_price * 100, 1.0)
-                return Signal(
-                    symbol, self.name, SignalType.SELL, conf, curr_price,
-                    str(df.index[-1]), {
-                        "macd": macd.iloc[-1], "signal": macd_signal.iloc[-1]
-                    }
-                )
+                return Signal(symbol, self.name, SignalType.SELL, conf, curr_price,
+                              str(df.index[-1]), {"macd": macd.iloc[-1], "signal": macd_signal.iloc[-1]})
         except Exception as e:
             self.logger.debug("MACD error: %s", e)
         return None
 
-
 class BollingerSqueezeStrategy(BaseStrategy):
     def __init__(self, period: int = 20, std_dev: float = 2.0):
-        super().__init__("bollinger_squeeze", {
-            "period": period, "std_dev": std_dev
-        })
+        super().__init__("bollinger_squeeze", {"period": period, "std_dev": std_dev})
         self.period = period
         self.std_dev = std_dev
 
@@ -267,19 +222,14 @@ class BollingerSqueezeStrategy(BaseStrategy):
             avg_bw = ((upper - lower) / sma).rolling(window=self.period).mean().iloc[-1]
             if bandwidth < avg_bw * 0.5:
                 if price > curr_upper:
-                    return Signal(
-                        symbol, self.name, SignalType.BUY, 0.75, price,
-                        str(df.index[-1]), {"bandwidth": bandwidth}
-                    )
+                    return Signal(symbol, self.name, SignalType.BUY, 0.75, price,
+                                  str(df.index[-1]), {"bandwidth": bandwidth})
                 elif price < curr_lower:
-                    return Signal(
-                        symbol, self.name, SignalType.SELL, 0.75, price,
-                        str(df.index[-1]), {"bandwidth": bandwidth}
-                    )
+                    return Signal(symbol, self.name, SignalType.SELL, 0.75, price,
+                                  str(df.index[-1]), {"bandwidth": bandwidth})
         except Exception as e:
             self.logger.debug("BB error: %s", e)
         return None
-
 
 class DCAStrategy(BaseStrategy):
     def __init__(self, drop_pct: float = 5.0):
@@ -297,18 +247,13 @@ class DCAStrategy(BaseStrategy):
             drop = (high_20 - price) / high_20 * 100
             if drop >= self.drop_pct:
                 conf = min(drop / (self.drop_pct * 2), 1.0)
-                return Signal(
-                    symbol, self.name, SignalType.BUY, conf, price,
-                    str(df.index[-1]), {"drop_from_high": drop, "high_20": high_20}
-                )
+                return Signal(symbol, self.name, SignalType.BUY, conf, price,
+                              str(df.index[-1]), {"drop_from_high": drop, "high_20": high_20})
         except Exception as e:
             self.logger.debug("DCA error: %s", e)
         return None
 
-
 class StrategyManager:
-    """Manages all trading strategies."""
-
     def __init__(self):
         self.strategies: Dict[str, BaseStrategy] = {}
         self.logger = logging.getLogger("CryptoBot.StrategyManager")

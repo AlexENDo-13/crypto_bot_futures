@@ -1,7 +1,5 @@
 """
-CryptoBot v9.0 - Futuristic GUI with Async Support
-Features: Real-time charts, neural network viz, system health dashboard,
-          dark neon theme, holographic effects, async worker loop
+CryptoBot v9.0 - GUI
 """
 import sys
 import os
@@ -24,7 +22,7 @@ try:
         QApplication, QSystemTrayIcon
     )
     from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread
-    from PyQt6.QtGui import QFont, QColor, QAction, QKeySequence, QPainter, QPen, QBrush
+    from PyQt6.QtGui import QFont, QColor, QAction, QKeySequence, QPainter, QPen
     PYQT_VER = 6
 except ImportError:
     from PyQt5.QtWidgets import (
@@ -37,7 +35,7 @@ except ImportError:
         QApplication, QSystemTrayIcon
     )
     from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-    from PyQt5.QtGui import QFont, QColor, QAction, QKeySequence
+    from PyQt5.QtGui import QFont, QColor, QAction, QKeySequence, QPainter, QPen
     PYQT_VER = 5
 
 class LogWidget(QTextEdit):
@@ -52,8 +50,7 @@ class LogWidget(QTextEdit):
         self.setFont(font)
         self.colors = {
             "DEBUG": "#666666", "INFO": "#00ff88", "WARNING": "#ffaa00",
-            "ERROR": "#ff0044", "CRITICAL": "#ff00ff", "TRADE": "#00ccff",
-            "NEURAL": "#aa66ff"
+            "ERROR": "#ff0044", "CRITICAL": "#ff00ff"
         }
         self._line_count = 0
         self._max_lines = 5000
@@ -65,7 +62,6 @@ class LogWidget(QTextEdit):
         elif level <= 30: level_name = "WARNING"
         elif level <= 40: level_name = "ERROR"
         else: level_name = "CRITICAL"
-
         color = self.colors.get(level_name, "#ffffff")
         timestamp = datetime.now().strftime("%H:%M:%S")
         html = '[%s] <span style="color:%s;font-weight:bold">%s</span> <span style="color:#ccc">%s</span>' % (
@@ -85,7 +81,6 @@ class BotWorker(QThread):
     signal_scan_done = pyqtSignal(list)
     signal_performance = pyqtSignal(dict)
     signal_health = pyqtSignal(dict)
-    signal_neural = pyqtSignal(dict)
 
     def __init__(self, executor=None, scanner=None, data_fetcher=None,
                  monitor=None, autopilot=None, interval: int = 60, auto_trade: bool = True):
@@ -103,144 +98,99 @@ class BotWorker(QThread):
         self._scan_requested = False
 
     def run(self):
-        # Create new event loop for async operations in this thread
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.running = True
         self.signal_log.emit("Neural system initialized", 20)
-
         while self.running:
             if not self._paused:
                 try:
                     self._cycle_count += 1
-                    self.signal_status.emit("Cycle #%d | Neural Scanning..." % self._cycle_count)
-
+                    self.signal_status.emit("Cycle #%d | Scanning..." % self._cycle_count)
                     if self.monitor:
                         self.monitor.start_cycle()
-
+                    # Update balance
+                    if self.executor:
+                        try:
+                            bal = self.executor.update_balance_sync()
+                            self.signal_balance.emit(bal, bal)
+                        except Exception as e:
+                            self.signal_log.emit("Balance error: %s" % e, 40)
                     # Multi-timeframe scan
                     if self.scanner:
                         try:
-                            # Scan multiple timeframes
-                            signals_15m = self.loop.run_until_complete(
-                                self.scanner.scan_all("15m")
-                            )
-                            signals_1h = self.loop.run_until_complete(
-                                self.scanner.scan_all("1h")
-                            )
-
-                            # Combine: require 15m signal + 1h confirmation
+                            signals_15m = self.loop.run_until_complete(self.scanner.scan_all("15m", min_confidence=0.3))
+                            signals_1h = self.loop.run_until_complete(self.scanner.scan_all("1h", min_confidence=0.3))
                             all_signals = []
                             symbols_1h = {s.symbol for s in signals_1h}
-
                             for sig in signals_15m:
                                 if sig.symbol in symbols_1h:
-                                    # Boost confidence if 1h agrees
                                     sig.confidence = min(sig.confidence * 1.15, 1.0)
                                     sig.metadata = sig.metadata or {}
                                     sig.metadata["multi_tf"] = "15m+1h"
                                     all_signals.append(sig)
-                                elif sig.confidence >= 0.7:
-                                    # Strong 15m signal stands alone
+                                elif sig.confidence >= 0.6:
                                     sig.metadata = sig.metadata or {}
                                     sig.metadata["multi_tf"] = "15m"
                                     all_signals.append(sig)
-
                             total_signals = len(all_signals)
                             if self.monitor:
                                 self.monitor.record_stats({"signals_found": total_signals})
-
                             if all_signals:
                                 self.signal_log.emit("Multi-TF scan: %d signals" % total_signals, 20)
-                                for sig in all_signals[:3]:
-                                    neural_score = sig.metadata.get("neural_score", 0) if sig.metadata else 0
-                                    mtf = sig.metadata.get("multi_tf", "") if sig.metadata else ""
-                                    self.signal_log.emit("  >> %s [%s] conf=%.2f neural=%.2f [%s]" % (
-                                        sig.symbol, sig.type.value.upper(), 
-                                        sig.confidence, neural_score, mtf), 20)
-                                    self.signal_neural.emit({
-                                        "symbol": sig.symbol,
-                                        "confidence": sig.confidence,
-                                        "neural_score": neural_score,
-                                        "regime": sig.metadata.get("regime", "unknown") if sig.metadata else "unknown",
-                                        "multi_tf": mtf
-                                    })
+                                for sig in all_signals[:5]:
+                                    self.signal_log.emit("  >> %s [%s] conf=%.2f [%s]" % (
+                                        sig.symbol, sig.type.value.upper(), sig.confidence,
+                                        sig.metadata.get("multi_tf", "") if sig.metadata else ""), 20)
                                 if self.executor and self.auto_trade:
                                     for sig in all_signals[:3]:
                                         try:
-                                            self.loop.run_until_complete(
-                                                self.executor.execute_signal(sig)
-                                            )
+                                            self.loop.run_until_complete(self.executor.execute_signal(sig))
                                             if self.monitor:
                                                 self.monitor.record_stats({"trades_executed": 1})
                                         except Exception as e:
                                             self.signal_log.emit("Execute error: %s" % e, 40)
                                             if self.monitor:
                                                 self.monitor.record_error()
+                            else:
+                                self.signal_log.emit("Scan: 0 signals", 20)
                         except Exception as e:
                             self.signal_log.emit("Scan error: %s" % e, 40)
                             if self.monitor:
                                 self.monitor.record_error()
-
-                    if self.executor:
-                        try:
-                            self.loop.run_until_complete(self.executor.update_balance())
-                            bal = self.executor.balance
-                            self.signal_balance.emit(bal, bal)
-                        except Exception as e:
-                            self.signal_log.emit("Balance error: %s" % e, 40)
-
+                    # Update positions
                     if self.data_fetcher and self.executor and self.executor.positions:
                         try:
                             prices = self.loop.run_until_complete(
                                 self.data_fetcher.get_prices_batch(list(self.executor.positions.keys()))
                             )
                             if prices:
-                                self.loop.run_until_complete(
-                                    self.executor.update_positions(prices)
-                                )
+                                self.loop.run_until_complete(self.executor.update_positions(prices))
                                 self.signal_positions.emit(self.executor.get_open_positions())
                         except Exception as e:
                             self.signal_log.emit("Position update error: %s" % e, 40)
-
-                    # Auto-adapt every 10 cycles
-                    if self._cycle_count % 10 == 0 and self.autopilot and self.executor:
-                        try:
-                            self.autopilot.adapt(self.scanner, self.executor, self.executor.risk)
-                        except Exception as e:
-                            self.signal_log.emit("AutoPilot error: %s" % e, 40)
-
                     if self.monitor:
                         self.monitor.end_cycle()
                         health = self.monitor.get_performance_summary()
                         self.signal_health.emit(health)
-                        anomalies = self.monitor.detect_anomalies()
-                        if anomalies:
-                            for a in anomalies:
-                                self.signal_log.emit("ANOMALY: %s in cycle %d" % (a["type"], a["cycle"]), 30)
-
                     self.signal_status.emit("Cycle #%d | Idle" % self._cycle_count)
-
                 except Exception as e:
                     self.signal_log.emit("Worker error: %s" % e, 40)
                     for line in traceback.format_exc().split("\\n")[:5]:
                         if line.strip():
                             self.signal_log.emit(line, 40)
-
             if self._scan_requested:
                 self._scan_requested = False
                 try:
                     if self.scanner:
-                        signals = self.loop.run_until_complete(self.scanner.scan_all("15m"))
+                        signals = self.loop.run_until_complete(self.scanner.scan_all("15m", min_confidence=0.3))
                         self.signal_scan_done.emit(signals)
                 except Exception as e:
                     self.signal_log.emit("Manual scan error: %s" % e, 40)
-
             for _ in range(self.interval):
                 if not self.running or self._paused:
                     break
                 time.sleep(1)
-
         self.loop.close()
         self.signal_log.emit("Neural system shutdown", 20)
 
@@ -263,26 +213,10 @@ class NeonButton(QPushButton):
     def __init__(self, text, color="#00ff88", parent=None):
         super().__init__(text, parent)
         self.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                color: %s;
-                border: 2px solid %s;
-                border-radius: 8px;
-                padding: 10px 24px;
-                font-weight: bold;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: %s;
-                color: #0a0a0a;
-            }
-            QPushButton:pressed {
-                background-color: %s;
-            }
-            QPushButton:disabled {
-                border-color: #333;
-                color: #555;
-            }
+            QPushButton { background-color: transparent; color: %s; border: 2px solid %s; border-radius: 8px; padding: 10px 24px; font-weight: bold; font-size: 12px; }
+            QPushButton:hover { background-color: %s; color: #0a0a0a; }
+            QPushButton:pressed { background-color: %s; }
+            QPushButton:disabled { border-color: #333; color: #555; }
         """ % (color, color, color, color))
 
 class HealthGauge(QWidget):
@@ -305,12 +239,9 @@ class HealthGauge(QWidget):
         pen.setColor(QColor("#1a1a2e"))
         painter.setPen(pen)
         painter.drawArc(rect, 0, 360 * 16)
-        if self.value >= 70:
-            color = QColor("#00ff88")
-        elif self.value >= 40:
-            color = QColor("#ffaa00")
-        else:
-            color = QColor("#ff0044")
+        if self.value >= 70: color = QColor("#00ff88")
+        elif self.value >= 40: color = QColor("#ffaa00")
+        else: color = QColor("#ff0044")
         pen.setColor(color)
         painter.setPen(pen)
         span = int(self.value * 3.6 * 16)
@@ -323,14 +254,11 @@ class HealthGauge(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CryptoBot v9.0 - Neural Adaptive Trading System")
+        self.setWindowTitle("CryptoBot v9.0 - Neural Adaptive Trading")
         self.setMinimumSize(1600, 1000)
-
         self.bot_running = False
         self.worker = None
         self.start_time = None
-        self.auto_trade = True
-
         self.settings = None
         self.api_client = None
         self.data_fetcher = None
@@ -341,7 +269,6 @@ class MainWindow(QMainWindow):
         self.state_manager = None
         self.monitor = None
         self.autopilot = None
-
         self._setup_ui()
         self._setup_menu()
         self._setup_toolbar()
@@ -349,16 +276,14 @@ class MainWindow(QMainWindow):
         self._setup_timers()
         self._setup_tray()
         self._apply_neon_theme()
-
         from core.logger import BotLogger, get_logger
         logger_instance = BotLogger(log_dir="logs", level=20)
         logger_instance.add_gui_handler(self.append_log)
-
         try:
             self._init_core()
             self._load_settings_to_ui()
             self.append_log("Neural system v9.0 initialized", 20)
-            self.append_log("Multi-Timeframe scan ready | AutoPilot ON", 20)
+            self.append_log("Multi-Timeframe scan ready", 20)
         except Exception as e:
             self.append_log("Init error: %s" % e, 40)
             for line in traceback.format_exc().split("\\n")[:5]:
@@ -377,18 +302,15 @@ class MainWindow(QMainWindow):
         from exchange.trade_executor import TradeExecutor
         from risk.risk_manager import RiskManager, RiskLimits
         from ml.ml_engine import MLEngine
-
         self.settings = BotSettings.load()
         self.state_manager = StateManager()
         self.monitor = SystemMonitor()
         self.autopilot = AutoPilot()
-
         self.api_client = BingXAPIClient(
             api_key=self.settings.api_key, api_secret=self.settings.api_secret,
             base_url=self.settings.base_url, testnet=self.settings.testnet
         )
         self.data_fetcher = DataFetcher(api_client=self.api_client)
-
         limits = RiskLimits(
             max_position_size=self.settings.max_position_size,
             max_risk_per_trade=self.settings.max_risk_per_trade,
@@ -399,23 +321,20 @@ class MainWindow(QMainWindow):
         )
         self.risk_manager = RiskManager(limits=limits)
         ml = MLEngine()
-
         notif_config = NotificationConfig(
             telegram_enabled=self.settings.telegram_enabled,
             telegram_token=self.settings.telegram_token,
             telegram_chat_id=self.settings.telegram_chat_id
         )
         self.notifier = NotificationManager(config=notif_config)
-
         self.executor = TradeExecutor(
             api_client=self.api_client, risk_manager=self.risk_manager,
             paper_trading=self.settings.paper_trading, balance=10000.0,
             notifier=self.notifier
         )
         self.scanner = MarketScanner(data_fetcher=self.data_fetcher, ml_engine=ml, max_workers=4)
-
         mode = "PAPER" if self.settings.paper_trading else "LIVE"
-        self.append_log("Neural core ready | Mode=%s | AutoPilot=ON" % mode, 20)
+        self.append_log("Core ready | Mode=%s" % mode, 20)
 
     def _setup_ui(self):
         central = QWidget()
@@ -424,23 +343,19 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
         layout.addLayout(self._create_control_bar())
-
         splitter = QSplitter(Qt.Orientation.Horizontal if PYQT_VER == 6 else Qt.Horizontal)
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._create_dashboard_tab(), "Neural Dashboard")
+        self.tabs.addTab(self._create_dashboard_tab(), "Dashboard")
         self.tabs.addTab(self._create_positions_tab(), "Positions")
-        self.tabs.addTab(self._create_market_tab(), "Market Scan")
+        self.tabs.addTab(self._create_market_tab(), "Market")
         self.tabs.addTab(self._create_strategies_tab(), "Strategies")
-        self.tabs.addTab(self._create_risk_tab(), "Risk Control")
-        self.tabs.addTab(self._create_neural_tab(), "Neural Net")
+        self.tabs.addTab(self._create_risk_tab(), "Risk")
         self.tabs.addTab(self._create_performance_tab(), "Performance")
         self.tabs.addTab(self._create_settings_tab(), "Settings")
         splitter.addWidget(self.tabs)
-
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-
         health_group = QGroupBox("System Health")
         health_layout = QHBoxLayout(health_group)
         self.health_gauge = HealthGauge()
@@ -456,13 +371,11 @@ class MainWindow(QMainWindow):
             self.health_details.addWidget(lbl)
         health_layout.addLayout(self.health_details)
         right_layout.addWidget(health_group)
-
         log_group = QGroupBox("Neural Logs")
         log_layout = QVBoxLayout(log_group)
         self.log_widget = LogWidget()
         log_layout.addWidget(self.log_widget)
         right_layout.addWidget(log_group, 3)
-
         stats_group = QGroupBox("Live Stats")
         stats_layout = QGridLayout(stats_group)
         self.lbl_balance = QLabel("$0.00")
@@ -482,7 +395,6 @@ class MainWindow(QMainWindow):
         stats_layout.addWidget(QLabel("Uptime:"), 3, 0)
         stats_layout.addWidget(self.lbl_uptime, 3, 1)
         right_layout.addWidget(stats_group, 1)
-
         splitter.addWidget(right)
         splitter.setSizes([1200, 400])
         layout.addWidget(splitter, 1)
@@ -490,12 +402,10 @@ class MainWindow(QMainWindow):
     def _create_control_bar(self):
         layout = QHBoxLayout()
         layout.setSpacing(15)
-
         self.status_indicator = QLabel("STANDBY")
         self.status_indicator.setStyleSheet("color: #ffaa00; font-size: 16px; font-weight: bold; padding: 5px 15px; border: 2px solid #ffaa00; border-radius: 4px;")
         layout.addWidget(self.status_indicator)
         layout.addSpacing(20)
-
         layout.addWidget(QLabel("MODE:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["PAPER", "LIVE"])
@@ -504,47 +414,38 @@ class MainWindow(QMainWindow):
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         layout.addWidget(self.mode_combo)
         layout.addSpacing(10)
-
         self.chk_auto_trade = QCheckBox("AUTO-TRADE")
         self.chk_auto_trade.setChecked(True)
         self.chk_auto_trade.setStyleSheet("color: #00ff88; font-weight: bold;")
         layout.addWidget(self.chk_auto_trade)
         layout.addSpacing(10)
-
         self.chk_autopilot = QCheckBox("AUTOPILOT")
         self.chk_autopilot.setChecked(True)
         self.chk_autopilot.setStyleSheet("color: #aa66ff; font-weight: bold;")
         layout.addWidget(self.chk_autopilot)
         layout.addSpacing(30)
-
-        self.btn_start = NeonButton("START NEURAL", "#00ff88")
+        self.btn_start = NeonButton("START", "#00ff88")
         self.btn_start.clicked.connect(self._on_start)
         layout.addWidget(self.btn_start)
-
         self.btn_stop = NeonButton("STOP", "#ff0044")
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self._on_stop)
         layout.addWidget(self.btn_stop)
-
         self.btn_pause = NeonButton("PAUSE", "#ffaa00")
         self.btn_pause.setEnabled(False)
         self.btn_pause.clicked.connect(self._on_pause)
         layout.addWidget(self.btn_pause)
-
         layout.addStretch()
-
         self.conn_status = QLabel("API: OFFLINE")
         self.conn_status.setStyleSheet("color: #ff0044; font-size: 12px;")
         layout.addWidget(self.conn_status)
-
         return layout
 
     def _create_dashboard_tab(self):
         w = QWidget()
         layout = QGridLayout(w)
         layout.setSpacing(15)
-
-        portfolio = QGroupBox("Neural Portfolio")
+        portfolio = QGroupBox("Portfolio")
         portfolio.setStyleSheet("QGroupBox { color: #00ff88; font-weight: bold; }")
         pl = QGridLayout(portfolio)
         self.dash_total_balance = QLabel("$0.00")
@@ -564,7 +465,6 @@ class MainWindow(QMainWindow):
             setattr(self, attr, lbl)
             pl.addWidget(lbl, (i // 2) + 1, i % 2)
         layout.addWidget(portfolio, 0, 0, 1, 2)
-
         signals = QGroupBox("Active Signals (Multi-TF)")
         signals.setStyleSheet("QGroupBox { color: #aa66ff; font-weight: bold; }")
         sl = QVBoxLayout(signals)
@@ -574,37 +474,14 @@ class MainWindow(QMainWindow):
         self.signals_table.setStyleSheet("QTableWidget { background: #0a0a0a; color: #ccc; border: 1px solid #333; }")
         sl.addWidget(self.signals_table)
         layout.addWidget(signals, 1, 0, 1, 2)
-
         market = QGroupBox("Market Pulse")
         market.setStyleSheet("QGroupBox { color: #00ccff; font-weight: bold; }")
         ml = QVBoxLayout(market)
         self.market_tree = QTreeWidget()
-        self.market_tree.setHeaderLabels(["Symbol", "Price", "24h %", "Volume", "Signal Strength"])
+        self.market_tree.setHeaderLabels(["Symbol", "Price", "24h %", "Volume", "Signal"])
         self.market_tree.setStyleSheet("QTreeWidget { background: #0a0a0a; color: #ccc; border: 1px solid #333; }")
         ml.addWidget(self.market_tree)
         layout.addWidget(market, 0, 2, 2, 1)
-
-        return w
-
-    def _create_neural_tab(self):
-        w = QWidget()
-        layout = QVBoxLayout(w)
-        info = QGroupBox("Neural Network Status")
-        info.setStyleSheet("QGroupBox { color: #aa66ff; font-weight: bold; }")
-        il = QGridLayout(info)
-        self.neural_status = QLabel("Status: STANDBY")
-        self.neural_status.setStyleSheet("color: #aa66ff; font-size: 16px;")
-        self.neural_model_age = QLabel("Model Age: -")
-        self.neural_accuracy = QLabel("Accuracy: -")
-        self.neural_features = QLabel("Features: 15")
-        for lbl in [self.neural_status, self.neural_model_age, self.neural_accuracy, self.neural_features]:
-            lbl.setStyleSheet("color: #ccc; font-size: 13px;")
-            il.addWidget(lbl)
-        layout.addWidget(info)
-        self.neural_log = QTextEdit()
-        self.neural_log.setReadOnly(True)
-        self.neural_log.setStyleSheet("background: #0a0a0a; color: #aa66ff; border: 1px solid #333;")
-        layout.addWidget(self.neural_log)
         return w
 
     def _create_positions_tab(self):
@@ -612,9 +489,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(w)
         self.positions_table = QTableWidget()
         self.positions_table.setColumnCount(10)
-        self.positions_table.setHorizontalHeaderLabels([
-            "Symbol", "Side", "Size", "Entry", "Mark", "SL", "TP", "P&L ($)", "P&L (%)", "Actions"
-        ])
+        self.positions_table.setHorizontalHeaderLabels(["Symbol", "Side", "Size", "Entry", "Mark", "SL", "TP", "P&L ($)", "P&L (%)", "Actions"])
         self.positions_table.setStyleSheet("QTableWidget { background: #0a0a0a; color: #ccc; }")
         mode = QHeaderView.ResizeMode.Stretch if PYQT_VER == 6 else QHeaderView.Stretch
         self.positions_table.horizontalHeader().setSectionResizeMode(mode)
@@ -635,17 +510,14 @@ class MainWindow(QMainWindow):
         self.scan_timeframe.addItems(["1m", "5m", "15m", "1h", "4h", "1d"])
         self.scan_timeframe.setCurrentText("15m")
         controls.addWidget(self.scan_timeframe)
-        self.btn_scan = NeonButton("NEURAL SCAN", "#aa66ff")
+        self.btn_scan = NeonButton("SCAN", "#aa66ff")
         self.btn_scan.clicked.connect(self._on_scan)
         controls.addWidget(self.btn_scan)
         controls.addStretch()
         layout.addLayout(controls)
-
         self.scanner_table = QTableWidget()
         self.scanner_table.setColumnCount(8)
-        self.scanner_table.setHorizontalHeaderLabels([
-            "Symbol", "Price", "24h Vol", "Trend", "RSI", "Signal", "Neural", "Regime"
-        ])
+        self.scanner_table.setHorizontalHeaderLabels(["Symbol", "Price", "24h Vol", "Trend", "RSI", "Signal", "Neural", "Regime"])
         self.scanner_table.setStyleSheet("QTableWidget { background: #0a0a0a; color: #ccc; }")
         mode = QHeaderView.ResizeMode.Stretch if PYQT_VER == 6 else QHeaderView.Stretch
         self.scanner_table.horizontalHeader().setSectionResizeMode(mode)
@@ -694,8 +566,7 @@ class MainWindow(QMainWindow):
         self.risk_max_leverage.setValue(10)
         ll.addRow("Max Leverage:", self.risk_max_leverage)
         layout.addWidget(limits, 0, 0)
-
-        sltp = QGroupBox("SL / TP / Trailing")
+        sltp = QGroupBox("SL / TP")
         sltp.setStyleSheet("QGroupBox { color: #ffaa00; font-weight: bold; }")
         sl = QFormLayout(sltp)
         self.risk_sl_default = QDoubleSpinBox()
@@ -718,7 +589,7 @@ class MainWindow(QMainWindow):
     def _create_performance_tab(self):
         w = QWidget()
         layout = QGridLayout(w)
-        perf = QGroupBox("Neural Performance")
+        perf = QGroupBox("Performance")
         perf.setStyleSheet("QGroupBox { color: #00ccff; font-weight: bold; }")
         pl = QFormLayout(perf)
         self.perf_scans = QLabel("Scans: 0")
@@ -731,7 +602,6 @@ class MainWindow(QMainWindow):
             lbl.setStyleSheet("color: #ccc; font-size: 14px;")
             pl.addRow(lbl)
         layout.addWidget(perf, 0, 0)
-
         adapt = QGroupBox("AutoPilot Log")
         adapt.setStyleSheet("QGroupBox { color: #aa66ff; font-weight: bold; }")
         al = QVBoxLayout(adapt)
@@ -740,7 +610,6 @@ class MainWindow(QMainWindow):
         self.autopilot_log.setStyleSheet("background: #0a0a0a; color: #aa66ff;")
         al.addWidget(self.autopilot_log)
         layout.addWidget(adapt, 0, 1, 2, 1)
-
         export_group = QGroupBox("Export")
         export_group.setStyleSheet("QGroupBox { color: #00ff88; font-weight: bold; }")
         el = QVBoxLayout(export_group)
@@ -756,7 +625,6 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         sw = QWidget()
         sl = QVBoxLayout(sw)
-
         api = QGroupBox("API Configuration")
         api.setStyleSheet("QGroupBox { color: #00ccff; font-weight: bold; }")
         al = QFormLayout(api)
@@ -773,7 +641,6 @@ class MainWindow(QMainWindow):
         self.api_testnet.setChecked(True)
         al.addRow("", self.api_testnet)
         sl.addWidget(api)
-
         trade = QGroupBox("Trading Parameters")
         trade.setStyleSheet("QGroupBox { color: #00ff88; font-weight: bold; }")
         tl = QFormLayout(trade)
@@ -792,7 +659,6 @@ class MainWindow(QMainWindow):
         self.set_auto = QCheckBox("Auto-Start on Launch")
         tl.addRow("", self.set_auto)
         sl.addWidget(trade)
-
         tg = QGroupBox("Telegram Alerts")
         tg.setStyleSheet("QGroupBox { color: #00ccff; font-weight: bold; }")
         tgl = QFormLayout(tg)
@@ -808,12 +674,10 @@ class MainWindow(QMainWindow):
         self.tg_chat_id.setPlaceholderText("Chat ID")
         tgl.addRow("Chat ID:", self.tg_chat_id)
         sl.addWidget(tg)
-
         btn_save = NeonButton("SAVE SETTINGS", "#00ff88")
         btn_save.clicked.connect(self._on_save_settings)
         sl.addWidget(btn_save)
         sl.addStretch()
-
         scroll.setWidget(sw)
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll)
@@ -828,15 +692,12 @@ class MainWindow(QMainWindow):
         file_menu.addAction("Export CSV", self._on_export_csv)
         file_menu.addSeparator()
         file_menu.addAction("Exit", self.close)
-
         bot_menu = menubar.addMenu("Bot")
         bot_menu.addAction("Start", self._on_start)
         bot_menu.addAction("Stop", self._on_stop)
         bot_menu.addAction("Pause", self._on_pause)
-
         view_menu = menubar.addMenu("View")
         view_menu.addAction("Clear Logs", self.log_widget.clear)
-
         help_menu = menubar.addMenu("Help")
         help_menu.addAction("About", self._on_about)
 
@@ -854,14 +715,13 @@ class MainWindow(QMainWindow):
     def _setup_statusbar(self):
         self.statusbar = QStatusBar()
         self.setStatusBar(self.statusbar)
-        self.statusbar.showMessage("Neural System Ready")
+        self.statusbar.showMessage("Ready")
         self.statusbar.setStyleSheet("color: #00ff88; background: #0a0a0a;")
 
     def _setup_timers(self):
         self.ui_timer = QTimer()
         self.ui_timer.timeout.connect(self._update_ui)
         self.ui_timer.start(1000)
-
         self.data_timer = QTimer()
         self.data_timer.timeout.connect(self._update_data)
         self.data_timer.start(5000)
@@ -944,8 +804,8 @@ class MainWindow(QMainWindow):
         self.settings.telegram_chat_id = self.tg_chat_id.text()
         self.settings.save()
         self._reinit_core()
-        self.append_log("Settings saved | Neural core reinitialized", 20)
-        QMessageBox.information(self, "Settings", "Saved successfully!")
+        self.append_log("Settings saved", 20)
+        QMessageBox.information(self, "Settings", "Saved!")
 
     def _reinit_core(self):
         from core.notifications import NotificationManager, NotificationConfig
@@ -957,7 +817,6 @@ class MainWindow(QMainWindow):
         from exchange.trade_executor import TradeExecutor
         from risk.risk_manager import RiskManager, RiskLimits
         from ml.ml_engine import MLEngine
-
         self.api_client.update_credentials(self.settings.api_key, self.settings.api_secret)
         limits = RiskLimits(
             max_position_size=self.settings.max_position_size,
@@ -990,7 +849,7 @@ class MainWindow(QMainWindow):
             self.worker.data_fetcher = self.data_fetcher
             self.worker.monitor = self.monitor
             self.worker.autopilot = self.autopilot
-        self.append_log("Neural core reinitialized", 20)
+        self.append_log("Core reinitialized", 20)
 
     def _on_mode_changed(self, text):
         is_paper = (text == "PAPER")
@@ -1005,26 +864,23 @@ class MainWindow(QMainWindow):
     def _on_start(self):
         if self.bot_running:
             return
-        if not self.settings.paper_trading:
+        if not self.executor.paper:
             if not self.settings.api_key or not self.settings.api_secret:
-                QMessageBox.warning(self, "API Keys", "Enter API keys in Settings for live trading")
+                QMessageBox.warning(self, "API Keys", "Enter API keys for live trading")
                 return
             reply = QMessageBox.question(self, "LIVE TRADING", "START LIVE TRADING WITH REAL MONEY?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No if PYQT_VER == 6 else QMessageBox.Yes | QMessageBox.No)
             if reply != (QMessageBox.StandardButton.Yes if PYQT_VER == 6 else QMessageBox.Yes):
                 return
 
-        # Fetch real balance before starting
-        if not self.settings.paper_trading and self.executor:
+        # Sync balance before start
+        if not self.executor.paper:
             try:
-                import asyncio
-                loop = asyncio.new_event_loop()
-                bal = loop.run_until_complete(self.executor.update_balance())
-                loop.close()
+                bal = self.executor.update_balance_sync()
                 self._on_balance_update(bal, bal)
                 self.append_log("Balance synced: $%.2f" % bal, 20)
             except Exception as e:
-                self.append_log("Balance sync error: %s" % e, 30)
+                self.append_log("Balance sync failed: %s" % e, 30)
 
         self.bot_running = True
         self.start_time = datetime.now()
@@ -1034,7 +890,7 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(True)
         self.btn_pause.setEnabled(True)
         self.append_log("Neural system ACTIVATED", 20)
-        if not self.settings.paper_trading:
+        if not self.executor.paper:
             self.append_log("!!! LIVE MODE - REAL MONEY !!!", 40)
 
         self.worker = BotWorker(
@@ -1051,7 +907,6 @@ class MainWindow(QMainWindow):
         self.worker.signal_scan_done.connect(self._on_scan_done)
         self.worker.signal_performance.connect(self._on_performance_update)
         self.worker.signal_health.connect(self._on_health_update)
-        self.worker.signal_neural.connect(self._on_neural_signal)
         self.worker.start()
         self._test_api()
 
@@ -1065,14 +920,14 @@ class MainWindow(QMainWindow):
                 if isinstance(result, dict) and result.get("code") == 0:
                     self.conn_status.setText("API: ONLINE")
                     self.conn_status.setStyleSheet("color: #00ff88; font-size: 12px;")
-                    self.append_log("API connection established", 20)
+                    self.append_log("API connected", 20)
                 else:
                     self.conn_status.setText("API: ERROR")
                     self.conn_status.setStyleSheet("color: #ff0044; font-size: 12px;")
             except Exception as e:
                 self.conn_status.setText("API: OFFLINE")
                 self.conn_status.setStyleSheet("color: #ff0044; font-size: 12px;")
-                self.append_log("API connection failed: %s" % e, 40)
+                self.append_log("API failed: %s" % e, 40)
 
     def _on_balance_update(self, balance, available):
         self.lbl_balance.setText("$%.2f" % balance)
@@ -1121,16 +976,6 @@ class MainWindow(QMainWindow):
         self.lbl_api_latency.setText("API: %.0fms" % health.get("avg_api_latency", 0))
         self.lbl_error_rate.setText("Errors: %d total" % health.get("total_errors", 0))
         self.perf_health.setText("Health: %d%%" % score)
-
-    def _on_neural_signal(self, data):
-        self.neural_log.append("[%s] %s | conf=%.2f neural=%.2f | %s | %s" % (
-            datetime.now().strftime("%H:%M:%S"),
-            data.get("symbol", ""),
-            data.get("confidence", 0),
-            data.get("neural_score", 0),
-            data.get("regime", "unknown"),
-            data.get("multi_tf", "")
-        ))
 
     def _on_stop(self):
         if not self.bot_running:
@@ -1184,7 +1029,7 @@ class MainWindow(QMainWindow):
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                         loop.run_until_complete(self.scanner.load_symbols(self.count))
-                        signals = loop.run_until_complete(self.scanner.scan_all(self.timeframe))
+                        signals = loop.run_until_complete(self.scanner.scan_all(self.timeframe, min_confidence=0.3))
                         loop.close()
                         self.done.emit(signals)
                     except Exception as e:
@@ -1193,7 +1038,7 @@ class MainWindow(QMainWindow):
             self._scan_thread = ScanThread(self.scanner, self.scan_symbols.value(), self.scan_timeframe.currentText())
             self._scan_thread.done.connect(self._on_scan_done)
             self._scan_thread.log.connect(self.append_log)
-            self._scan_thread.finished.connect(lambda: (self.btn_scan.setEnabled(True), self.btn_scan.setText("NEURAL SCAN")))
+            self._scan_thread.finished.connect(lambda: (self.btn_scan.setEnabled(True), self.btn_scan.setText("SCAN")))
             self._scan_thread.start()
         else:
             self.append_log("Scanner not ready", 40)
@@ -1226,7 +1071,7 @@ class MainWindow(QMainWindow):
                 writer.writerow(["Time", "Symbol", "Side", "Qty", "Price", "P&L", "Status"])
                 for o in self.executor.orders:
                     writer.writerow([o.fill_time, o.symbol, o.position_side, o.quantity, o.fill_price, o.pnl, o.status.value])
-            self.append_log("Exported %d trades to %s" % (len(self.executor.orders), path), 20)
+            self.append_log("Exported %d trades" % len(self.executor.orders), 20)
             QMessageBox.information(self, "Export", "Trades exported!")
         except Exception as e:
             self.append_log("Export error: %s" % e, 40)
@@ -1242,17 +1087,7 @@ class MainWindow(QMainWindow):
     def _on_about(self):
         QMessageBox.about(self, "About",
             "<h2 style='color:#00ff88'>CryptoBot v9.0</h2>"
-            "<p style='color:#ccc'>Neural Adaptive Trading System</p>"
-            "<ul style='color:#aaa'>"
-            "<li>Multi-timeframe analysis (15m + 1h + 4h)</li>"
-            "<li>Real-time neural scoring</li>"
-            "<li>AutoPilot self-adaptation</li>"
-            "<li>Market regime detection</li>"
-            "<li>Partial TP + Breakeven SL</li>"
-            "<li>Circuit breaker API protection</li>"
-            "<li>System health monitoring</li>"
-            "<li>WebSocket price streams</li>"
-            "</ul>")
+            "<p style='color:#ccc'>Neural Adaptive Trading System</p>")
 
     def _update_ui(self):
         if self.start_time and self.bot_running:
