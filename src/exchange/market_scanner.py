@@ -10,7 +10,10 @@ import numpy as np
 
 from exchange.data_fetcher import DataFetcher
 from strategies.strategies import StrategyManager, Signal
-from ml.ml_engine import MLEngine
+try:
+    from ml.ml_engine import MLEngine
+except ImportError:
+    MLEngine = None
 
 class MarketScanner:
     def __init__(self, data_fetcher: DataFetcher = None,
@@ -19,7 +22,7 @@ class MarketScanner:
                  max_workers: int = 4):
         self.data_fetcher = data_fetcher or DataFetcher()
         self.strategies = strategy_manager or StrategyManager()
-        self.ml = ml_engine or MLEngine()
+        self.ml = ml_engine or (MLEngine() if MLEngine else None)
         self.logger = logging.getLogger("CryptoBot.Scanner")
         self.max_workers = max_workers
         self.symbols: List[str] = []

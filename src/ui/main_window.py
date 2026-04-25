@@ -291,50 +291,69 @@ class MainWindow(QMainWindow):
                     self.append_log(line, 40)
 
     def _init_core(self):
-        from core.settings import BotSettings
-        from core.state_manager import StateManager
-        from core.notifications import NotificationManager, NotificationConfig
-        from core.monitor import SystemMonitor
-        from core.autopilot import AutoPilot
-        from exchange.api_client import BingXAPIClient
-        from exchange.data_fetcher import DataFetcher
-        from exchange.market_scanner import MarketScanner
-        from exchange.trade_executor import TradeExecutor
-        from risk.risk_manager import RiskManager, RiskLimits
-        from ml.ml_engine import MLEngine
-        self.settings = BotSettings.load()
-        self.state_manager = StateManager()
-        self.monitor = SystemMonitor()
-        self.autopilot = AutoPilot()
-        self.api_client = BingXAPIClient(
-            api_key=self.settings.api_key, api_secret=self.settings.api_secret,
-            base_url=self.settings.base_url, testnet=self.settings.testnet
-        )
-        self.data_fetcher = DataFetcher(api_client=self.api_client)
-        limits = RiskLimits(
-            max_position_size=self.settings.max_position_size,
-            max_risk_per_trade=self.settings.max_risk_per_trade,
-            max_leverage=self.settings.max_leverage,
-            max_daily_loss=self.settings.max_daily_loss,
-            default_sl_percent=self.settings.default_sl,
-            default_tp_percent=self.settings.default_tp
-        )
-        self.risk_manager = RiskManager(limits=limits)
-        ml = MLEngine()
-        notif_config = NotificationConfig(
-            telegram_enabled=self.settings.telegram_enabled,
-            telegram_token=self.settings.telegram_token,
-            telegram_chat_id=self.settings.telegram_chat_id
-        )
-        self.notifier = NotificationManager(config=notif_config)
-        self.executor = TradeExecutor(
-            api_client=self.api_client, risk_manager=self.risk_manager,
-            paper_trading=self.settings.paper_trading, balance=10000.0,
-            notifier=self.notifier
-        )
-        self.scanner = MarketScanner(data_fetcher=self.data_fetcher, ml_engine=ml, max_workers=4)
-        mode = "PAPER" if self.settings.paper_trading else "LIVE"
-        self.append_log("Core ready | Mode=%s" % mode, 20)
+        try:
+            from core.settings import BotSettings
+            from core.state_manager import StateManager
+            from core.notifications import NotificationManager, NotificationConfig
+            from core.monitor import SystemMonitor
+            from core.autopilot import AutoPilot
+            from exchange.api_client import BingXAPIClient
+            from exchange.data_fetcher import DataFetcher
+            from exchange.market_scanner import MarketScanner
+            from exchange.trade_executor import TradeExecutor
+            from risk.risk_manager import RiskManager, RiskLimits
+            self.append_log("Loading core modules...", 20)
+            self.settings = BotSettings.load()
+            self.append_log("Settings loaded", 20)
+            self.state_manager = StateManager()
+            self.monitor = SystemMonitor()
+            self.autopilot = AutoPilot()
+            self.api_client = BingXAPIClient(
+                api_key=self.settings.api_key, api_secret=self.settings.api_secret,
+                base_url=self.settings.base_url, testnet=self.settings.testnet
+            )
+            self.append_log("API client created", 20)
+            self.data_fetcher = DataFetcher(api_client=self.api_client)
+            self.append_log("Data fetcher ready", 20)
+            limits = RiskLimits(
+                max_position_size=self.settings.max_position_size,
+                max_risk_per_trade=self.settings.max_risk_per_trade,
+                max_leverage=self.settings.max_leverage,
+                max_daily_loss=self.settings.max_daily_loss,
+                default_sl_percent=self.settings.default_sl,
+                default_tp_percent=self.settings.default_tp
+            )
+            self.risk_manager = RiskManager(limits=limits)
+            self.append_log("Risk manager ready", 20)
+            # Try to load ML, fallback if not available
+            ml = None
+            try:
+                from ml.ml_engine import MLEngine
+                ml = MLEngine()
+                self.append_log("ML engine loaded", 20)
+            except Exception as e:
+                self.append_log("ML engine skipped: %s" % e, 30)
+            notif_config = NotificationConfig(
+                telegram_enabled=self.settings.telegram_enabled,
+                telegram_token=self.settings.telegram_token,
+                telegram_chat_id=self.settings.telegram_chat_id
+            )
+            self.notifier = NotificationManager(config=notif_config)
+            self.executor = TradeExecutor(
+                api_client=self.api_client, risk_manager=self.risk_manager,
+                paper_trading=self.settings.paper_trading, balance=10000.0,
+                notifier=self.notifier
+            )
+            self.append_log("Trade executor ready", 20)
+            self.scanner = MarketScanner(data_fetcher=self.data_fetcher, ml_engine=ml, max_workers=4)
+            self.append_log("Market scanner ready", 20)
+            mode = "PAPER" if self.settings.paper_trading else "LIVE"
+            self.append_log("Core ready | Mode=%s" % mode, 20)
+        except Exception as e:
+            self.append_log("CRITICAL: Core init failed: %s" % e, 40)
+            import traceback
+            self.append_log(traceback.format_exc(), 40)
+            raise
 
     def _setup_ui(self):
         central = QWidget()
@@ -808,48 +827,57 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Settings", "Saved!")
 
     def _reinit_core(self):
-        from core.notifications import NotificationManager, NotificationConfig
-        from core.monitor import SystemMonitor
-        from core.autopilot import AutoPilot
-        from exchange.api_client import BingXAPIClient
-        from exchange.data_fetcher import DataFetcher
-        from exchange.market_scanner import MarketScanner
-        from exchange.trade_executor import TradeExecutor
-        from risk.risk_manager import RiskManager, RiskLimits
-        from ml.ml_engine import MLEngine
-        self.api_client.update_credentials(self.settings.api_key, self.settings.api_secret)
-        limits = RiskLimits(
-            max_position_size=self.settings.max_position_size,
-            max_risk_per_trade=self.settings.max_risk_per_trade,
-            max_leverage=self.settings.max_leverage,
-            max_daily_loss=self.settings.max_daily_loss,
-            default_sl_percent=self.settings.default_sl,
-            default_tp_percent=self.settings.default_tp
-        )
-        self.risk_manager = RiskManager(limits=limits)
-        notif_config = NotificationConfig(
-            telegram_enabled=self.settings.telegram_enabled,
-            telegram_token=self.settings.telegram_token,
-            telegram_chat_id=self.settings.telegram_chat_id
-        )
-        self.notifier = NotificationManager(config=notif_config)
-        self.executor = TradeExecutor(
-            api_client=self.api_client, risk_manager=self.risk_manager,
-            paper_trading=self.settings.paper_trading, balance=10000.0,
-            notifier=self.notifier
-        )
-        self.data_fetcher = DataFetcher(api_client=self.api_client)
-        ml = MLEngine()
-        self.scanner = MarketScanner(data_fetcher=self.data_fetcher, ml_engine=ml, max_workers=4)
-        self.monitor = SystemMonitor()
-        self.autopilot = AutoPilot()
-        if self.worker:
-            self.worker.executor = self.executor
-            self.worker.scanner = self.scanner
-            self.worker.data_fetcher = self.data_fetcher
-            self.worker.monitor = self.monitor
-            self.worker.autopilot = self.autopilot
-        self.append_log("Core reinitialized", 20)
+        try:
+            from core.notifications import NotificationManager, NotificationConfig
+            from core.monitor import SystemMonitor
+            from core.autopilot import AutoPilot
+            from exchange.api_client import BingXAPIClient
+            from exchange.data_fetcher import DataFetcher
+            from exchange.market_scanner import MarketScanner
+            from exchange.trade_executor import TradeExecutor
+            from risk.risk_manager import RiskManager, RiskLimits
+            self.api_client.update_credentials(self.settings.api_key, self.settings.api_secret)
+            limits = RiskLimits(
+                max_position_size=self.settings.max_position_size,
+                max_risk_per_trade=self.settings.max_risk_per_trade,
+                max_leverage=self.settings.max_leverage,
+                max_daily_loss=self.settings.max_daily_loss,
+                default_sl_percent=self.settings.default_sl,
+                default_tp_percent=self.settings.default_tp
+            )
+            self.risk_manager = RiskManager(limits=limits)
+            notif_config = NotificationConfig(
+                telegram_enabled=self.settings.telegram_enabled,
+                telegram_token=self.settings.telegram_token,
+                telegram_chat_id=self.settings.telegram_chat_id
+            )
+            self.notifier = NotificationManager(config=notif_config)
+            self.executor = TradeExecutor(
+                api_client=self.api_client, risk_manager=self.risk_manager,
+                paper_trading=self.settings.paper_trading, balance=10000.0,
+                notifier=self.notifier
+            )
+            self.data_fetcher = DataFetcher(api_client=self.api_client)
+            ml = None
+            try:
+                from ml.ml_engine import MLEngine
+                ml = MLEngine()
+            except Exception:
+                pass
+            self.scanner = MarketScanner(data_fetcher=self.data_fetcher, ml_engine=ml, max_workers=4)
+            self.monitor = SystemMonitor()
+            self.autopilot = AutoPilot()
+            if self.worker:
+                self.worker.executor = self.executor
+                self.worker.scanner = self.scanner
+                self.worker.data_fetcher = self.data_fetcher
+                self.worker.monitor = self.monitor
+                self.worker.autopilot = self.autopilot
+            self.append_log("Core reinitialized", 20)
+        except Exception as e:
+            self.append_log("Reinit error: %s" % e, 40)
+            import traceback
+            self.append_log(traceback.format_exc(), 40)
 
     def _on_mode_changed(self, text):
         is_paper = (text == "PAPER")
@@ -863,6 +891,10 @@ class MainWindow(QMainWindow):
 
     def _on_start(self):
         if self.bot_running:
+            return
+        if self.executor is None:
+            self.append_log("ERROR: Executor not initialized. Check core init logs.", 40)
+            QMessageBox.critical(self, "Error", "Bot core not initialized.\nCheck logs for details.")
             return
         if not self.executor.paper:
             if not self.settings.api_key or not self.settings.api_secret:
