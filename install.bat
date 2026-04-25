@@ -1,11 +1,10 @@
 @echo off
-chcp 65001 >nul
-title CryptoBot v9.0 - Installation
+title CryptoBot v9.0 - Installer
 color 0E
 
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║        CryptoBot v9.0 - Neural System Installer              ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ==========================================
+echo  CryptoBot v9.0 - Installer
+echo ==========================================
 echo.
 
 python --version >nul 2>&1
@@ -28,9 +27,9 @@ python -c "import os; [os.makedirs(d, exist_ok=True) for d in ['logs','data/stat
 echo.
 echo [OK] Installation complete!
 echo.
-echo Available launchers:
+echo Launchers:
 echo   run.bat       - Headless paper trading
-echo   run_live.bat  - Headless LIVE trading (REAL MONEY!)
+echo   run_live.bat  - Headless LIVE trading
 echo   run_gui.bat   - Neural GUI
 echo.
 pause

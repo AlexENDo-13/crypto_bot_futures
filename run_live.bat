@@ -1,14 +1,14 @@
 @echo off
-chcp 65001 >nul
 title CryptoBot v9.0 - LIVE NEURAL MODE
 color 0C
 
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║     CryptoBot v9.0 - LIVE TRADING (REAL MONEY!)              ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ==========================================
+echo  CryptoBot v9.0 - LIVE TRADING
+echo  REAL MONEY WARNING!
+echo ==========================================
 echo.
-echo [!] WARNING: This will trade with REAL money on BingX!
-echo [!] Make sure API keys are configured in config/settings.json
+echo [!] WARNING: This will trade with REAL money!
+echo [!] Make sure API keys are in config/settings.json
 echo.
 
 python --version >nul 2>&1

@@ -1,12 +1,11 @@
 @echo off
-chcp 65001 >nul
 title CryptoBot v9.0 - Neural Headless
 color 0A
 
-echo ╔══════════════════════════════════════════════════════════════╗
-echo ║     CryptoBot v9.0 - Neural Adaptive Trading System          ║
-echo ║                    HEADLESS MODE                             ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ==========================================
+echo  CryptoBot v9.0 - Neural Adaptive System
+echo  HEADLESS MODE
+echo ==========================================
 echo.
 
 python --version >nul 2>&1

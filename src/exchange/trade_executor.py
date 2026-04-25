@@ -69,7 +69,7 @@ class TradeExecutor:
         self.max_hold_time = timedelta(hours=4)
         self.funding_check_enabled = True
         self.max_funding_rate = 0.001
-        self.neural_trailing_pct = 0.5  # Neural trailing stop %
+        self.neural_trailing_pct = 0.5
 
         self.logger.info("TradeExecutor v9.0 | paper=%s balance=$%.2f", paper_trading, balance)
 
@@ -77,8 +77,8 @@ class TradeExecutor:
     def balance(self) -> float:
         if not self.paper and self.api:
             try:
-                bal = asyncio.run(self.api.get_balance()) if asyncio.iscoroutinefunction(self.api.get_balance) else self.api.get_balance()
-                if bal.get("code") == 0:
+                bal = self.api.get_balance()
+                if isinstance(bal, dict) and bal.get("code") == 0:
                     data = bal.get("data", {})
                     avail = float(data.get("available", 0))
                     if avail > 0:
@@ -105,7 +105,7 @@ class TradeExecutor:
             return {"price_precision": 2, "qty_precision": 4, "min_qty": 0.001, "volume_24h": 0}
 
         try:
-            symbols = asyncio.run(self.api.get_symbols()) if asyncio.iscoroutinefunction(self.api.get_symbols) else self.api.get_symbols()
+            symbols = self.api.get_symbols()
             self._symbol_info_cache = {}
             for s in symbols:
                 sym = s.get("symbol", "")
@@ -127,8 +127,8 @@ class TradeExecutor:
         if not self.funding_check_enabled or not self.api:
             return True
         try:
-            resp = await self.api.get_funding_rate(symbol) if asyncio.iscoroutinefunction(self.api.get_funding_rate) else self.api.get_funding_rate(symbol)
-            if resp.get("code") == 0:
+            resp = await self.api.get_funding_rate(symbol)
+            if isinstance(resp, dict) and resp.get("code") == 0:
                 data = resp.get("data", {})
                 rate = float(data.get("lastFundingRate", 0))
                 if abs(rate) > self.max_funding_rate:
@@ -158,79 +158,79 @@ class TradeExecutor:
                 return None
 
             current_balance = self.balance
-            Can_Trade, reason = self.Risk.can_open_position(
+            can_trade, reason = self.risk.can_open_position(
                 symbol, position_side, 1.0, entry_price,
                 leverage=self.risk.limits.max_leverage,
                 balance=current_balance
             )
-            if not Can_Trade:
+            if not can_trade:
                 self.logger.info("Trade rejected: %s - %s", symbol, reason)
                 return None
 
             sym_info = self._get_symbol_info(symbol)
-            Volume_24h = sym_info.get("volume_24h", 0)
+            volume_24h = sym_info.get("volume_24h", 0)
             min_qty = sym_info.get("min_qty", 0.001)
             qty_precision = sym_info.get("qty_precision", 4)
 
-            if Volume_24h < 50000 and not self.paper:
-                self.logger.info("Trade rejected: %s - Low 24h volume %.2f", symbol, Volume_24h)
+            if volume_24h < 50000 and not self.paper:
+                self.logger.info("Trade rejected: %s - low 24h volume %.2f", symbol, volume_24h)
                 return None
 
-            sl_price = entry_price * (1 - self.risk.Limits.default_sl_percent / 100) if position_side == "LONG" else entry_price * (1 + self.risk.Limits.default_sl_percent / 100)
-            size = self.Risk.calculate_position_size(entry_price, sl_price, current_balance)
-            Size = round(Size, qty_precision)
-            position_value = Size * entry_price
+            sl_price = entry_price * (1 - self.risk.limits.default_sl_percent / 100) if position_side == "LONG" else entry_price * (1 + self.risk.limits.default_sl_percent / 100)
+            size = self.risk.calculate_position_size(entry_price, sl_price, current_balance)
+            size = round(size, qty_precision)
+            position_value = size * entry_price
 
-            if Size <= 0 or Size < min_qty or positionValue < 5.0:
-                self.logger.Warning("Trade rejected: %s - size too small (%.6f, min %.6f)", symbol, Size, min_qty)
+            if size <= 0 or size < min_qty or position_value < 5.0:
+                self.logger.warning("Trade rejected: %s - size too small (%.6f, min %.6f)", symbol, size, min_qty)
                 return None
 
             order = Order(
                 symbol=symbol, side=side, position_side=position_side,
-                order_type="MARKET", quantity=Size,
-                leverage=self.Risk.Limits.max_leverage,
+                order_type="MARKET", quantity=size,
+                leverage=self.risk.limits.max_leverage,
                 metadata={
                     "confidence": getattr(signal, "confidence", 0),
                     "strategy": getattr(signal, "strategy", "unknown"),
-                    "volume_24h": Volume_24h,
+                    "volume_24h": volume_24h,
                     "regime": getattr(signal, "metadata", {}).get("regime", "unknown") if hasattr(signal, "metadata") and signal.metadata else "unknown"
                 }
             )
 
-            if self.Paper:
+            if self.paper:
                 return await self._execute_paper(order, entry_price)
             else:
                 return await self._execute_live(order)
 
     async def _execute_paper(self, order: Order, price: float) -> Order:
-        self.Order_counter += 1
-        order.Order_id = "PAPER_%d" % self.Order_counter
+        self.order_counter += 1
+        order.order_id = "PAPER_%d" % self.order_counter
         order.status = OrderStatus.FILLED
         order.fill_price = price
         order.fill_time = datetime.now().isoformat()
 
-        Margin = (order.quantity * price) / order.leverage
+        margin = (order.quantity * price) / order.leverage
 
-        tp1 = price * (1 + self.risk.Limits.default_tp_percent / 100) if order.position_side == "LONG" else price * (1 - self.risk.Limits.default_tp_percent / 100)
-        tp2 = price * (1 + self.risk.Limits.default_tp_percent * 1.5 / 100) if order.position_side == "LONG" else price * (1 - self.risk.Limits.default_tp_percent * 1.5 / 100)
+        tp1 = price * (1 + self.risk.limits.default_tp_percent / 100) if order.position_side == "LONG" else price * (1 - self.risk.limits.default_tp_percent / 100)
+        tp2 = price * (1 + self.risk.limits.default_tp_percent * 1.5 / 100) if order.position_side == "LONG" else price * (1 - self.risk.limits.default_tp_percent * 1.5 / 100)
 
         position = Position(
             symbol=order.symbol, side=order.position_side, size=order.quantity,
             entry_price=price, leverage=order.leverage,
-            stop_loss=price * (1 - self.risk.Limits.default_sl_percent / 100) if order.position_side == "LONG" else price * (1 + self.Risk.Limits.default_sl_percent / 100),
+            stop_loss=price * (1 - self.risk.limits.default_sl_percent / 100) if order.position_side == "LONG" else price * (1 + self.risk.limits.default_sl_percent / 100),
             take_profit=tp1, margin=margin
         )
         position.metadata = {"tp2": tp2, "partial_closed": False, "breakeven_set": False, "open_time": datetime.now()}
 
         self.positions[order.symbol] = position
-        self.Risk.add_position(position)
-        self.Orders.append(order)
+        self.risk.add_position(position)
+        self.orders.append(order)
         self._balance -= margin
 
         self.logger.info("Paper trade: %s %s qty=%.4f @ $%.2f margin=$%.2f", 
-                         order.symbol, order.position_side, order.quantity, price, Margin)
+                         order.symbol, order.position_side, order.quantity, price, margin)
         if self.notifier:
-            self.notifier.send_trade_open(Order.symbol, order.position_side, price, order.quantity)
+            self.notifier.send_trade_open(order.symbol, order.position_side, price, order.quantity)
         return order
 
     async def _execute_live(self, order: Order) -> Order:
@@ -252,21 +252,21 @@ class TradeExecutor:
             price=order.price, stop_price=order.stop_price, leverage=order.leverage
         )
 
-        if result.get("code") == 0:
+        if isinstance(result, dict) and result.get("code") == 0:
             data = result.get("data", {})
-            order.Order_id = str(data.get("orderId", data.get("order_id", "")))
+            order.order_id = str(data.get("orderId", data.get("order_id", "")))
             order.status = OrderStatus.FILLED
             order.fill_price = float(data.get("avgPrice", data.get("price", 0)))
             order.fill_time = datetime.now().isoformat()
 
-            Margin = (order.quantity * order.fill_price) / order.leverage
-            tp1 = order.fill_price * (1 + self.risk.Limits.default_tp_percent / 100) if order.position_side == "LONG" else order.fill_price * (1 - self.risk.Limits.Limits.default_tp_percent / 100)
-            tp2 = order.fill_price * (1 + self.risk.Limits.default_tp_percent * 1.5 / 100) if order.position_side == "LONG" else order.fill_price * (1 - self.Risk.Limits.default_tp_percent * 1.5 / 100)
+            margin = (order.quantity * order.fill_price) / order.leverage
+            tp1 = order.fill_price * (1 + self.risk.limits.default_tp_percent / 100) if order.position_side == "LONG" else order.fill_price * (1 - self.risk.limits.default_tp_percent / 100)
+            tp2 = order.fill_price * (1 + self.risk.limits.default_tp_percent * 1.5 / 100) if order.position_side == "LONG" else order.fill_price * (1 - self.risk.limits.default_tp_percent * 1.5 / 100)
 
             position = Position(
-                symbol=order.symbol, side=order.position_side, size=order.order_quantity,
+                symbol=order.symbol, side=order.position_side, size=order.quantity,
                 entry_price=order.fill_price, leverage=order.leverage,
-                stop_loss=Order.fill_price * (1 - self.risk.Limits.default_sl_percent / 100) if order.position_side == "LONG" else order.fill_price * (1 + self.Risk.Limits.default_sl_percent / 100),
+                stop_loss=order.fill_price * (1 - self.risk.limits.default_sl_percent / 100) if order.position_side == "LONG" else order.fill_price * (1 + self.risk.limits.default_sl_percent / 100),
                 take_profit=tp1, margin=margin
             )
             position.metadata = {"tp2": tp2, "partial_closed": False, "breakeven_set": False, "open_time": datetime.now()}
@@ -274,15 +274,15 @@ class TradeExecutor:
             self.positions[order.symbol] = position
             self.risk.add_position(position)
 
-            self.logger.info("LIVE filled: %s @ $%.2f", order.Order_id, order.fill_price)
+            self.logger.info("LIVE filled: %s @ $%.2f", order.order_id, order.fill_price)
             if self.notifier:
                 self.notifier.send_trade_open(order.symbol, order.position_side, order.fill_price, order.quantity)
         else:
             order.status = OrderStatus.REJECTED
-            err = result.get("msg", result.get("message", "unknown"))
+            err = result.get("msg", result.get("message", "unknown")) if isinstance(result, dict) else str(result)
             self.logger.error("LIVE rejected: %s", err)
 
-        self.Orders.append(order)
+        self.orders.append(order)
         return order
 
     async def close_position(self, symbol: str, price: float = 0, close_pct: float = 1.0) -> Optional[Order]:
@@ -292,7 +292,7 @@ class TradeExecutor:
         async with self._lock:
             position = self.positions[symbol]
             close_qty = round(position.size * close_pct, 6)
-            if Close_Qty <= 0:
+            if close_qty <= 0:
                 return None
 
             order = Order(
@@ -304,135 +304,137 @@ class TradeExecutor:
             )
 
             if self.paper:
-                Close_price = price or position.entry_price
+                close_price = price or position.entry_price
                 pnl = position.calculate_pnl(close_price) * close_pct
                 order.status = OrderStatus.FILLED
-                Order.fill_price = Close_price
-                Order.pnl = pnl
-                Order.fill_time = datetime.now().isoformat()
+                order.fill_price = close_price
+                order.pnl = pnl
+                order.fill_time = datetime.now().isoformat()
 
                 if close_pct >= 0.99:
-                    self.risk.remove_position(symbol, Close_price)
+                    self.risk.remove_position(symbol, close_price)
                     del self.positions[symbol]
                 else:
-                    position.size -= Close_Qty
+                    position.size -= close_qty
                     position.margin = (position.size * position.entry_price) / position.leverage
 
                 self._balance += (position.margin * close_pct) + pnl
                 self.logger.info("Paper close: %s %.1f%% P&L=$%+.2f balance=$%.2f", 
                                  symbol, close_pct*100, pnl, self._balance)
                 if self.notifier:
-                    self.notifier.send_trade_close(symbol, position.side, position.entry_price, Close_price, pnl)
+                    self.notifier.send_trade_close(symbol, position.side, position.entry_price, close_price, pnl)
             else:
                 if self.api:
-                    result = await self.api.close_position(symbol, position.side, Close_Qty)
-                    if result.get("code") == 0:
-                        Order.status = OrderStatus.FILLED
+                    result = await self.api.close_position(symbol, position.side, close_qty)
+                    if isinstance(result, dict) and result.get("code") == 0:
+                        order.status = OrderStatus.FILLED
                         data = result.get("data", {})
-                        Order.fill_price = float(data.get("avgPrice", data.get("price", 0)))
-                        Order.fill_time = datetime.now().isoformat()
-                        pnl = position.calculate_pnl(Order.fill_price) * close_pct
-                        Order.pnl = pnl
+                        order.fill_price = float(data.get("avgPrice", data.get("price", 0)))
+                        order.fill_time = datetime.now().isoformat()
+                        pnl = position.calculate_pnl(order.fill_price) * close_pct
+                        order.pnl = pnl
 
-                        if Close_pct >= 0.99:
-                            self.Risk.remove_position(symbol, Order.fill_price)
+                        if close_pct >= 0.99:
+                            self.risk.remove_position(symbol, order.fill_price)
                             del self.positions[symbol]
-                        Else:
-                            position.size -= Close_Qty
+                        else:
+                            position.size -= close_qty
                             position.margin = (position.size * position.entry_price) / position.leverage
 
                         self.logger.info("LIVE close: %s %.1f%% P&L=$%+.2f", 
-                                         symbol, Close_pct*100, pnl)
+                                         symbol, close_pct*100, pnl)
                         if self.notifier:
-                            self.Notifier.send_trade_close(symbol, position.side, position.entry_price, Order.fill_price, pnl)
-                    Else:
-                        Order.status = OrderStatus.REJECTED
-                        self.logger.error("Close failed: %s", result.get("msg", "unknown"))
+                            self.notifier.send_trade_close(symbol, position.side, position.entry_price, order.fill_price, pnl)
+                    else:
+                        order.status = OrderStatus.REJECTED
+                        err = result.get("msg", "unknown") if isinstance(result, dict) else str(result)
+                        self.logger.error("Close failed: %s", err)
 
-            self.Orders.append(Order)
-            return Order
+            self.orders.append(order)
+            return order
 
     async def update_positions(self, prices: Dict[str, float]):
-        self.Risk.update_positions(prices)
+        self.risk.update_positions(prices)
         now = datetime.now()
 
-        for Symbol, position in list(self.positions.items()):
-            if Symbol not in prices:
+        for symbol, position in list(self.positions.items()):
+            if symbol not in prices:
                 continue
-            price = prices[Symbol]
+            price = prices[symbol]
 
             # Neural trailing stop
-            neural_sl = price * (1 - self.Neural_trailing_pct / 100) if position.side == "LONG" else price * (1 + self.neural_trailing_pct / 100)
-            if (position.side == "LONG" and neural_sl > position.stop_loss) or                (position.side == "SHORT" and neural_sl < position.stop_loss):
+            neural_sl = price * (1 - self.neural_trailing_pct / 100) if position.side == "LONG" else price * (1 + self.neural_trailing_pct / 100)
+            if (position.side == "LONG" and neural_sl > position.stop_loss) or \
+               (position.side == "SHORT" and neural_sl < position.stop_loss):
                 position.stop_loss = neural_sl
 
             # Partial TP logic
             meta = getattr(position, "metadata", {}) or {}
             tp2 = meta.get("tp2", 0)
             partial_closed = meta.get("partial_closed", False)
-            breakeven_set = meta.Get("breakeven_set", False)
-            open_time = meta.Get("open_time", now)
+            breakeven_set = meta.get("breakeven_set", False)
+            open_time = meta.get("open_time", now)
 
             if self.partial_tp_enabled and not partial_closed:
                 if position.side == "LONG" and price >= position.take_profit:
-                    self.logger.info("TP1 hit: %s - Closing %.0f%%", Symbol, self.partial_tp1_pct * 100)
-                    await self.Close_Position(Symbol, price, self.partial_tp1_pct)
+                    self.logger.info("TP1 hit: %s - closing %.0f%%", symbol, self.partial_tp1_pct * 100)
+                    await self.close_position(symbol, price, self.partial_tp1_pct)
                     position.metadata["partial_closed"] = True
                     if self.breakeven_after_tp1 and not breakeven_set:
                         position.stop_loss = position.entry_price
                         position.metadata["breakeven_set"] = True
-                        self.logger.info("Breakeven SL set for %s", Symbol)
-                elif Position.side == "SHORT" and price <= position.take_profit:
-                    self.logger.info("TP1 hit: %s - Closing %.0f%%", Symbol, self.partial_tp1_pct * 100)
-                    await self.Close_Position(Symbol, price, Self.partial_tp1_pct)
+                        self.logger.info("Breakeven SL set for %s", symbol)
+                elif position.side == "SHORT" and price <= position.take_profit:
+                    self.logger.info("TP1 hit: %s - closing %.0f%%", symbol, self.partial_tp1_pct * 100)
+                    await self.close_position(symbol, price, self.partial_tp1_pct)
                     position.metadata["partial_closed"] = True
-                    if self.Breakeven_after_tp1 and not breakeven_set:
+                    if self.breakeven_after_tp1 and not breakeven_set:
                         position.stop_loss = position.entry_price
                         position.metadata["breakeven_set"] = True
 
             # TP2 - close remaining
             if tp2 > 0 and partial_closed:
                 if position.side == "LONG" and price >= tp2:
-                    self.logger.info("TP2 hit: %s - Closing remaining", Symbol)
-                    await self.Close_Position(Symbol, price, 1.0)
+                    self.logger.info("TP2 hit: %s - closing remaining", symbol)
+                    await self.close_position(symbol, price, 1.0)
                 elif position.side == "SHORT" and price <= tp2:
-                    self.Logger.info("TP2 hit: %s - Closing remaining", Symbol)
-                    await self.Close_position(Symbol, price, 1.0)
+                    self.logger.info("TP2 hit: %s - closing remaining", symbol)
+                    await self.close_position(symbol, price, 1.0)
 
             # Max hold time
             if self.max_hold_time and (now - open_time) > self.max_hold_time:
-                self.Logger.info("Max Hold time reached: %s", Symbol)
-                await self.Close_Position(Symbol, price, 1.0)
+                self.logger.info("Max hold time reached: %s", symbol)
+                await self.close_position(symbol, price, 1.0)
 
         # Standard SL/TP checks
-        sl_hits = self.Risk.check_stop_losses(prices)
-        For Symbol in sl_hits:
-            self.logger.info("Stop loss: %s", Symbol)
-            await self.Close_Position(Symbol, prices.Get(Symbol, 0), 1.0)
+        sl_hits = self.risk.check_stop_losses(prices)
+        for symbol in sl_hits:
+            self.logger.info("Stop loss: %s", symbol)
+            await self.close_position(symbol, prices.get(symbol, 0), 1.0)
 
-        tp_hits = self.Risk.check_take_profits(prices)
-        For Symbol in tp_hits:
-            self.Logger.info("Take profit: %s", Symbol)
-            await self.Close_Position(Symbol, prices.Get(Symbol, 0), 1.0)
+        tp_hits = self.risk.check_take_profits(prices)
+        for symbol in tp_hits:
+            self.logger.info("Take profit: %s", symbol)
+            await self.close_position(symbol, prices.get(symbol, 0), 1.0)
 
     def get_open_positions(self) -> List[Dict]:
         return [
             {
-                "symbol": P.symbol, "side": P.side, "size": P.size,
-                "entry": P.entry_price, "pnl": P.pnl,
-                "pnl_percent": P.pnl_percent, "margin": P.margin,
-                "stop_loss": P.stop_loss, "take_profit": P.take_profit
+                "symbol": p.symbol, "side": p.side, "size": p.size,
+                "entry": p.entry_price, "pnl": p.pnl,
+                "pnl_percent": p.pnl_percent, "margin": p.margin,
+                "stop_loss": p.stop_loss, "take_profit": p.take_profit
             }
-            for P in self.positions.values()
+            for p in self.positions.values()
         ]
 
     def get_trade_history(self) -> List[Dict]:
         return [
             {
-                "symbol": O.symbol, "side": O.position_side,
-                "type": O.order_type, "qty": O.quantity,
-                "price": O.fill_price, "pnl": O.pnl,
-                "status": O.status.value, "time": O.fill_time
+                "symbol": o.symbol, "side": o.position_side,
+                "type": o.order_type, "qty": o.quantity,
+                "price": o.fill_price, "pnl": o.pnl,
+                "status": o.status.value, "time": o.fill_time
             }
-            for O in self.orders
+            for o in self.orders
         ]
