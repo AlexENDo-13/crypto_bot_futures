@@ -1,226 +1,192 @@
 """
-CryptoBot v9.0 - Neural Market Scanner
+Market Scanner v9.0
+Scans symbols for strategy signals using adaptive concurrency.
+Uses AsyncExecutor bridge for GUI-safe async execution.
 """
+import asyncio
 import logging
 import time
-import asyncio
-from typing import Dict, List, Optional, Any, Set
-import pandas as pd
-import numpy as np
+from typing import List, Dict, Optional, Any, Set
 
-from exchange.data_fetcher import DataFetcher
-from strategies.strategies import StrategyManager, Signal
-try:
-    from ml.ml_engine import MLEngine
-except ImportError:
-    MLEngine = None
+from src.exchange.api_client import BingXAPIClient
+from src.utils.async_bridge import AsyncExecutor
+
 
 class MarketScanner:
-    def __init__(self, data_fetcher: DataFetcher = None,
-                 strategy_manager: StrategyManager = None,
-                 ml_engine: MLEngine = None,
-                 max_workers: int = 4):
-        self.data_fetcher = data_fetcher or DataFetcher()
-        self.strategies = strategy_manager or StrategyManager()
-        self.ml = ml_engine or (MLEngine() if MLEngine else None)
-        self.logger = logging.getLogger("CryptoBot.Scanner")
+    """
+    Orchestrates scanning of multiple symbols across selected strategies.
+    Designed to work both as a pure coroutine (when called from asyncio)
+    and via AsyncExecutor for synchronous GUI contexts.
+    """
+
+    def __init__(
+        self,
+        api_client: BingXAPIClient,
+        symbols: List[str],
+        async_executor: Optional[AsyncExecutor] = None,
+        max_workers: int = 5
+    ):
+        self.api = api_client
+        self.symbols = symbols
+        self.async_executor = async_executor
         self.max_workers = max_workers
-        self.symbols: List[str] = []
-        self.scan_results: List[Dict] = []
-        self.last_scan_time: float = 0
-        self._scan_lock = asyncio.Lock()
-        self._min_scan_interval = 5
-        self._last_signals: Dict[str, float] = {}
-        self._signal_cooldown = 60
-        self._market_regime = "neutral"
-        self._volatility_cache: Dict[str, float] = {}
-        self._sentiment_scores: Dict[str, float] = {}
-        self.logger.info("MarketScanner v9.0 | strategies=%d", len(self.strategies.strategies))
+        self.logger = logging.getLogger("CryptoBot.Scanner")
 
-    async def load_symbols(self, count: int = 15) -> List[str]:
-        self.symbols = await self.data_fetcher.load_symbols(count)
-        self.logger.info("Loaded %d symbols for scanning", len(self.symbols))
-        return self.symbols
+        # Strategy registry (to be populated by StrategyManager)
+        self.strategies: Dict[str, Any] = {}
+        self._last_scan_time: float = 0.0
+        self._min_scan_interval: float = 2.0  # seconds
 
-    def _detect_market_regime(self, df: pd.DataFrame) -> str:
-        try:
-            if len(df) < 50:
-                return "neutral"
-            returns = df["close"].pct_change().dropna()
-            volatility = returns.std() * np.sqrt(len(returns))
-            adx = self._calculate_adx(df)
-            if volatility > 0.03:
-                return "volatile"
-            elif adx > 25:
-                return "trending"
-            else:
-                return "ranging"
-        except Exception:
-            return "neutral"
+    def register_strategy(self, name: str, strategy):
+        self.strategies[name] = strategy
 
-    def _calculate_adx(self, df: pd.DataFrame, period: int = 14) -> float:
-        try:
-            high, low, close = df["high"], df["low"], df["close"]
-            plus_dm = high.diff().clip(lower=0)
-            minus_dm = (-low.diff()).clip(lower=0)
-            tr1 = high - low
-            tr2 = abs(high - close.shift(1))
-            tr3 = abs(low - close.shift(1))
-            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            atr = tr.rolling(window=period).mean()
-            plus_di = 100 * plus_dm.rolling(window=period).mean() / atr
-            minus_di = 100 * minus_dm.rolling(window=period).mean() / atr
-            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-            adx = dx.rolling(window=period).mean()
-            return float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 0.0
-        except Exception:
-            return 0.0
-
-    def _calculate_neural_score(self, signal: Signal, df: pd.DataFrame) -> float:
-        base_conf = signal.confidence
-        try:
-            returns = df["close"].pct_change().dropna()
-            vol = returns.std()
-            vol_score = 1.0 if 0.005 < vol < 0.03 else 0.7 if vol < 0.05 else 0.5
-        except Exception:
-            vol_score = 1.0
-        try:
-            vol_sma = df["volume"].rolling(20).mean().iloc[-1]
-            curr_vol = df["volume"].iloc[-1]
-            vol_ratio = curr_vol / vol_sma if vol_sma > 0 else 1.0
-            volume_score = min(vol_ratio / 2.0, 1.0)
-        except Exception:
-            volume_score = 0.5
-        try:
-            sma20 = df["close"].rolling(20).mean().iloc[-1]
-            sma50 = df["close"].rolling(50).mean().iloc[-1]
-            price = df["close"].iloc[-1]
-            if signal.type.value == "buy":
-                trend_score = 1.0 if price > sma20 > sma50 else 0.7 if price > sma20 else 0.4
-            else:
-                trend_score = 1.0 if price < sma20 < sma50 else 0.7 if price < sma20 else 0.4
-        except Exception:
-            trend_score = 0.5
-        try:
-            delta = df["close"].diff()
-            gain = delta.clip(lower=0).rolling(14).mean().iloc[-1]
-            loss = (-delta.clip(upper=0)).rolling(14).mean().iloc[-1]
-            rs = gain / max(loss, 1e-9)
-            rsi = 100 - (100 / (1 + rs))
-            rsi_val = float(rsi.iloc[-1])
-            if signal.type.value == "buy":
-                momentum_score = 1.0 if 40 < rsi_val < 70 else 0.7 if rsi_val < 40 else 0.5
-            else:
-                momentum_score = 1.0 if 30 < rsi_val < 60 else 0.7 if rsi_val > 60 else 0.5
-        except Exception:
-            momentum_score = 0.5
-        sentiment_score = self._sentiment_scores.get(signal.symbol, 0.5)
-        composite = (base_conf * 0.35 + vol_score * 0.15 + volume_score * 0.10 +
-                     trend_score * 0.15 + momentum_score * 0.15 + sentiment_score * 0.10)
-        return min(composite, 1.0)
-
-    async def scan_symbol(self, symbol: str, timeframe: str = "15m",
-                          min_confidence: float = 0.3,
-                          enabled_strategies: List[str] = None) -> List[Signal]:
-        try:
-            now = time.time()
-            last_time = self._last_signals.get(symbol, 0)
-            if now - last_time < self._signal_cooldown:
-                return []
-            df = await self.data_fetcher.get_klines(symbol, timeframe)
-            if df is None or len(df) < 50:
-                self.logger.info("%s: insufficient data (%s candles)", symbol, len(df) if df is not None else "None")
-                return []
-            self.logger.info("%s: loaded %d candles", symbol, len(df))
-            regime = self._detect_market_regime(df)
-            self._market_regime = regime
-            adjusted_min = min_confidence
-            if regime == "volatile":
-                adjusted_min = min_confidence * 1.1
-            elif regime == "ranging":
-                adjusted_min = min_confidence * 0.85
-            raw_signals = self.strategies.analyze_all(df, symbol, adjusted_min, enabled_strategies)
-            self.logger.info("%s: raw signals=%d regime=%s min_conf=%.2f", symbol, len(raw_signals), regime, adjusted_min)
-            for sig in raw_signals:
-                sig.confidence = self._calculate_neural_score(sig, df)
-                sig.metadata = sig.metadata or {}
-                sig.metadata["regime"] = regime
-                sig.metadata["neural_score"] = sig.confidence
-            if self.ml.trained:
-                filtered = []
-                for signal in raw_signals:
-                    try:
-                        features = self.ml.extract_features(df)
-                        passed, score = self.ml.filter_signal(signal.confidence, features)
-                        if passed:
-                            signal.confidence = score
-                            filtered.append(signal)
-                    except Exception as e:
-                        self.logger.debug("ML filter error: %s", e)
-                        filtered.append(signal)
-                raw_signals = filtered
-                self.logger.info("%s: after ML filter=%d", symbol, len(raw_signals))
-            signals = [s for s in raw_signals if s.confidence >= min_confidence]
-            self.logger.info("%s: final signals=%d (after conf filter >= %.2f)", symbol, len(signals), min_confidence)
-            if signals:
-                self._last_signals[symbol] = now
-                for s in signals:
-                    self.logger.info("%s: SIGNAL %s %s conf=%.3f neural=%.3f",
-                                     symbol, s.type.value.upper(), s.strategy, s.confidence,
-                                     s.metadata.get("neural_score", 0) if s.metadata else 0)
-            return signals
-        except Exception as e:
-            self.logger.error("Scan error for %s: %s", symbol, e)
+    async def scan_all(
+        self,
+        timeframe: str = "15m",
+        min_confidence: float = 0.3,
+        enabled_strategies: Optional[Set[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Scan all symbols with all (or selected) strategies.
+        Returns unified list of signal dicts.
+        """
+        # Rate limiting
+        now = time.time()
+        if now - self._last_scan_time < self._min_scan_interval:
+            self.logger.info(f"Scan skipped: too soon ({now - self._last_scan_time:.1f}s)")
             return []
+        self._last_scan_time = now
 
-    async def scan_all(self, timeframe: str = "15m", min_confidence: float = 0.3,
-                       enabled_strategies: List[str] = None) -> List[Signal]:
-        async with self._scan_lock:
-            now = time.time()
-            if now - self.last_scan_time < self._min_scan_interval:
-                self.logger.info("Scan skipped: too soon (%.1fs)", now - self.last_scan_time)
+        if not enabled_strategies:
+            enabled_strategies = set(self.strategies.keys())
+
+        self.logger.info(f"Scanning {len(self.symbols)} symbols on {timeframe} (min_conf={min_confidence:.2f})...")
+
+        # Fetch klines for all symbols in parallel (with concurrency limit)
+        klines_data = await self._fetch_klines_batch(timeframe, limit=100)
+
+        # Scan each symbol with selected strategies
+        sem = asyncio.Semaphore(self.max_workers)
+        tasks = []
+        for symbol in self.symbols:
+            tasks.append(self._scan_symbol(
+                symbol, timeframe, min_confidence, enabled_strategies, klines_data.get(symbol, []), sem
+            ))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Flatten signals
+        all_signals = []
+        for res in results:
+            if isinstance(res, Exception):
+                self.logger.error(f"Unexpected error during scan: {res}")
+            elif isinstance(res, list):
+                all_signals.extend(res)
+
+        unique = self._deduplicate_signals(all_signals)
+        self.logger.info(
+            f"Scan complete | {len(unique)} unique signals (from {len(all_signals)} raw)")
+        return unique
+
+    async def _fetch_klines_batch(self, timeframe: str, limit: int) -> Dict[str, List]:
+        """Concurrently fetch klines for all symbols with robust error handling."""
+        result = {}
+        sem = asyncio.Semaphore(min(self.max_workers, 10))  # limit parallel API calls
+
+        async def fetch_single(symbol):
+            async with sem:
+                try:
+                    candles = await self.api.get_klines(symbol, interval=timeframe, limit=limit)
+                    if candles and len(candles) >= 20:  # minimum required
+                        return symbol, candles
+                    else:
+                        self.logger.debug(f"{symbol}: insufficient data ({len(candles)} candles)")
+                        return symbol, []
+                except RuntimeError as e:
+                    if "Event loop" in str(e):
+                        self.logger.warning(f"Event loop error for {symbol}, retrying via new loop")
+                        # Attempt recovery by calling API through a fresh loop
+                        # This case should be rare with new api_client, but handle gracefully
+                        return symbol, await self._fetch_with_new_loop(symbol, timeframe, limit)
+                    self.logger.error(f"Klines error for {symbol}: {e}")
+                    return symbol, []
+                except Exception as e:
+                    self.logger.error(f"Klines error for {symbol}: {e}")
+                    return symbol, []
+
+        tasks = [fetch_single(sym) for sym in self.symbols]
+        responses = await asyncio.gather(*tasks)
+        for symbol, candles in responses:
+            result[symbol] = candles
+        return result
+
+    async def _fetch_with_new_loop(self, symbol: str, timeframe: str, limit: int) -> List:
+        """Fallback: run API call in a fresh event loop."""
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return await self.api.get_klines(symbol, interval=timeframe, limit=limit)
+        finally:
+            loop.close()
+
+    async def _scan_symbol(
+        self,
+        symbol: str,
+        timeframe: str,
+        min_confidence: float,
+        strategies: Set[str],
+        candles: List,
+        sem: asyncio.Semaphore
+    ) -> List[Dict]:
+        async with sem:
+            if not candles:
                 return []
-            if not self.symbols:
-                await self.load_symbols()
-            self.logger.info("=" * 50)
-            self.logger.info("Scanning %d symbols on %s (min_conf=%.2f)...", len(self.symbols), timeframe, min_confidence)
-            all_signals: List[Signal] = []
-            seen: Set[str] = set()
-            try:
-                await self.data_fetcher.get_prices_batch(self.symbols)
-            except Exception:
-                pass
-            sem = asyncio.Semaphore(self.max_workers)
-            async def scan_with_limit(sym):
-                async with sem:
-                    return await self.scan_symbol(sym, timeframe, min_confidence, enabled_strategies)
-            tasks = [scan_with_limit(sym) for sym in self.symbols]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            total_raw = 0
-            for sym, signals in zip(self.symbols, results):
-                if isinstance(signals, Exception):
-                    self.logger.error("Scan failed for %s: %s", sym, signals)
+            signals = []
+            for strat_name in strategies:
+                strategy = self.strategies.get(strat_name)
+                if not strategy:
                     continue
-                if signals:
-                    total_raw += len(signals)
-                    for sig in signals:
-                        key = "%s_%s_%s" % (sig.symbol, sig.strategy, sig.type.value)
-                        if key not in seen:
-                            seen.add(key)
-                            all_signals.append(sig)
-                    self.logger.info("%s: %d signals", sym, len(signals))
-            all_signals.sort(key=lambda s: s.confidence, reverse=True)
-            self.scan_results = [
-                {"symbol": s.symbol, "strategy": s.strategy, "type": s.type.value,
-                 "confidence": round(s.confidence, 3), "price": round(s.price, 4),
-                 "time": s.timestamp, "regime": s.metadata.get("regime", "unknown") if s.metadata else "unknown"}
-                for s in all_signals
-            ]
-            self.last_scan_time = time.time()
-            self.logger.info("Scan complete | %d unique signals (from %d raw) | regime=%s",
-                             len(all_signals), total_raw, self._market_regime)
-            self.logger.info("=" * 50)
-            return all_signals
+                try:
+                    sig = strategy.analyze(symbol, candles, timeframe)
+                    if sig and sig.get("confidence", 0) >= min_confidence:
+                        sig["strategy"] = strat_name
+                        sig["symbol"] = symbol
+                        sig["timeframe"] = timeframe
+                        signals.append(sig)
+                except Exception as e:
+                    self.logger.debug(f"Strategy {strat_name} error for {symbol}: {e}")
+            return signals
 
-    def get_top_signals(self, n: int = 10) -> List[Dict]:
-        return self.scan_results[:n]
+    def _deduplicate_signals(self, signals: List[Dict]) -> List[Dict]:
+        """Remove duplicate signals based on symbol+strategy."""
+        seen = set()
+        unique = []
+        for s in signals:
+            key = (s.get("symbol"), s.get("strategy"))
+            if key not in seen:
+                seen.add(key)
+                unique.append(s)
+        return unique
+
+    # Synchronous wrapper for GUI via AsyncExecutor
+    def start_scan(self, callback, timeframe="15m", min_confidence=0.3, enabled_strategies=None):
+        """
+        Launch scan asynchronously using the dedicated executor.
+        `callback(signals)` will be called in the GUI thread when done.
+        """
+        if not self.async_executor:
+            self.logger.error("AsyncExecutor not set; cannot run scan from sync context")
+            return
+
+        def on_done(future):
+            try:
+                signals = future.result()
+            except Exception as e:
+                self.logger.error(f"Scan failed: {e}")
+                signals = []
+            callback(signals)
+
+        future = self.async_executor.run_coroutine(
+            self.scan_all(timeframe, min_confidence, enabled_strategies)
+        )
+        future.add_done_callback(on_done)
