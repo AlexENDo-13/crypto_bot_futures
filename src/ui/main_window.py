@@ -184,6 +184,7 @@ class BotWorker(QThread):
 
                     if self.executor:
                         try:
+                            self.loop.run_until_complete(self.executor.update_balance())
                             bal = self.executor.balance
                             self.signal_balance.emit(bal, bal)
                         except Exception as e:
@@ -1013,6 +1014,18 @@ class MainWindow(QMainWindow):
             if reply != (QMessageBox.StandardButton.Yes if PYQT_VER == 6 else QMessageBox.Yes):
                 return
 
+        # Fetch real balance before starting
+        if not self.settings.paper_trading and self.executor:
+            try:
+                import asyncio
+                loop = asyncio.new_event_loop()
+                bal = loop.run_until_complete(self.executor.update_balance())
+                loop.close()
+                self._on_balance_update(bal, bal)
+                self.append_log("Balance synced: $%.2f" % bal, 20)
+            except Exception as e:
+                self.append_log("Balance sync error: %s" % e, 30)
+
         self.bot_running = True
         self.start_time = datetime.now()
         self.status_indicator.setText("NEURAL ACTIVE")
@@ -1065,8 +1078,6 @@ class MainWindow(QMainWindow):
         self.lbl_balance.setText("$%.2f" % balance)
         self.dash_total_balance.setText("$%.2f" % balance)
         self.dash_available.setText("Available: $%.2f" % available)
-        if self.executor:
-            self.executor.balance = balance
 
     def _on_positions_update(self, positions):
         self.positions_table.setRowCount(len(positions))

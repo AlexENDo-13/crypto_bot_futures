@@ -75,24 +75,30 @@ class TradeExecutor:
 
     @property
     def balance(self) -> float:
-        if not self.paper and self.api:
-            try:
-                bal = self.api.get_balance()
-                if isinstance(bal, dict) and bal.get("code") == 0:
-                    data = bal.get("data", {})
-                    avail = float(data.get("available", 0))
-                    if avail > 0:
-                        self._balance = avail
-            except Exception:
-                pass
+        """Return current balance (sync, cached value)."""
         return self._balance
 
     @balance.setter
     def balance(self, value: float):
         self._balance = value
 
+    async def update_balance(self) -> float:
+        """Fetch real balance from API (async). Call this explicitly."""
+        if not self.paper and self.api and self.api.api_key:
+            try:
+                bal = await self.api.get_balance()
+                if isinstance(bal, dict) and bal.get("code") == 0:
+                    data = bal.get("data", {})
+                    avail = float(data.get("available", data.get("balance", 0)))
+                    if avail > 0:
+                        self._balance = avail
+                        self.logger.debug("Balance updated: $%.2f", self._balance)
+            except Exception as e:
+                self.logger.debug("Balance update failed: %s", e)
+        return self._balance
+
     def get_balance(self) -> Dict:
-        return {"balance": self.balance, "available": self.balance}
+        return {"balance": self._balance, "available": self._balance}
 
     def _get_symbol_info(self, symbol: str) -> Dict:
         now = time.time()
@@ -105,7 +111,11 @@ class TradeExecutor:
             return {"price_precision": 2, "qty_precision": 4, "min_qty": 0.001, "volume_24h": 0}
 
         try:
-            symbols = self.api.get_symbols()
+            # Note: get_symbols is async, but we call it synchronously here
+            # In practice this is called from async context via execute_signal
+            import asyncio
+            loop = asyncio.get_event_loop()
+            symbols = loop.run_until_complete(self.api.get_symbols())
             self._symbol_info_cache = {}
             for s in symbols:
                 sym = s.get("symbol", "")
@@ -157,7 +167,7 @@ class TradeExecutor:
                 self.logger.info("Trade rejected: %s - high funding", symbol)
                 return None
 
-            current_balance = self.balance
+            current_balance = self._balance
             can_trade, reason = self.risk.can_open_position(
                 symbol, position_side, 1.0, entry_price,
                 leverage=self.risk.limits.max_leverage,

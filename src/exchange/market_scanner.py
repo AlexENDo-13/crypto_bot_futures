@@ -1,6 +1,7 @@
 """
-CryptoBot v9.1 - Neural Market Scanner with Multi-Timeframe
-Features: Async scanning, neural scoring, regime detection, MTF confirmation
+CryptoBot v9.0 - Neural Market Scanner
+Features: Async scanning, neural composite scoring, regime detection,
+          volatility-adjusted thresholds, sentiment analysis hook
 """
 import logging
 import time
@@ -14,20 +15,17 @@ from strategies.strategies import StrategyManager, Signal
 from ml.ml_engine import MLEngine
 
 class MarketScanner:
-    """Neural adaptive market scanner with multi-timeframe support."""
+    """Neural adaptive market scanner."""
 
     def __init__(self, data_fetcher: DataFetcher = None,
                  strategy_manager: StrategyManager = None,
                  ml_engine: MLEngine = None,
-                 max_workers: int = 4,
-                 timeframes: List[str] = None):
+                 max_workers: int = 4):
         self.data_fetcher = data_fetcher or DataFetcher()
         self.strategies = strategy_manager or StrategyManager()
         self.ml = ml_engine or MLEngine()
         self.logger = logging.getLogger("CryptoBot.Scanner")
         self.max_workers = max_workers
-        self.timeframes = timeframes or ["15m"]
-        self.primary_timeframe = timeframes[0] if timeframes else "15m"
 
         self.symbols: List[str] = []
         self.scan_results: List[Dict] = []
@@ -39,10 +37,8 @@ class MarketScanner:
         self._market_regime = "neutral"
         self._volatility_cache: Dict[str, float] = {}
         self._sentiment_scores: Dict[str, float] = {}
-        self._mtf_cache: Dict[str, Dict[str, pd.DataFrame]] = {}
 
-        self.logger.info("MarketScanner v9.1 | strategies=%d | MTF=%s", 
-                         len(self.strategies.strategies), ",".join(self.timeframes))
+        self.logger.info("MarketScanner v9.0 | strategies=%d", len(self.strategies.strategies))
 
     async def load_symbols(self, count: int = 15) -> List[str]:
         self.symbols = await self.data_fetcher.load_symbols(count)
@@ -85,12 +81,14 @@ class MarketScanner:
 
     def _calculate_neural_score(self, signal: Signal, df: pd.DataFrame) -> float:
         base_conf = signal.confidence
+
         try:
             returns = df["close"].pct_change().dropna()
             vol = returns.std()
             vol_score = 1.0 if 0.005 < vol < 0.03 else 0.7 if vol < 0.05 else 0.5
         except Exception:
             vol_score = 1.0
+
         try:
             vol_sma = df["volume"].rolling(20).mean().iloc[-1]
             curr_vol = df["volume"].iloc[-1]
@@ -98,6 +96,7 @@ class MarketScanner:
             volume_score = min(vol_ratio / 2.0, 1.0)
         except Exception:
             volume_score = 0.5
+
         try:
             sma20 = df["close"].rolling(20).mean().iloc[-1]
             sma50 = df["close"].rolling(50).mean().iloc[-1]
@@ -108,6 +107,7 @@ class MarketScanner:
                 trend_score = 1.0 if price < sma20 < sma50 else 0.7 if price < sma20 else 0.4
         except Exception:
             trend_score = 0.5
+
         try:
             delta = df["close"].diff()
             gain = delta.clip(lower=0).rolling(14).mean()
@@ -121,39 +121,24 @@ class MarketScanner:
                 momentum_score = 1.0 if 30 < rsi_val < 60 else 0.7 if rsi_val > 60 else 0.5
         except Exception:
             momentum_score = 0.5
+
         sentiment_score = self._sentiment_scores.get(signal.symbol, 0.5)
+
         composite = (
-            base_conf * 0.35 + vol_score * 0.15 + volume_score * 0.10 +
-            trend_score * 0.15 + momentum_score * 0.15 + sentiment_score * 0.10
+            base_conf * 0.35 +
+            vol_score * 0.15 +
+            volume_score * 0.10 +
+            trend_score * 0.15 +
+            momentum_score * 0.15 +
+            sentiment_score * 0.10
         )
         return min(composite, 1.0)
 
-    def _check_mtf_alignment(self, symbol: str, signal_type: str) -> float:
-        """Check multi-timeframe alignment. Returns 0-1 score."""
-        mtf_data = self._mtf_cache.get(symbol, {})
-        if not mtf_data or len(mtf_data) < 2:
-            return 0.5  # Neutral if no MTF data
+    def _update_sentiment(self, symbol: str, score: float):
+        self._sentiment_scores[symbol] = max(0.0, min(1.0, score))
 
-        alignments = []
-        for tf, df in mtf_data.items():
-            if df is None or len(df) < 20:
-                continue
-            try:
-                sma20 = df["close"].rolling(20).mean().iloc[-1]
-                price = df["close"].iloc[-1]
-                if signal_type == "buy":
-                    alignments.append(1.0 if price > sma20 else 0.0)
-                else:
-                    alignments.append(1.0 if price < sma20 else 0.0)
-            except Exception:
-                continue
-
-        if not alignments:
-            return 0.5
-        return sum(alignments) / len(alignments)
-
-    async def scan_symbol(self, symbol: str, timeframe: str = None,
-                          min_confidence: float = 0.5,
+    async def scan_symbol(self, symbol: str, timeframe: str = "15m",
+                          min_confidence: float = 0.4,
                           enabled_strategies: List[str] = None) -> List[Signal]:
         try:
             now = time.time()
@@ -161,49 +146,37 @@ class MarketScanner:
             if now - last_time < self._signal_cooldown:
                 return []
 
-            tf = timeframe or self.primary_timeframe
-            df = await self.data_fetcher.get_klines(symbol, tf)
+            df = await self.data_fetcher.get_klines(symbol, timeframe)
             if df is None or len(df) < 50:
+                self.logger.debug("%s: insufficient data (%s)", symbol, len(df) if df is not None else "None")
                 return []
 
-            # Fetch multi-timeframe data for confirmation
-            if len(self.timeframes) > 1:
-                try:
-                    self._mtf_cache[symbol] = await self.data_fetcher.get_multi_timeframe(
-                        symbol, [t for t in self.timeframes if t != tf]
-                    )
-                except Exception:
-                    pass
+            self.logger.debug("%s: loaded %d candles", symbol, len(df))
 
             regime = self._detect_market_regime(df)
             self._market_regime = regime
 
+            # Adaptive threshold - more lenient
             adjusted_min = min_confidence
             if regime == "volatile":
-                adjusted_min = min_confidence * 1.2
+                adjusted_min = min_confidence * 1.1  # Was 1.2, now more lenient
             elif regime == "ranging":
-                adjusted_min = min_confidence * 0.9
+                adjusted_min = min_confidence * 0.85  # Was 0.9, now more lenient
 
-            signals = self.strategies.analyze_all(df, symbol, adjusted_min, enabled_strategies)
+            raw_signals = self.strategies.analyze_all(df, symbol, adjusted_min, enabled_strategies)
+            self.logger.debug("%s: raw signals=%d regime=%s min_conf=%.2f", symbol, len(raw_signals), regime, adjusted_min)
 
-            for sig in signals:
+            # Neural scoring
+            for sig in raw_signals:
                 sig.confidence = self._calculate_neural_score(sig, df)
                 sig.metadata = sig.metadata or {}
                 sig.metadata["regime"] = regime
                 sig.metadata["neural_score"] = sig.confidence
 
-                # MTF alignment boost
-                mtf_align = self._check_mtf_alignment(symbol, sig.type.value)
-                sig.metadata["mtf_alignment"] = mtf_align
-                if mtf_align >= 0.7:
-                    sig.confidence = min(sig.confidence * 1.1, 1.0)
-                    sig.metadata["mtf_confirmed"] = True
-                else:
-                    sig.metadata["mtf_confirmed"] = False
-
+            # ML filtering
             if self.ml.trained:
                 filtered = []
-                for signal in signals:
+                for signal in raw_signals:
                     try:
                         features = self.ml.extract_features(df)
                         passed, score = self.ml.filter_signal(signal.confidence, features)
@@ -213,12 +186,19 @@ class MarketScanner:
                     except Exception as e:
                         self.logger.debug("ML filter error: %s", e)
                         filtered.append(signal)
-                signals = filtered
+                raw_signals = filtered
+                self.logger.debug("%s: after ML filter=%d", symbol, len(raw_signals))
 
-            signals = [s for s in signals if s.confidence >= min_confidence]
+            # Final confidence filter
+            signals = [s for s in raw_signals if s.confidence >= min_confidence]
+            self.logger.debug("%s: final signals=%d (after conf filter >= %.2f)", symbol, len(signals), min_confidence)
 
             if signals:
                 self._last_signals[symbol] = now
+                for s in signals:
+                    self.logger.info("%s: SIGNAL %s %s conf=%.3f neural=%.3f", 
+                                     symbol, s.type.value.upper(), s.strategy, s.confidence,
+                                     s.metadata.get("neural_score", 0) if s.metadata else 0)
 
             return signals
 
@@ -226,7 +206,7 @@ class MarketScanner:
             self.logger.error("Scan error for %s: %s", symbol, e)
             return []
 
-    async def scan_all(self, timeframe: str = None, min_confidence: float = 0.5,
+    async def scan_all(self, timeframe: str = "15m", min_confidence: float = 0.4,
                        enabled_strategies: List[str] = None) -> List[Signal]:
         async with self._scan_lock:
             now = time.time()
@@ -237,30 +217,33 @@ class MarketScanner:
             if not self.symbols:
                 await self.load_symbols()
 
-            tf = timeframe or self.primary_timeframe
-            self.logger.info("Scanning %d symbols on %s (MTF: %s)...", 
-                             len(self.symbols), tf, ",".join(self.timeframes))
+            self.logger.info("Scanning %d symbols on %s...", len(self.symbols), timeframe)
             all_signals: List[Signal] = []
             seen: Set[str] = set()
 
+            # Pre-fetch prices
             try:
                 await self.data_fetcher.get_prices_batch(self.symbols)
             except Exception:
                 pass
 
+            # Concurrent scanning with semaphore
             sem = asyncio.Semaphore(self.max_workers)
+
             async def scan_with_limit(sym):
                 async with sem:
-                    return await self.scan_symbol(sym, tf, min_confidence, enabled_strategies)
+                    return await self.scan_symbol(sym, timeframe, min_confidence, enabled_strategies)
 
             tasks = [scan_with_limit(sym) for sym in self.symbols]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
+            total_raw = 0
             for sym, signals in zip(self.symbols, results):
                 if isinstance(signals, Exception):
                     self.logger.error("Scan failed for %s: %s", sym, signals)
                     continue
                 if signals:
+                    total_raw += len(signals)
                     for sig in signals:
                         key = "%s_%s_%s" % (sig.symbol, sig.strategy, sig.type.value)
                         if key not in seen:
@@ -276,18 +259,14 @@ class MarketScanner:
                     "type": s.type.value, "confidence": round(s.confidence, 3),
                     "price": round(s.price, 4), "time": s.timestamp,
                     "regime": s.metadata.get("regime", "unknown") if s.metadata else "unknown",
-                    "neural_score": s.metadata.get("neural_score", 0) if s.metadata else 0,
-                    "mtf_confirmed": s.metadata.get("mtf_confirmed", False) if s.metadata else False,
-                    "mtf_alignment": s.metadata.get("mtf_alignment", 0) if s.metadata else 0
+                    "neural_score": s.metadata.get("neural_score", 0) if s.metadata else 0
                 }
                 for s in all_signals
             ]
 
             self.last_scan_time = time.time()
-            mtf_confirmed_count = sum(1 for s in all_signals 
-                                      if s.metadata and s.metadata.get("mtf_confirmed", False))
-            self.logger.info("Scan complete | %d signals | %d MTF-confirmed | regime=%s", 
-                             len(all_signals), mtf_confirmed_count, self._market_regime)
+            self.logger.info("Scan complete | %d unique signals (from %d raw) | regime=%s", 
+                             len(all_signals), total_raw, self._market_regime)
             return all_signals
 
     def get_top_signals(self, n: int = 10) -> List[Dict]:
