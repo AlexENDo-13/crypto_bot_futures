@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 CryptoBot v9.1 - Neural Adaptive Trading System (FIXED)
-Main entry point with qasync event loop integration.
 """
 import sys
 import asyncio
@@ -41,35 +40,25 @@ async def main():
     logger.info("Starting CryptoBot v9.1 (FIXED)")
 
     app = QApplication(sys.argv)
-
-    # Загружаем настройки
     settings = Settings("config/bot_config.json")
 
-    # API ключи из переменных окружения или из конфига
     import os
     api_key = os.getenv("BINGX_API_KEY", settings.get("api_key", ""))
     api_secret = os.getenv("BINGX_API_SECRET", settings.get("api_secret", ""))
 
-    # РЕЖИМ ТОРГОВЛИ: demo_mode=false -> LIVE, demo_mode=true -> PAPER
     demo_mode = settings.get("demo_mode", True)
-    testnet = demo_mode  # Если demo_mode=True, используем testnet/paper
+    testnet = demo_mode
 
     if not demo_mode:
         if not api_key or not api_secret:
-            logger.error("!!! LIVE MODE ТРЕБУЕТ API КЛЮЧИ !!!")
-            logger.error("Установите BINGX_API_KEY и BINGX_API_SECRET")
-            # Можно показать QMessageBox здесь
+            logger.error("!!! LIVE MODE REQUIRES API KEYS !!!")
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.critical(None, "Ошибка", "Для live-торговли нужны API ключи BingX!")
+            QMessageBox.critical(None, "Error", "API keys required for live trading!")
             sys.exit(1)
-        logger.warning("=" * 60)
-        logger.warning("  LIVE TRADING MODE АКТИВИРОВАН")
-        logger.warning("  Бот будет торговать РЕАЛЬНЫМИ средствами!")
-        logger.warning("=" * 60)
+        logger.warning("LIVE TRADING MODE ACTIVE")
     else:
-        logger.info("PAPER / DEMO MODE — торговля виртуальными средствами")
+        logger.info("PAPER / DEMO MODE")
 
-    # Инициализация API клиента
     api_client = BingXAPIClient(
         api_key=api_key,
         api_secret=api_secret,
@@ -77,10 +66,8 @@ async def main():
         testnet=testnet
     )
 
-    # Логгер бота
     bot_logger = BotLogger()
 
-    # Создаём торговый движок
     engine = TradingEngine(
         settings=settings,
         logger=bot_logger,
@@ -88,20 +75,15 @@ async def main():
         telegram=None
     )
 
-    # Создание и отображение главного окна
     window = MainWindow(api_client=api_client, engine=engine, settings=settings)
     window.show()
 
     logger.info("MainWindow displayed")
 
-    # Запускаем движок
-    await engine.start()
-
-    # Запуск основного цикла событий PyQt6 через qasync
     await app.exec()
 
-    # Корректное завершение
-    await engine.stop()
+    if engine.running:
+        await engine.stop()
     await api_client.close()
     logger.info("Application shutdown complete")
 

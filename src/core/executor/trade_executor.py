@@ -38,7 +38,6 @@ class TradeExecutor:
         side = OrderSide.BUY if direction == "LONG" else OrderSide.SELL
         bingx_symbol = symbol.replace("/", "-")
 
-        # Get symbol specs (with fallback)
         symbol_specs = self.client.get_symbol_specs(bingx_symbol)
         if not symbol_specs:
             try:
@@ -76,19 +75,16 @@ class TradeExecutor:
 
         self.logger.info(f"ENTRY {side.value} {symbol} | Qty: {qty:.6f} | Price: ~{current_price:.4f} | Leverage: {leverage}x")
 
-        # Set leverage
         try:
             await self.client.set_leverage(bingx_symbol, leverage)
         except Exception as e:
             self.logger.warning(f"Leverage set error {symbol}: {e}")
 
-        # Set margin mode
         try:
             await self.client.set_margin_mode(bingx_symbol, "CROSSED")
         except Exception as e:
             self.logger.warning(f"Margin mode error {symbol}: {e}")
 
-        # Calculate SL/TP
         try:
             temp_pos = Position(symbol=symbol, side=side, quantity=qty, entry_price=current_price, leverage=leverage)
             sl_price, tp_price = self.risk_manager.calculate_sl_tp(temp_pos, atr_value)
@@ -96,7 +92,6 @@ class TradeExecutor:
             self.logger.error(f"SL/TP error {symbol}: {e}")
             return None
 
-        # Place main order
         order_side_str = "BUY" if side == OrderSide.BUY else "SELL"
         result = await self.client.place_order(
             symbol=bingx_symbol, side=order_side_str, quantity=qty,
@@ -114,7 +109,6 @@ class TradeExecutor:
         order_id = result.get("orderId", "")
         self.logger.info(f"Order executed: {symbol} {side.value} | Qty: {qty:.6f} | Avg: {avg_price:.4f} | ID: {order_id}")
 
-        # Place SL
         sl_side = "SELL" if side == OrderSide.BUY else "BUY"
         sl_result = await self.client.place_stop_order(
             symbol=bingx_symbol, side=sl_side, stop_price=sl_price,
@@ -126,7 +120,6 @@ class TradeExecutor:
         else:
             self.logger.warning(f"SL not set {symbol}")
 
-        # Place TP
         tp_result = await self.client.place_stop_order(
             symbol=bingx_symbol, side=sl_side, stop_price=tp_price,
             order_type="TAKE_PROFIT_MARKET", position_side="BOTH", close_position=True
@@ -137,7 +130,6 @@ class TradeExecutor:
         else:
             self.logger.warning(f"TP not set {symbol}")
 
-        # Create position object
         try:
             pos = Position(
                 symbol=symbol, side=side, quantity=qty, entry_price=avg_price, leverage=leverage,
@@ -150,15 +142,7 @@ class TradeExecutor:
             return None
 
         self.risk_manager.register_position_open(pos)
-        self.logger.log_trade(symbol=symbol, side=side.value, entry=avg_price, qty=qty, leverage=leverage, sl=sl_price, tp=tp_price)
         self.logger.info(f"Position opened: {symbol} {side.value} | Entry: {avg_price:.4f} | SL: {sl_price:.4f} | TP: {tp_price:.4f} | Qty: {qty:.6f} | Value: ${qty*avg_price:.2f} | Leverage: {leverage}x")
-
-        if telegram:
-            msg = f"OPEN POSITION\nPair: {symbol}\nSide: **{side.value}**\nEntry: {avg_price:.4f}\nLeverage: {leverage}x\nSize: {qty:.6f} (${qty*avg_price:.2f})\nSL: {sl_price:.4f} | TP: {tp_price:.4f}"
-            try:
-                telegram.send_sync(msg)
-            except Exception:
-                pass
         return pos
 
     async def close_position_async(self, symbol, side, quantity):

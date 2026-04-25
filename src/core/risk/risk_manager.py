@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import logging, math, time
-from typing import Dict, Optional, Tuple
-from datetime import datetime, timedelta
-from src.core.trading.position import Position, OrderSide, ExitReason
+from typing import Dict, Optional
+from datetime import datetime
+from src.core.trading.position import Position, OrderSide
 
 logger = logging.getLogger("RiskManager")
 
@@ -75,7 +75,6 @@ class RiskManager:
         try:
             account = await self.client.get_account_balance()
             if account and isinstance(account, dict):
-                # BingX balance format varies
                 balance = float(account.get("balance", account.get("totalEquity", account.get("equity", 0))))
                 self._cached_balance = balance
                 self._balance_cache_time = now
@@ -90,7 +89,6 @@ class RiskManager:
             logger.error(f"Balance error: {e}")
         return {"total_equity": self._cached_balance, "available_balance": self._cached_balance, "used": 0.0, "equity": self._cached_balance}
 
-    # Alias for compatibility
     async def get_account_info(self):
         return await self.get_account_balance()
 

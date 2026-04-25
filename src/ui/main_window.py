@@ -1,25 +1,22 @@
 """
 Main Window for CryptoBot v9.1 (FIXED)
-Neural Adaptive GUI with TradingEngine integration.
 """
 import logging
 import sys
 import asyncio
-import time
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import List, Dict
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QTableWidget, QTableWidgetItem,
-    QTextEdit, QSplitter, QStatusBar, QMessageBox
+    QPlainTextEdit, QSplitter, QStatusBar
 )
 
 from src.exchange.api_client import BingXAPIClient
 from src.config.settings import Settings
 from src.core.engine.trading_engine import TradingEngine
-from src.utils.async_bridge import AsyncExecutor
 
 
 class MainWindow(QMainWindow):
@@ -35,24 +32,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("CryptoBot v9.1 - Neural Adaptive GUI [FIXED]")
         self.resize(1280, 800)
 
-        self.async_executor = AsyncExecutor()
-        self.async_executor.start()
-
-        self.symbols = settings.get("symbols_whitelist", [
-            "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "ADA-USDT",
-            "AVAX-USDT", "DOGE-USDT", "LINK-USDT", "MATIC-USDT", "LTC-USDT"
-        ])
-
         self._init_ui()
         self._connect_signals()
-        self._restore_window_state()
 
-        # Periodic UI update (every 2 seconds)
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self._update_stats)
         self.update_timer.start(2000)
 
-        # Periodic auto-scan (every 60 seconds)
         self.scan_timer = QTimer()
         self.scan_timer.timeout.connect(self.run_scan)
         self.scan_timer.start(60000)
@@ -64,19 +50,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
-        # Control panel
         control_panel = self._create_control_panel()
         main_layout.addWidget(control_panel)
 
-        # Stats panel
         stats_panel = self._create_stats_panel()
         main_layout.addWidget(stats_panel)
 
-        # Splitter for signals table and log
         splitter = QSplitter(Qt.Orientation.Vertical)
         main_layout.addWidget(splitter, stretch=1)
 
-        # Signals table
         self.signals_table = QTableWidget()
         self.signals_table.setColumnCount(7)
         self.signals_table.setHorizontalHeaderLabels([
@@ -85,15 +67,13 @@ class MainWindow(QMainWindow):
         self.signals_table.horizontalHeader().setStretchLastSection(True)
         splitter.addWidget(self.signals_table)
 
-        # Log console
-        self.log_console = QTextEdit()
+        self.log_console = QPlainTextEdit()
         self.log_console.setReadOnly(True)
         self.log_console.setMaximumBlockCount(1000)
         splitter.addWidget(self.log_console)
 
         splitter.setSizes([400, 200])
 
-        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_label = QLabel("Ready")
@@ -129,7 +109,6 @@ class MainWindow(QMainWindow):
         self.autopilot_btn.toggled.connect(self.toggle_autopilot)
         layout.addWidget(self.autopilot_btn)
 
-        # Mode indicator
         demo = self.settings.get("demo_mode", True)
         self.mode_label = QLabel("MODE: PAPER" if demo else "MODE: LIVE")
         self.mode_label.setStyleSheet("color: green;" if demo else "color: red; font-weight: bold;")
@@ -162,8 +141,11 @@ class MainWindow(QMainWindow):
 
     def _update_stats(self):
         if self.engine and self.engine.running:
-            stats = self.engine.get_stats()
-            self.stats_signal.emit(stats)
+            try:
+                stats = self.engine.get_stats()
+                self.stats_signal.emit(stats)
+            except Exception as e:
+                self.logger.debug(f"Stats update error: {e}")
 
     def _update_ui_stats(self, stats: dict):
         self.balance_label.setText(f"Balance: {stats.get('balance', 0):.2f} USDT")
@@ -181,7 +163,6 @@ class MainWindow(QMainWindow):
     def run_scan(self):
         self.status_label.setText("Scanning...")
         self.scan_btn.setEnabled(False)
-        # Use engine's scanner if engine is running
         if self.engine and self.engine.running:
             async def do_scan():
                 try:
@@ -191,7 +172,7 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self.logger.error(f"Scan error: {e}")
                     self.on_scan_results([])
-            self.async_executor.run_coroutine(do_scan())
+            asyncio.create_task(do_scan())
         else:
             self.status_label.setText("Engine not running")
             self.scan_btn.setEnabled(True)
@@ -200,8 +181,6 @@ class MainWindow(QMainWindow):
         self.scan_btn.setEnabled(True)
         self.status_label.setText(f"Last scan: {datetime.now().strftime('%H:%M:%S')} | Signals: {len(signals)}")
         self._update_signals_table(signals)
-        if self.autopilot_btn.isChecked() and signals:
-            self._execute_trades(signals)
 
     def _update_signals_table(self, signals):
         self.signals_table.setRowCount(0)
@@ -225,18 +204,14 @@ class MainWindow(QMainWindow):
             self.signals_table.setItem(i, 6, QTableWidgetItem(sig.get("reason", "")))
         self.signals_table.resizeColumnsToContents()
 
-    def _execute_trades(self, signals):
-        self.logger.info(f"AutoPilot executing {len(signals)} signals via TradingEngine")
-        # Engine already handles execution in _scan_and_trade if running
-
     def toggle_engine(self, checked):
         if checked:
             self.engine_btn.setText("Stop Engine")
-            self.async_executor.run_coroutine(self.engine.start())
+            asyncio.create_task(self.engine.start())
             self.logger.info("TradingEngine START requested")
         else:
             self.engine_btn.setText("Start Engine")
-            self.async_executor.run_coroutine(self.engine.stop())
+            asyncio.create_task(self.engine.stop())
             self.logger.info("TradingEngine STOP requested")
 
     def toggle_autopilot(self, checked):
@@ -245,24 +220,20 @@ class MainWindow(QMainWindow):
         self.logger.info(f"AutoPilot {status}")
 
     def _append_log(self, text: str):
-        self.log_console.append(text)
-
-    def _restore_window_state(self):
-        pass
+        self.log_console.appendPlainText(text)
+        scrollbar = self.log_console.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
     def closeEvent(self, event):
         self.logger.info("Shutting down application...")
         self.update_timer.stop()
         self.scan_timer.stop()
-        if self.engine:
-            asyncio.ensure_future(self.engine.stop())
-        self.async_executor.stop()
+        if self.engine and self.engine.running:
+            asyncio.create_task(self.engine.stop())
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.ensure_future(self.api_client.close())
-            else:
-                asyncio.run(self.api_client.close())
+                asyncio.create_task(self.api_client.close())
         except Exception as e:
             self.logger.error(f"Error during API close: {e}")
         event.accept()

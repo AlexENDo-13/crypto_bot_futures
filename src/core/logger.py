@@ -1,10 +1,8 @@
 """
 CryptoBot v9.1 - Advanced Logging System (FIXED)
-Added proxy methods: info, warning, error, debug, critical, log
 """
 import logging
 import sys
-import os
 from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -77,7 +75,6 @@ class BotLogger:
 
         self.logger.info("BotLogger v9.1 initialized | log_dir=%s level=%s", log_dir, logging.getLevelName(level))
 
-    # --- Proxy methods for standard logging interface ---
     def info(self, msg, *args, **kwargs):
         self.logger.info(msg, *args, **kwargs)
 
@@ -99,7 +96,6 @@ class BotLogger:
     def exception(self, msg, *args, **kwargs):
         self.logger.exception(msg, *args, **kwargs)
 
-    # --- Custom methods ---
     def set_level(self, level: int):
         self.level = level
         self.logger.setLevel(level)
@@ -123,19 +119,24 @@ class BotLogger:
         return logging.getLogger(name)
 
     def log_trade(self, **kwargs):
-        """Log a trade event."""
         msg = " | ".join(f"{k}={v}" for k, v in kwargs.items())
         self.logger.info("TRADE | %s", msg)
 
     def log_signal(self, **kwargs):
-        """Log a signal event."""
         msg = " | ".join(f"{k}={v}" for k, v in kwargs.items())
         self.logger.info("SIGNAL | %s", msg)
 
     def log_position_update(self, **kwargs):
-        """Log a position update."""
         msg = " | ".join(f"{k}={v}" for k, v in kwargs.items())
         self.logger.info("POSITION | %s", msg)
+
+    def log_state(self, component: str, data: dict):
+        msg = f"{component} | " + " | ".join(f"{k}={v}" for k, v in data.items())
+        self.logger.debug(msg)
+
+    def log_decision(self, action: str, symbol, data: dict):
+        msg = f"DECISION {action} | sym={symbol} | " + " | ".join(f"{k}={v}" for k, v in data.items())
+        self.logger.info(msg)
 
 
 def get_logger(name: str = "CryptoBot") -> logging.Logger:

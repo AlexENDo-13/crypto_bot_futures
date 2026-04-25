@@ -1,33 +1,39 @@
-# Проект crypto_bot_futures
-
-## Описание
-Проект по разработке криптовалютного бота для фьючерсных торгов на Binance.
-
-## Структура проекта
-- src/ — основной код проекта
-  - core/ — ядро бота (трейдинг, управление позициями)
-  - strategies/ — стратегии торговли
-  - exchange/ — взаимодействие с биржей (Binance, Bybit и т.д.)
-  - ai/ — использование ИИ для анализа и принятия решений
-  - risk/ — управление рисками
-  - notifications/ — уведомления (Telegram, Discord)
-  - web/ — веб-интерфейс (опционально)
-- config/ — конфигурация (бот, биржа, ключи)
-- data/ — данные (история, стейты, бэкапы)
-- backtests/ — результаты бэкtesting
-- tests/ — юнит-тесты и интеграционные тесты
+# CryptoBot v9.1 — Исправленная версия
 
 ## Быстрый старт
-1. Установить зависимости: `pip install -r requirements.txt`
-2. Настроить конфигурацию в `config/bot_config.json`
-3. Запустить бота: `python main.py`
 
-## Зависимости
-- ccxt — трейдинг-интерфейс
-- pandas, numpy — анализ данных
-- scikit-learn, tensorflow/keras — ИИ-модели (опционально)
-- python-telegram-bot / websockets — уведомления
+1. Распакуй архив в папку `crypto_bot_futures/`
+2. Установи зависимости: `pip install -r requirements.txt`
+3. Запусти: `python main.py`
 
-## Примечания
-- Бот рассчитан на фьючерсы с плечом (рекомендуется тестировать на тестовой сети).
-- Храните секреты в переменных окружения или в защищённых файлах.
+## Что исправлено
+
+- `main.py` — убран конфликт event loop
+- `src/ui/main_window.py` — QTextEdit → QPlainTextEdit
+- `src/core/logger.py` — добавлены proxy-методы info(), warning(), error()
+- `src/exchange/api_client.py` — добавлены методы для реальной торговли + логирование баланса
+- `src/core/risk/risk_manager.py` — добавлен update_pnl(), исправлен get_account_info()
+- `src/core/scanner/market_scanner.py` — fallback для volume_24h=0
+- `src/core/market/data_fetcher.py` — нормализация тикеров BingX
+- `src/core/executor/trade_executor.py` — исправлены вызовы API
+
+## Для LIVE торговли
+
+1. Получи API ключи на BingX
+2. Установи в `config/bot_config.json`:
+   ```json
+   "demo_mode": false,
+   "api_key": "YOUR_KEY",
+   "api_secret": "YOUR_SECRET"
+   ```
+3. Или через переменные окружения:
+   ```bash
+   set BINGX_API_KEY=your_key
+   set BINGX_API_SECRET=your_secret
+   ```
+
+## Внимание
+
+- **Всегда начинай с `demo_mode: true`**
+- Протестируй минимум 1-2 дня на бумаге
+- Не коммить API ключи в Git!

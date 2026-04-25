@@ -143,7 +143,6 @@ class MarketScanner:
         bid = ticker.get("bid", 0)
         ask = ticker.get("ask", 0)
 
-        # Fallback volume calculation if API returns 0
         if volume_24h <= 0:
             try:
                 df_vol = await self.data_fetcher.fetch_klines_async(None, symbol, interval="1d", limit=2)
