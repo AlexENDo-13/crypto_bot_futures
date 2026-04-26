@@ -1,8 +1,8 @@
 {
   "demo_mode": false,
   "virtual_balance": 100.0,
-  "api_key": "",
-  "api_secret": "",
+  "api_key": "CdSWeAc3nivQLxvBqbX40cGwGi5P9TLboVUl2VvoYQfYMfM8it9WbGCwmtbZG77pYl3rzTVx7hkxTgwkw",
+  "api_secret": "JmF7d48wrEfkkF1WWLS2OSSJmVVvtyzb5mnVmweM2MLqKAyYUwoTJT8FG6SZ8A08qv2Rb6RUZycnGe43PQ",
   "base_url": "https://open-api.bingx.com",
   "timeframe": "15m",
   "scan_interval_minutes": 5,

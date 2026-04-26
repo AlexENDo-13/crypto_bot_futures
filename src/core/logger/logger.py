@@ -1,5 +1,5 @@
 """
-CryptoBot v9.3 - Advanced Logging System (FIXED)
+CryptoBot v9.3 - Advanced Logging System
 """
 import logging
 import sys
