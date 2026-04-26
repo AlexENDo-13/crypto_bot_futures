@@ -1,5 +1,5 @@
 """
-CryptoBot v9.1 - Advanced Logging System (FIXED)
+CryptoBot v9.3 - Advanced Logging System (FIXED)
 """
 import logging
 import sys
@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Callable
+
 
 class CallbackLogHandler(logging.Handler):
     def __init__(self, callback: Callable[[str, int], None] = None):
@@ -28,6 +29,7 @@ class CallbackLogHandler(logging.Handler):
                     pass
         except Exception:
             self.handleError(record)
+
 
 class BotLogger:
     _instance = None
@@ -61,17 +63,17 @@ class BotLogger:
             ))
             self.logger.addHandler(console)
 
-            log_file = self.log_dir / ("bot_" + datetime.now().strftime("%Y%m%d") + ".log")
-            file_h = RotatingFileHandler(
-                log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'
-            )
-            file_h.setLevel(logging.DEBUG)
-            file_h.setFormatter(logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(name)s - %(filename)s:%(lineno)d | %(message)s"
-            ))
-            self.logger.addHandler(file_h)
+        log_file = self.log_dir / ("bot_" + datetime.now().strftime("%Y%m%d") + ".log")
+        file_h = RotatingFileHandler(
+            log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8'
+        )
+        file_h.setLevel(logging.DEBUG)
+        file_h.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s - %(filename)s:%(lineno)d | %(message)s"
+        ))
+        self.logger.addHandler(file_h)
 
-        self.logger.info("BotLogger v9.1 initialized | log_dir=%s level=%s", log_dir, logging.getLevelName(level))
+        self.logger.info("BotLogger v9.3 initialized | log_dir=%s level=%s", log_dir, logging.getLevelName(level))
 
     def info(self, msg, *args, **kwargs):
         self.logger.info(msg, *args, **kwargs)
@@ -135,6 +137,7 @@ class BotLogger:
     def log_decision(self, action: str, symbol, data: dict):
         msg = f"DECISION {action} | sym={symbol} | " + " | ".join(f"{k}={v}" for k, v in data.items())
         self.logger.info(msg)
+
 
 def get_logger(name: str = "CryptoBot") -> logging.Logger:
     return BotLogger().get_logger(name)
