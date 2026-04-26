@@ -1,6 +1,7 @@
 """
-Main Window for CryptoBot v9.1 (FIXED)
+Main Window for CryptoBot v9.3 (FIXED)
 Full GUI with pages: Dashboard, Positions, Config, Logs
+Fixed: Config page fields, API key input, settings save/load
 """
 import logging
 import sys
@@ -13,12 +14,28 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QTableWidget, QTableWidgetItem,
     QPlainTextEdit, QSplitter, QStatusBar, QMessageBox,
-    QStackedWidget, QFrame
+    QStackedWidget, QFrame, QLineEdit, QGroupBox, QFormLayout,
+    QSpinBox, QDoubleSpinBox, QCheckBox, QScrollArea
 )
 
 from src.exchange.api_client import BingXAPIClient
 from src.config.settings import Settings
 from src.core.engine.trading_engine import TradingEngine
+
+
+class GuiLogHandler(logging.Handler):
+    def __init__(self, signal):
+        super().__init__()
+        self.signal = signal
+        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s | %(message)s", "%H:%M:%S"))
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self.signal.emit(msg)
+        except Exception:
+            pass
+
 
 class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
@@ -30,11 +47,12 @@ class MainWindow(QMainWindow):
         self.engine = engine
         self.settings = settings
         self.logger = logging.getLogger("CryptoBot")
-        self.setWindowTitle("CryptoBot v9.1 - Neural Adaptive GUI [FIXED]")
+        self.setWindowTitle("CryptoBot v9.3 - Neural Adaptive GUI [FIXED]")
         self.resize(1400, 900)
 
         self._init_ui()
         self._connect_signals()
+        self._load_settings()
 
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self._update_stats)
@@ -44,7 +62,7 @@ class MainWindow(QMainWindow):
         self.scan_timer.timeout.connect(self.run_scan)
         self.scan_timer.start(60000)
 
-        self.logger.info("MainWindow initialized with TradingEngine")
+        self.logger.info("MainWindow initialized with TradingEngine v9.3")
 
     def _init_ui(self):
         central_widget = QWidget()
@@ -137,7 +155,7 @@ class MainWindow(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("CryptoBot v9.1 Ready")
+        self.status_bar.showMessage("CryptoBot v9.3 Ready")
 
     def _create_dashboard_page(self):
         page = QWidget()
@@ -213,74 +231,170 @@ class MainWindow(QMainWindow):
         return page
 
     def _create_config_page(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("background-color: #1e1e2e; border: none;")
+
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
 
-        api_group = QFrame()
-        api_group.setStyleSheet("QFrame { background-color: #313244; border-radius: 8px; padding: 10px; }")
-        api_layout = QVBoxLayout(api_group)
-        api_title = QLabel("API Settings")
-        api_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #cdd6f4;")
-        api_layout.addWidget(api_title)
+        # === API Settings ===
+        api_group = QGroupBox("API Settings")
+        api_group.setStyleSheet("""
+            QGroupBox { 
+                color: #cdd6f4; font-size: 14px; font-weight: bold; 
+                border: 1px solid #313244; border-radius: 8px; margin-top: 10px; padding-top: 10px;
+            }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+        """)
+        api_layout = QFormLayout(api_group)
+        api_layout.setSpacing(10)
 
-        self.cfg_api_key = QPlainTextEdit()
-        self.cfg_api_key.setPlaceholderText("BingX API Key")
-        self.cfg_api_key.setMaximumBlockCount(1)
-        self.cfg_api_key.setStyleSheet("background-color: #181825; color: #cdd6f4;")
-        api_layout.addWidget(self.cfg_api_key)
+        self.cfg_api_key = QLineEdit()
+        self.cfg_api_key.setPlaceholderText("Paste BingX API Key here")
+        self.cfg_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cfg_api_key.setStyleSheet("""
+            QLineEdit { background-color: #181825; color: #cdd6f4; padding: 8px; border: 1px solid #313244; border-radius: 4px; }
+            QLineEdit:focus { border: 1px solid #89b4fa; }
+        """)
+        api_layout.addRow("API Key:", self.cfg_api_key)
 
-        self.cfg_api_secret = QPlainTextEdit()
-        self.cfg_api_secret.setPlaceholderText("BingX API Secret")
-        self.cfg_api_secret.setMaximumBlockCount(1)
-        self.cfg_api_secret.setStyleSheet("background-color: #181825; color: #cdd6f4;")
-        api_layout.addWidget(self.cfg_api_secret)
+        self.cfg_api_secret = QLineEdit()
+        self.cfg_api_secret.setPlaceholderText("Paste BingX API Secret here")
+        self.cfg_api_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cfg_api_secret.setStyleSheet("""
+            QLineEdit { background-color: #181825; color: #cdd6f4; padding: 8px; border: 1px solid #313244; border-radius: 4px; }
+            QLineEdit:focus { border: 1px solid #89b4fa; }
+        """)
+        api_layout.addRow("API Secret:", self.cfg_api_secret)
 
-        self.cfg_demo = QPushButton("Demo Mode: ON")
-        self.cfg_demo.setCheckable(True)
+        self.cfg_demo = QCheckBox("Demo Mode (Paper Trading)")
         self.cfg_demo.setChecked(True)
-        self.cfg_demo.clicked.connect(self._toggle_demo_mode)
-        api_layout.addWidget(self.cfg_demo)
+        self.cfg_demo.setStyleSheet("color: #cdd6f4; spacing: 8px;")
+        api_layout.addRow(self.cfg_demo)
 
         layout.addWidget(api_group)
 
-        trade_group = QFrame()
-        trade_group.setStyleSheet("QFrame { background-color: #313244; border-radius: 8px; padding: 10px; }")
-        trade_layout = QVBoxLayout(trade_group)
-        trade_title = QLabel("Trading Settings")
-        trade_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #cdd6f4;")
-        trade_layout.addWidget(trade_title)
+        # === Trading Settings ===
+        trade_group = QGroupBox("Trading Settings")
+        trade_group.setStyleSheet(api_group.styleSheet())
+        trade_layout = QFormLayout(trade_group)
+        trade_layout.setSpacing(10)
 
-        self.cfg_leverage = QComboBox()
-        self.cfg_leverage.addItems([str(i) for i in range(1, 51)])
-        self.cfg_leverage.setCurrentText("10")
-        trade_layout.addWidget(QLabel("Max Leverage:"))
-        trade_layout.addWidget(self.cfg_leverage)
+        self.cfg_leverage = QSpinBox()
+        self.cfg_leverage.setRange(1, 50)
+        self.cfg_leverage.setValue(10)
+        self.cfg_leverage.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        trade_layout.addRow("Max Leverage:", self.cfg_leverage)
 
-        self.cfg_positions = QComboBox()
-        self.cfg_positions.addItems([str(i) for i in range(1, 21)])
-        self.cfg_positions.setCurrentText("3")
-        trade_layout.addWidget(QLabel("Max Positions:"))
-        trade_layout.addWidget(self.cfg_positions)
+        self.cfg_positions = QSpinBox()
+        self.cfg_positions.setRange(1, 20)
+        self.cfg_positions.setValue(3)
+        self.cfg_positions.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        trade_layout.addRow("Max Positions:", self.cfg_positions)
 
-        self.cfg_risk = QComboBox()
-        self.cfg_risk.addItems(["0.5", "1.0", "2.0", "3.0", "5.0"])
-        self.cfg_risk.setCurrentText("1.0")
-        trade_layout.addWidget(QLabel("Risk per Trade %:"))
-        trade_layout.addWidget(self.cfg_risk)
+        self.cfg_risk = QDoubleSpinBox()
+        self.cfg_risk.setRange(0.1, 10.0)
+        self.cfg_risk.setValue(1.0)
+        self.cfg_risk.setSingleStep(0.5)
+        self.cfg_risk.setDecimals(1)
+        self.cfg_risk.setSuffix(" %")
+        self.cfg_risk.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        trade_layout.addRow("Risk per Trade:", self.cfg_risk)
 
-        self.cfg_scan_interval = QComboBox()
-        self.cfg_scan_interval.addItems(["1", "3", "5", "10", "15", "30", "60"])
-        self.cfg_scan_interval.setCurrentText("5")
-        trade_layout.addWidget(QLabel("Scan Interval (min):"))
-        trade_layout.addWidget(self.cfg_scan_interval)
+        self.cfg_scan_interval = QSpinBox()
+        self.cfg_scan_interval.setRange(1, 60)
+        self.cfg_scan_interval.setValue(5)
+        self.cfg_scan_interval.setSuffix(" min")
+        self.cfg_scan_interval.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        trade_layout.addRow("Scan Interval:", self.cfg_scan_interval)
+
+        self.cfg_max_daily = QSpinBox()
+        self.cfg_max_daily.setRange(1, 50)
+        self.cfg_max_daily.setValue(15)
+        self.cfg_max_daily.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        trade_layout.addRow("Max Daily Trades:", self.cfg_max_daily)
+
+        self.cfg_sl_pct = QDoubleSpinBox()
+        self.cfg_sl_pct.setRange(0.1, 10.0)
+        self.cfg_sl_pct.setValue(1.5)
+        self.cfg_sl_pct.setSingleStep(0.1)
+        self.cfg_sl_pct.setDecimals(1)
+        self.cfg_sl_pct.setSuffix(" %")
+        self.cfg_sl_pct.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        trade_layout.addRow("Default SL %:", self.cfg_sl_pct)
+
+        self.cfg_tp_pct = QDoubleSpinBox()
+        self.cfg_tp_pct.setRange(0.5, 20.0)
+        self.cfg_tp_pct.setValue(3.0)
+        self.cfg_tp_pct.setSingleStep(0.5)
+        self.cfg_tp_pct.setDecimals(1)
+        self.cfg_tp_pct.setSuffix(" %")
+        self.cfg_tp_pct.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        trade_layout.addRow("Default TP %:", self.cfg_tp_pct)
 
         layout.addWidget(trade_group)
 
+        # === Filters ===
+        filter_group = QGroupBox("Market Filters")
+        filter_group.setStyleSheet(api_group.styleSheet())
+        filter_layout = QFormLayout(filter_group)
+        filter_layout.setSpacing(10)
+
+        self.cfg_min_adx = QDoubleSpinBox()
+        self.cfg_min_adx.setRange(1.0, 50.0)
+        self.cfg_min_adx.setValue(10.0)
+        self.cfg_min_adx.setSingleStep(1.0)
+        self.cfg_min_adx.setDecimals(1)
+        self.cfg_min_adx.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        filter_layout.addRow("Min ADX:", self.cfg_min_adx)
+
+        self.cfg_min_atr = QDoubleSpinBox()
+        self.cfg_min_atr.setRange(0.1, 5.0)
+        self.cfg_min_atr.setValue(0.5)
+        self.cfg_min_atr.setSingleStep(0.1)
+        self.cfg_min_atr.setDecimals(1)
+        self.cfg_min_atr.setSuffix(" %")
+        self.cfg_min_atr.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        filter_layout.addRow("Min ATR %:", self.cfg_min_atr)
+
+        self.cfg_min_volume = QDoubleSpinBox()
+        self.cfg_min_volume.setRange(1000, 10000000)
+        self.cfg_min_volume.setValue(50000)
+        self.cfg_min_volume.setSingleStep(10000)
+        self.cfg_min_volume.setDecimals(0)
+        self.cfg_min_volume.setSuffix(" USDT")
+        self.cfg_min_volume.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        filter_layout.addRow("Min Volume 24h:", self.cfg_min_volume)
+
+        self.cfg_min_signal = QDoubleSpinBox()
+        self.cfg_min_signal.setRange(0.05, 1.0)
+        self.cfg_min_signal.setValue(0.25)
+        self.cfg_min_signal.setSingleStep(0.05)
+        self.cfg_min_signal.setDecimals(2)
+        self.cfg_min_signal.setStyleSheet("color: #cdd6f4; background-color: #181825;")
+        filter_layout.addRow("Min Signal Strength:", self.cfg_min_signal)
+
+        self.cfg_use_mtf = QCheckBox("Use Multi-Timeframe")
+        self.cfg_use_mtf.setChecked(True)
+        self.cfg_use_mtf.setStyleSheet("color: #cdd6f4;")
+        filter_layout.addRow(self.cfg_use_mtf)
+
+        self.cfg_use_spread = QCheckBox("Use Spread Filter")
+        self.cfg_use_spread.setChecked(True)
+        self.cfg_use_spread.setStyleSheet("color: #cdd6f4;")
+        filter_layout.addRow(self.cfg_use_spread)
+
+        layout.addWidget(filter_group)
+
+        # === Save Button ===
         self.btn_save = QPushButton("Save Settings")
         self.btn_save.setStyleSheet("""
             QPushButton {
                 background-color: #a6e3a1; color: #1e1e2e;
-                padding: 10px; border-radius: 6px; font-weight: bold; font-size: 14px;
+                padding: 12px; border-radius: 6px; font-weight: bold; font-size: 14px;
             }
             QPushButton:hover { background-color: #b4f0b4; }
         """)
@@ -288,8 +402,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_save)
         layout.addStretch()
 
-        self._load_settings()
-        return page
+        scroll.setWidget(page)
+        return scroll
 
     def _create_logs_page(self):
         page = QWidget()
@@ -429,43 +543,65 @@ class MainWindow(QMainWindow):
             asyncio.create_task(do_close_all())
 
     def _load_settings(self):
-        self.cfg_api_key.setPlainText(self.settings.get("api_key", ""))
-        self.cfg_api_secret.setPlainText(self.settings.get("api_secret", ""))
-        self.cfg_demo.setChecked(self.settings.get("demo_mode", True))
-        self.cfg_demo.setText("Demo Mode: ON" if self.cfg_demo.isChecked() else "Demo Mode: OFF")
-        self.cfg_leverage.setCurrentText(str(self.settings.get("max_leverage", 10)))
-        self.cfg_positions.setCurrentText(str(self.settings.get("max_positions", 3)))
-        self.cfg_risk.setCurrentText(str(self.settings.get("max_risk_per_trade", 1.0)))
-        self.cfg_scan_interval.setCurrentText(str(self.settings.get("scan_interval_minutes", 5)))
-
-    def _toggle_demo_mode(self):
-        checked = self.cfg_demo.isChecked()
-        self.cfg_demo.setText("Demo Mode: ON" if checked else "Demo Mode: OFF")
+        """Load settings from config into UI fields"""
+        try:
+            self.cfg_api_key.setText(self.settings.get("api_key", ""))
+            self.cfg_api_secret.setText(self.settings.get("api_secret", ""))
+            self.cfg_demo.setChecked(self.settings.get("demo_mode", True))
+            self.cfg_leverage.setValue(self.settings.get("max_leverage", 10))
+            self.cfg_positions.setValue(self.settings.get("max_positions", 3))
+            self.cfg_risk.setValue(self.settings.get("max_risk_per_trade", 1.0))
+            self.cfg_scan_interval.setValue(self.settings.get("scan_interval_minutes", 5))
+            self.cfg_max_daily.setValue(self.settings.get("max_daily_trades", 15))
+            self.cfg_sl_pct.setValue(self.settings.get("default_sl_pct", 1.5))
+            self.cfg_tp_pct.setValue(self.settings.get("default_tp_pct", 3.0))
+            self.cfg_min_adx.setValue(self.settings.get("min_adx", 10.0))
+            self.cfg_min_atr.setValue(self.settings.get("min_atr_percent", 0.5))
+            self.cfg_min_volume.setValue(self.settings.get("min_volume_24h_usdt", 50000))
+            self.cfg_min_signal.setValue(self.settings.get("min_signal_strength", 0.25))
+            self.cfg_use_mtf.setChecked(self.settings.get("use_multi_timeframe", True))
+            self.cfg_use_spread.setChecked(self.settings.get("use_spread_filter", True))
+        except Exception as e:
+            self.logger.error(f"Load settings error: {e}")
 
     def _save_settings(self):
-        api_key = self.cfg_api_key.toPlainText().strip()
-        api_secret = self.cfg_api_secret.toPlainText().strip()
+        """Save UI fields to config and update API client"""
+        try:
+            api_key = self.cfg_api_key.text().strip()
+            api_secret = self.cfg_api_secret.text().strip()
 
-        updates = {
-            "api_key": api_key,
-            "api_secret": api_secret,
-            "demo_mode": self.cfg_demo.isChecked(),
-            "max_leverage": int(self.cfg_leverage.currentText()),
-            "max_positions": int(self.cfg_positions.currentText()),
-            "max_risk_per_trade": float(self.cfg_risk.currentText()),
-            "scan_interval_minutes": int(self.cfg_scan_interval.currentText()),
-        }
-        self.settings.update(updates)
-        self.api_client.update_credentials(api_key, api_secret)
+            updates = {
+                "api_key": api_key,
+                "api_secret": api_secret,
+                "demo_mode": self.cfg_demo.isChecked(),
+                "max_leverage": self.cfg_leverage.value(),
+                "max_positions": self.cfg_positions.value(),
+                "max_risk_per_trade": self.cfg_risk.value(),
+                "scan_interval_minutes": self.cfg_scan_interval.value(),
+                "max_daily_trades": self.cfg_max_daily.value(),
+                "default_sl_pct": self.cfg_sl_pct.value(),
+                "default_tp_pct": self.cfg_tp_pct.value(),
+                "min_adx": self.cfg_min_adx.value(),
+                "min_atr_percent": self.cfg_min_atr.value(),
+                "min_volume_24h_usdt": self.cfg_min_volume.value(),
+                "min_signal_strength": self.cfg_min_signal.value(),
+                "use_multi_timeframe": self.cfg_use_mtf.isChecked(),
+                "use_spread_filter": self.cfg_use_spread.isChecked(),
+            }
+            self.settings.update(updates)
+            self.api_client.update_credentials(api_key, api_secret)
 
-        demo = self.cfg_demo.isChecked()
-        self.mode_label.setText("MODE: PAPER" if demo else "MODE: LIVE")
-        self.mode_label.setStyleSheet(
-            "color: #a6e3a1; font-weight: bold;" if demo else "color: #f38ba8; font-weight: bold;"
-        )
+            demo = self.cfg_demo.isChecked()
+            self.mode_label.setText("MODE: PAPER" if demo else "MODE: LIVE")
+            self.mode_label.setStyleSheet(
+                "color: #a6e3a1; font-weight: bold;" if demo else "color: #f38ba8; font-weight: bold;"
+            )
 
-        QMessageBox.information(self, "Saved", "Settings saved! API credentials updated.")
-        self.logger.info("Settings saved via GUI")
+            QMessageBox.information(self, "Saved", "Settings saved! API credentials updated.")
+            self.logger.info("Settings saved via GUI")
+        except Exception as e:
+            self.logger.error(f"Save settings error: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")
 
     def _clear_logs(self):
         self.log_viewer.clear()
@@ -564,13 +700,3 @@ class MainWindow(QMainWindow):
         self.update_timer.stop()
         self.scan_timer.stop()
         event.accept()
-
-class GuiLogHandler(logging.Handler):
-    def __init__(self, signal):
-        super().__init__()
-        self.signal = signal
-        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s | %(message)s", "%H:%M:%S"))
-
-    def emit(self, record):
-        msg = self.format(record)
-        self.signal.emit(msg)
