@@ -19,7 +19,7 @@ class Settings:
         "trailing_callback": 0.5, "use_stepped_take_profit": True,
         "anti_chase_enabled": True, "dead_weight_exit_enabled": True,
         "adaptive_tp_enabled": True, "max_hold_time_minutes": 240,
-        "use_multi_timeframe": True, "mtf_timeframes": ["1h","4h"],
+        "use_multi_timeframe": True, "mtf_timeframes": ["1h", "4h", "1d"],
         "mtf_required_agreement": 2, "use_bollinger_filter": True,
         "use_candle_patterns": True, "use_macd_indicator": True,
         "use_ichimoku_indicator": True, "use_vwap_indicator": True,
@@ -71,7 +71,8 @@ class Settings:
             if os.path.exists(self.config_path):
                 try:
                     with open(self.config_path, "r", encoding="utf-8") as f:
-                        self._data.update(json.load(f))
+                        loaded = json.load(f)
+                        self._data.update(loaded)
                 except Exception as e:
                     print(f"Config load error: {e}")
             for k, v in self.DEFAULTS.items():
