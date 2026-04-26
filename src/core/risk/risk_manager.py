@@ -127,7 +127,6 @@ class RiskManager:
         try:
             account = await self.client.get_account_balance()
             if account and isinstance(account, dict):
-                # Handle nested dict structure from BingX
                 if "balance" in account and isinstance(account["balance"], dict):
                     balance = float(account["balance"].get("balance", 0))
                 else:

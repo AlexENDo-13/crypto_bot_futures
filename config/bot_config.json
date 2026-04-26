@@ -1,8 +1,8 @@
 {
   "demo_mode": false,
   "virtual_balance": 100.0,
-  "api_key": "CdSWeAc3nivQLxvBqbX40cGwGi5P9TLboVUl2VvoYQfYMfM8it9WbGCwmtbZG77pYl3rzTVx7hkxTgwkw",
-  "api_secret": "JmF7d48wrEfkkF1WWLS2OSSJmVVvtyzb5mnVmweM2MLqKAyYUwoTJT8FG6SZ8A08qv2Rb6RUZycnGe43PQ",
+  "api_key": "",
+  "api_secret": "",
   "base_url": "https://open-api.bingx.com",
   "timeframe": "15m",
   "scan_interval_minutes": 5,
@@ -78,33 +78,13 @@
   "voice_enabled": false,
   "dark_theme": true,
   "show_charts": true,
-  "symbols_whitelist": [
-    "BTC-USDT",
-    "ETH-USDT",
-    "SOL-USDT",
-    "XRP-USDT",
-    "DOGE-USDT",
-    "ADA-USDT",
-    "AVAX-USDT",
-    "LINK-USDT",
-    "MATIC-USDT",
-    "DOT-USDT",
-    "LTC-USDT",
-    "BCH-USDT",
-    "ETC-USDT",
-    "UNI-USDT",
-    "ATOM-USDT",
-    "FIL-USDT",
-    "ALGO-USDT",
-    "NEAR-USDT",
-    "APT-USDT",
-    "ARB-USDT"
-  ],
+  "symbols_whitelist": [],
   "blacklist": [
     "SHIB-USDT",
     "PEPE-USDT",
     "FLOKI-USDT",
-    "BONK-USDT"
+    "BONK-USDT",
+    "DOGE-USDT"
   ],
   "max_daily_trades": 15,
   "daily_profit_target_percent": 5.0,
@@ -126,5 +106,6 @@
   "adaptive_scan_interval": true,
   "fast_mode_empty_scans": true,
   "aggressive_adaptation": true,
-  "cache_ttl_seconds": 60
+  "cache_ttl_seconds": 60,
+  "position_mode": "HEDGE"
 }
