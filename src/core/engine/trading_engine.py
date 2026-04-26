@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TradingEngine v5.2 — Self-healing adaptive engine. Never stops."""
+"""TradingEngine v5.3 — Self-healing adaptive engine. Never stops."""
 import asyncio
 import time
 import logging
@@ -72,6 +72,8 @@ class TradingEngine:
         self._last_successful_scan = time.time()
         self._market_volatility = 0.5
         self._recovery_mode = False
+        self._balance_fetch_attempts = 0
+        self._max_balance_attempts = 10
 
     def _ensure_csv(self):
         if not os.path.exists(self._csv_path):
@@ -83,9 +85,10 @@ class TradingEngine:
     async def start(self):
         self.running = True
         self._stop_event.clear()
-        self.logger.info("Starting TradingEngine v5.2 (Self-Healing)...")
+        self.logger.info("Starting TradingEngine v5.3 (Self-Healing)...")
 
-        for attempt in range(5):
+        # Try to get balance with extended retries
+        for attempt in range(self._max_balance_attempts):
             try:
                 bal_info = await self.risk_manager.get_account_balance()
                 self.balance = bal_info.get("total_equity", 0)
@@ -93,18 +96,20 @@ class TradingEngine:
                 if self.balance > 0:
                     self.logger.info(f"Balance: {self.balance:.4f} USDT")
                     self._balance_fetch_failures = 0
+                    self._balance_fetch_attempts = 0
                     break
                 else:
-                    self.logger.warning(f"Balance = 0 (attempt {attempt + 1}/5)")
-                    if attempt < 4:
-                        await asyncio.sleep(min(2 ** attempt, 10))
+                    self.logger.warning(f"Balance = 0 (attempt {attempt + 1}/{self._max_balance_attempts})")
+                    if attempt < self._max_balance_attempts - 1:
+                        await asyncio.sleep(min(2 ** attempt, 15))
             except Exception as e:
-                self.logger.error(f"Balance error (attempt {attempt + 1}/5): {e}")
-                if attempt < 4:
-                    await asyncio.sleep(min(2 ** attempt, 10))
+                self.logger.error(f"Balance error (attempt {attempt + 1}/{self._max_balance_attempts}): {e}")
+                if attempt < self._max_balance_attempts - 1:
+                    await asyncio.sleep(min(2 ** attempt, 15))
 
         if self.balance <= 0:
-            self.logger.warning("Balance not received. Running in monitoring mode.")
+            self.logger.warning("Balance not received. Running in monitoring mode. Trading disabled until balance available.")
+            # Still continue - bot will keep trying to fetch balance in main loop
 
         await self._sync_positions()
         self._task = asyncio.create_task(self._main_loop())
@@ -126,6 +131,18 @@ class TradingEngine:
             try:
                 loop_start = time.time()
                 self._loop_count += 1
+
+                # Update balance every loop if it's 0
+                if self.balance <= 0:
+                    try:
+                        bal_info = await self.risk_manager.get_account_balance()
+                        new_balance = bal_info.get("total_equity", 0)
+                        if new_balance > 0:
+                            self.balance = new_balance
+                            self.start_balance = new_balance
+                            self.logger.info(f"Balance updated: {self.balance:.4f} USDT")
+                    except Exception as e:
+                        self.logger.debug(f"Balance fetch retry error: {e}")
 
                 for operation, name in [
                     (self._update_balance, "balance"),
@@ -295,6 +312,10 @@ class TradingEngine:
     async def _scan_and_trade(self):
         self.logger.info("Starting market scan...")
         self.logger.log_decision("scan_start", None, {"balance": self.balance, "positions": len(self.positions)})
+
+        # If balance is 0, still scan but log warning
+        if self.balance <= 0:
+            self.logger.warning("Balance is 0, scanning in monitoring mode only (no trades)")
 
         ok, reason = self.risk_manager.can_open_position(len(self.positions), self.balance)
         if not ok:
