@@ -1,11 +1,7 @@
 """
-BingX API Client v13.1 - PRODUCTION FIX
-Based on verified BingX Futures API implementation:
-- Signature = HMAC_SHA256(secret, query_string) where query_string = urlencode(sorted(params))
-- apiKey ONLY in X-BX-APIKEY header, NEVER in query string or signature
-- All requests use v2 endpoints
-- All values passed as strings
-- Empty body for POST requests
+BingX API Client v15.0 - CRITICAL FIX
+Signature must match EXACTLY what goes on the wire.
+We build the full query string manually before signing.
 """
 import asyncio
 import hashlib
@@ -42,14 +38,12 @@ class BingXAPIClient:
         self._recv_window = 5000
 
     def update_credentials(self, api_key: str, api_secret: str):
-        """Update API credentials and FORCE recreate session with new headers"""
         old_key = self.api_key
         self.api_key = api_key.strip() if api_key else ""
         self.api_secret = api_secret.strip() if api_secret else ""
         self.logger.info(f"API credentials updated (key changed: {old_key != self.api_key})")
         self._circuit_open = False
         self._consecutive_errors = 0
-        # CRITICAL: Force recreate session on next request
         if self._session and not self._session.closed:
             asyncio.create_task(self._close_session())
             self._session = None
@@ -73,22 +67,38 @@ class BingXAPIClient:
             await self._session.close()
             self._session = None
 
-    def _generate_signature(self, params: dict) -> str:
+    def _build_signed_url(self, endpoint: str, params: Optional[dict] = None) -> str:
         """
-        BingX v2 signature format:
-        signature = HMAC_SHA256(secret, query_string)
-        where query_string = urlencode(sorted(params))
-        CRITICAL: apiKey is NOT included in params for signing
+        CRITICAL: Build the COMPLETE URL with signature before any aiohttp processing.
+        This ensures the signature matches EXACTLY what goes on the wire.
         """
-        str_params = {k: str(v) for k, v in sorted(params.items()) if k != "signature"}
-        query_string = urllib.parse.urlencode(str_params)
+        query_params = {}
+        if params:
+            for k, v in params.items():
+                query_params[k] = str(v)
+
+        query_params["timestamp"] = str(int(time.time() * 1000))
+        query_params["recvWindow"] = str(self._recv_window)
+
+        # Sort and build query string manually (same as urllib.parse.urlencode)
+        sorted_items = sorted(query_params.items(), key=lambda x: x[0])
+        query_string = urllib.parse.urlencode(sorted_items)
+
+        # Sign the query string
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
             query_string.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
-        self.logger.debug(f"Signing: {query_string[:80]}... -> sig={signature[:16]}...")
-        return signature
+
+        # Append signature to query string
+        full_query = query_string + f"&signature={signature}"
+
+        # Build complete URL
+        full_url = f"{self.base_url}{endpoint}?{full_query}"
+
+        self.logger.debug(f"Signed URL: {endpoint}?{query_string[:60]}...&signature={signature[:16]}...")
+        return full_url
 
     async def _request(self, method: str, endpoint: str, params: Optional[dict] = None,
                        signed: bool = False, retries: int = 3) -> dict:
@@ -109,37 +119,35 @@ class BingXAPIClient:
         if signed and (not self.api_key or not self.api_secret):
             return {"code": -1, "msg": "API key and secret required for signed request"}
 
-        url = f"{self.base_url}{endpoint}"
-        query_params = {}
-        if params:
-            query_params = {k: str(v) for k, v in params.items()}
-
-        if signed:
-            query_params["timestamp"] = str(int(time.time() * 1000))
-            query_params["recvWindow"] = str(self._recv_window)
-            query_params["signature"] = self._generate_signature(query_params)
-
         last_error = None
         for attempt in range(retries):
             try:
                 session = await self._get_or_create_session()
 
+                if signed:
+                    # Build complete signed URL - NO params passed to aiohttp
+                    url = self._build_signed_url(endpoint, params)
+                    request_params = None  # Already in URL
+                else:
+                    url = f"{self.base_url}{endpoint}"
+                    request_params = params
+
                 if method.upper() == "GET":
-                    async with session.get(url, params=query_params, timeout=self._timeout) as response:
+                    async with session.get(url, params=request_params, timeout=self._timeout) as response:
                         text = await response.text()
                         try:
                             data = await response.json(content_type=None)
                         except:
                             data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
                 elif method.upper() == "POST":
-                    async with session.post(url, params=query_params, timeout=self._timeout) as response:
+                    async with session.post(url, params=request_params, timeout=self._timeout) as response:
                         text = await response.text()
                         try:
                             data = await response.json(content_type=None)
                         except:
                             data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
                 elif method.upper() == "DELETE":
-                    async with session.delete(url, params=query_params, timeout=self._timeout) as response:
+                    async with session.delete(url, params=request_params, timeout=self._timeout) as response:
                         text = await response.text()
                         try:
                             data = await response.json(content_type=None)
@@ -170,6 +178,7 @@ class BingXAPIClient:
                     self.logger.error(f"SIGNATURE MISMATCH on {endpoint}! Attempt {attempt+1}/{retries}")
                     self.logger.error(f"Full response: {data}")
                     self.logger.error(f"api_key present: {bool(self.api_key)}, api_secret present: {bool(self.api_secret)}")
+                    self.logger.error(f"api_key length: {len(self.api_key)}, api_secret length: {len(self.api_secret)}")
                     # Force recreate session on signature error
                     await self._close_session()
                     await asyncio.sleep(2 ** attempt)
@@ -266,7 +275,6 @@ class BingXAPIClient:
 
     # ==================== PRIVATE API ====================
     async def get_account_balance(self) -> dict:
-        """Query account balance using v2 endpoint with correct signature"""
         response = await self._request("GET", "/openApi/swap/v2/user/balance", {}, signed=True)
         self.logger.info(f"Balance response: {response}")
         if response.get("code") == 0 and "data" in response:
@@ -364,10 +372,6 @@ class BingXAPIClient:
         return []
 
     async def close_position(self, symbol: str, position_side: str, quantity: str = "0") -> dict:
-        """
-        Close position fully or partially via /trade/order with closePosition flag.
-        quantity="0" closes entire position.
-        """
         side = "SELL" if position_side == "LONG" else "BUY"
         params = {
             "symbol": symbol,
