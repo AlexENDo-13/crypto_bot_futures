@@ -32,6 +32,14 @@ class MarketScanner:
         self._market_volatility = 0.5
         self._market_trend = "neutral"
 
+        # Prevent looping on same pairs
+        self._failed_symbols = {}  # symbol -> fail_count
+        self._max_symbol_fails = 3
+        self._symbol_cooldown = {}  # symbol -> cooldown_until
+        self._cooldown_duration = 300  # 5 minutes
+        self._scanned_symbols_history = []  # track last scanned symbols
+        self._max_history = 50
+
     def adapt_for_balance(self, balance):
         if balance < 100:
             self.mtf_required = 1
@@ -72,7 +80,40 @@ class MarketScanner:
             self.current_min_signal = min(base_sig, self.current_min_signal * restore)
             self.successful_scans_count = 0
 
+    def _is_symbol_available(self, symbol):
+        """Check if symbol is not in cooldown and not failed too many times"""
+        now = time.time()
+
+        # Check cooldown
+        if symbol in self._symbol_cooldown:
+            if now < self._symbol_cooldown[symbol]:
+                return False
+            else:
+                del self._symbol_cooldown[symbol]
+
+        # Check fail count
+        if symbol in self._failed_symbols:
+            if self._failed_symbols[symbol] >= self._max_symbol_fails:
+                return False
+
+        return True
+
+    def _mark_symbol_failed(self, symbol):
+        """Mark symbol as failed, increment counter"""
+        self._failed_symbols[symbol] = self._failed_symbols.get(symbol, 0) + 1
+        if self._failed_symbols[symbol] >= self._max_symbol_fails:
+            self.logger.warning(f"Symbol {symbol} failed {self._max_symbol_fails} times, cooling down for 5min")
+            self._symbol_cooldown[symbol] = time.time() + self._cooldown_duration
+
+    def _mark_symbol_success(self, symbol):
+        """Reset fail counter on success"""
+        if symbol in self._failed_symbols:
+            del self._failed_symbols[symbol]
+        if symbol in self._symbol_cooldown:
+            del self._symbol_cooldown[symbol]
+
     async def scan_async(self, balance, max_pairs=100, max_asset_price_ratio=0.5, ignore_session_check=False):
+        import time
         self.adapt_for_balance(balance)
         self._adapt_filters()
         self.logger.info(f"Scanning (balance: ${balance:.2f}, ADX>={self.current_min_adx:.1f}, "
@@ -93,7 +134,8 @@ class MarketScanner:
             "total": 0, "whitelist": 0, "blacklist": 0, "ticker_fail": 0,
             "volume": 0, "funding": 0, "spread": 0, "klines_fail": 0,
             "indicators_fail": 0, "neutral": 0, "adx": 0, "atr": 0,
-            "signal": 0, "mtf_reject": 0, "trap": 0, "passed": 0
+            "signal": 0, "mtf_reject": 0, "trap": 0, "passed": 0,
+            "cooldown": 0, "max_fails": 0
         }
         candidates = []
         symbols_to_scan = []
@@ -103,34 +145,68 @@ class MarketScanner:
             if not symbol:
                 continue
             filtered_count["total"] += 1
+
+            # Check whitelist
             if self.whitelist:
                 clean = symbol.replace("/", "-")
                 if clean not in self.whitelist and symbol not in self.whitelist:
                     filtered_count["whitelist"] += 1
                     continue
+
+            # Check blacklist
             if self.blacklist:
                 clean = symbol.replace("/", "-")
                 if clean in self.blacklist or symbol in self.blacklist:
                     filtered_count["blacklist"] += 1
                     continue
+
+            # Check cooldown and fail count
+            if not self._is_symbol_available(symbol):
+                if symbol in self._symbol_cooldown:
+                    filtered_count["cooldown"] += 1
+                else:
+                    filtered_count["max_fails"] += 1
+                continue
+
             symbols_to_scan.append(symbol)
 
-        batch_size = min(10, len(symbols_to_scan))
+        if not symbols_to_scan:
+            self.logger.warning("No symbols available to scan (all in cooldown or max fails reached)")
+            self.empty_scans_count += 1
+            self._scan_stats = {"total": filtered_count["total"], "passed": 0, "by_filter": filtered_count}
+            return []
+
+        # Shuffle symbols to avoid always scanning same order
+        import random
+        random.shuffle(symbols_to_scan)
+
+        # Limit batch size to prevent API overload
+        batch_size = min(5, len(symbols_to_scan))
 
         for i in range(0, len(symbols_to_scan), batch_size):
             batch = symbols_to_scan[i:i+batch_size]
             tasks = [self._analyze_symbol(s, filtered_count) for s in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for res in results:
-                if isinstance(res, dict) and res:
+
+            for sym, res in zip(batch, results):
+                if isinstance(res, Exception):
+                    self.logger.debug(f"Symbol {sym} analysis exception: {res}")
+                    self._mark_symbol_failed(sym)
+                elif isinstance(res, dict) and res:
                     candidates.append(res)
+                    self._mark_symbol_success(sym)
+                else:
+                    # Analysis returned empty - symbol failed filters
+                    self._mark_symbol_failed(sym)
+
             if i + batch_size < len(symbols_to_scan):
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1.0)  # Longer delay between batches
 
         self.logger.info(f"Filter stats: total={filtered_count['total']}, passed={filtered_count['passed']}, "
                          f"ticker_fail={filtered_count['ticker_fail']}, vol={filtered_count['volume']}, "
                          f"klines={filtered_count['klines_fail']}, ind={filtered_count['indicators_fail']}, "
-                         f"adx={filtered_count['adx']}, atr={filtered_count['atr']}, signal={filtered_count['signal']}")
+                         f"adx={filtered_count['adx']}, atr={filtered_count['atr']}, signal={filtered_count['signal']}, "
+                         f"cooldown={filtered_count['cooldown']}, max_fails={filtered_count['max_fails']}")
 
         if not candidates:
             self.empty_scans_count += 1
@@ -159,7 +235,8 @@ class MarketScanner:
 
         try:
             ticker = await self.data_fetcher.get_ticker_data(symbol)
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Ticker error {symbol}: {e}")
             ticker = None
 
         if not ticker:
@@ -172,6 +249,7 @@ class MarketScanner:
         bid = ticker.get("bid", 0)
         ask = ticker.get("ask", 0)
 
+        # Fallback volume calculation from klines if ticker volume is 0
         if volume_24h <= 0:
             try:
                 df_vol = await self.data_fetcher.fetch_klines_async(None, symbol, interval="1d", limit=2)
@@ -194,7 +272,8 @@ class MarketScanner:
 
         try:
             df = await self.data_fetcher.fetch_klines_async(None, symbol, interval=tf, limit=80)
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Klines error {symbol}: {e}")
             df = None
 
         if df is None or df.empty:
@@ -282,4 +361,6 @@ class MarketScanner:
             "market_trend": self._market_trend,
             "market_volatility": self._market_volatility,
             "empty_streak": self.empty_scans_count,
+            "failed_symbols_count": len(self._failed_symbols),
+            "cooldown_symbols_count": len(self._symbol_cooldown),
         }

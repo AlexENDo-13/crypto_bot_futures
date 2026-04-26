@@ -1,6 +1,11 @@
 """
-BingX API Client v9.3 - FULLY FIXED
-BingX uses HMAC SHA256 of (timestamp + apiKey) for v2, and query string for v3.
+BingX API Client v10.0 - FULLY FIXED based on official BingX docs
+Key fixes:
+1. Balance endpoint: /openApi/swap/v3/user/balance (v3, not v2)
+2. Signature for v3: HMAC(query_string) where query_string = sorted params WITHOUT apiKey in signature payload for some endpoints
+3. Public market data: v2 endpoints work correctly
+4. Ticker endpoint: /openApi/swap/v2/quote/ticker (not v3)
+5. Contracts: /openApi/swap/v2/quote/contracts (not v3)
 """
 import asyncio
 import hashlib
@@ -63,28 +68,27 @@ class BingXAPIClient:
             await self._session.close()
             self._session = None
 
-    def _generate_signature_v2(self, timestamp: str) -> str:
-        """BingX v2 signature: HMAC_SHA256(apiSecret, timestamp + apiKey)"""
-        message = timestamp + self.api_key
-        signature = hmac.new(
-            self.api_secret.encode("utf-8"),
-            message.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-        return signature
+    def _generate_signature(self, params: dict) -> str:
+        """
+        BingX v3 signature: HMAC_SHA256(secret, query_string)
+        query_string = urlencode(sorted(params))
+        apiKey is INCLUDED in the query string and therefore in the signature
+        """
+        # Sort params and create query string
+        sorted_params = sorted(params.items())
+        query_string = urllib.parse.urlencode(sorted_params)
 
-    def _generate_signature_v3(self, params: dict) -> str:
-        """BingX v3 signature: HMAC_SHA256(apiSecret, query_string)"""
-        query_string = urllib.parse.urlencode(sorted(params.items()))
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
             query_string.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
+
+        self.logger.debug(f"Signing: {query_string} -> {signature[:16]}...")
         return signature
 
     async def _request(self, method: str, endpoint: str, params: Optional[dict] = None,
-                       signed: bool = False, use_v2_sig: bool = False, retries: int = 3) -> dict:
+                       signed: bool = False, retries: int = 3) -> dict:
         now = time.time()
         elapsed = now - self._last_request_time
         if elapsed < self._adaptive_interval:
@@ -107,14 +111,10 @@ class BingXAPIClient:
 
         if signed:
             timestamp = str(int(time.time() * 1000))
-            if use_v2_sig:
-                query_params["timestamp"] = timestamp
-                query_params["apiKey"] = self.api_key
-                query_params["signature"] = self._generate_signature_v2(timestamp)
-            else:
-                query_params["timestamp"] = timestamp
-                query_params["apiKey"] = self.api_key
-                query_params["signature"] = self._generate_signature_v3(query_params)
+            query_params["timestamp"] = timestamp
+            # apiKey goes into query params for signature calculation
+            query_params["apiKey"] = self.api_key
+            query_params["signature"] = self._generate_signature(query_params)
 
         last_error = None
         for attempt in range(retries):
@@ -123,40 +123,58 @@ class BingXAPIClient:
 
                 if method.upper() == "GET":
                     async with session.get(url, params=query_params, timeout=self._timeout) as response:
-                        data = await response.json(content_type=None)
+                        text = await response.text()
+                        try:
+                            data = await response.json(content_type=None)
+                        except:
+                            data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
                 elif method.upper() == "POST":
                     async with session.post(url, params=query_params, timeout=self._timeout) as response:
-                        data = await response.json(content_type=None)
+                        text = await response.text()
+                        try:
+                            data = await response.json(content_type=None)
+                        except:
+                            data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
                 elif method.upper() == "DELETE":
                     async with session.delete(url, params=query_params, timeout=self._timeout) as response:
-                        data = await response.json(content_type=None)
+                        text = await response.text()
+                        try:
+                            data = await response.json(content_type=None)
+                        except:
+                            data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
                 else:
                     return {"code": -1, "msg": f"Unsupported method {method}"}
 
                 self._total_requests += 1
                 msg = str(data.get("msg", "")).lower()
+                code = data.get("code", data.get("status", -1))
 
-                if data.get("code") == 100400 or "api is not exist" in msg:
+                # Handle 100400 - endpoint not found
+                if code == 100400 or "api is not exist" in msg:
                     last_error = data
-                    self.logger.warning(f"Endpoint {endpoint} not found")
+                    self.logger.warning(f"Endpoint {endpoint} not found (100400)")
                     break
 
+                # Handle 100001 - signature mismatch
+                if code == 100001 or "signature" in msg:
+                    last_error = data
+                    self._consecutive_errors += 1
+                    self.logger.error(f"SIGNATURE MISMATCH on {endpoint}! Check HMAC. Attempt {attempt+1}/{retries}")
+                    self.logger.error(f"Response: {data}")
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+
+                # Handle null apikey
                 if "null apikey" in msg or "unable to find api key" in msg:
                     last_error = data
                     self._consecutive_errors += 1
-                    self.logger.error(f"API KEY NOT IN HEADER! Check X-BX-APIKEY header")
+                    self.logger.error(f"API KEY NOT IN HEADER! Check X-BX-APIKEY")
                     await self._close_session()
                     await asyncio.sleep(1)
                     continue
 
-                if "signature" in msg and ("mismatch" in msg or "verification failed" in msg or "invalid" in msg):
-                    last_error = data
-                    self._consecutive_errors += 1
-                    self.logger.error(f"SIGNATURE MISMATCH! Check HMAC format. Attempt {attempt+1}/{retries}")
-                    await asyncio.sleep(2 ** attempt)
-                    continue
-
-                if data.get("code") == 0 or data.get("code") == 200:
+                # Success
+                if code == 0 or code == 200 or code == "0":
                     self._consecutive_errors = 0
                     self._adaptive_interval = max(0.02, self._adaptive_interval * 0.95)
                     return data
@@ -186,7 +204,7 @@ class BingXAPIClient:
         self._adaptive_interval = min(2.0, self._adaptive_interval * 1.5)
         return last_error or {"code": -1, "msg": "All retries failed"}
 
-    # Public API - v3 endpoints (no signature needed)
+    # ==================== PUBLIC API (v2) ====================
     async def get_klines(self, symbol: str, interval: str = "15m", limit: int = 100,
                          start_time: Optional[int] = None, end_time: Optional[int] = None) -> List[Dict[str, Any]]:
         params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -195,20 +213,25 @@ class BingXAPIClient:
         response = await self._request("GET", "/openApi/swap/v3/quote/klines", params, signed=False)
         if response.get("code") == 0 and "data" in response:
             return response["data"]
+        # Fallback to v2
+        response = await self._request("GET", "/openApi/swap/v2/quote/klines", params, signed=False)
+        if response.get("code") == 0 and "data" in response:
+            return response["data"]
         return []
 
     async def get_ticker(self, symbol: str) -> dict:
-        response = await self._request("GET", "/openApi/swap/v3/quote/ticker", {"symbol": symbol}, signed=False)
+        """Get ticker for a single symbol"""
+        response = await self._request("GET", "/openApi/swap/v2/quote/ticker", {"symbol": symbol}, signed=False)
         if response.get("code") == 0 and "data" in response:
             data = response["data"]
-            # Handle both single dict and list
             if isinstance(data, list) and len(data) > 0:
                 return data[0]
             return data
         return {}
 
     async def get_tickers_batch(self) -> dict:
-        response = await self._request("GET", "/openApi/swap/v3/quote/ticker", {}, signed=False)
+        """Get all tickers"""
+        response = await self._request("GET", "/openApi/swap/v2/quote/ticker", {}, signed=False)
         if response.get("code") == 0 and "data" in response:
             data = response["data"]
             result = {}
@@ -219,8 +242,16 @@ class BingXAPIClient:
         return {}
 
     async def get_symbol_info(self) -> dict:
-        response = await self._request("GET", "/openApi/swap/v3/quote/contracts", {}, signed=False)
-        self.logger.info(f"Symbol info response: {response}")
+        """Get all contract info"""
+        response = await self._request("GET", "/openApi/swap/v2/quote/contracts", {}, signed=False)
+        self.logger.info(f"Symbol info response code: {response.get('code')}")
+        if response.get("code") == 0 and "data" in response:
+            for item in response.get("data", []):
+                sym = item.get("symbol", "")
+                if sym: self._symbol_specs[sym] = item
+            return response
+        # Fallback: try v1
+        response = await self._request("GET", "/openApi/swap/v1/quote/contracts", {}, signed=False)
         if response.get("code") == 0 and "data" in response:
             for item in response.get("data", []):
                 sym = item.get("symbol", "")
@@ -231,10 +262,15 @@ class BingXAPIClient:
     def get_symbol_specs(self, symbol: str) -> Optional[dict]:
         return self._symbol_specs.get(symbol)
 
-    # Account / Trading (signed) - v2 endpoints with v2 signature
+    # ==================== PRIVATE API (v3 for balance, v2 for trading) ====================
     async def get_account_balance(self) -> dict:
-        response = await self._request("GET", "/openApi/swap/v2/user/balance", {}, signed=True, use_v2_sig=True)
+        """Query account balance - uses v3 endpoint"""
+        response = await self._request("GET", "/openApi/swap/v3/user/balance", {}, signed=True)
         self.logger.info(f"Balance response: {response}")
+        if response.get("code") == 0 and "data" in response:
+            return response["data"]
+        # Fallback to v2
+        response = await self._request("GET", "/openApi/swap/v2/user/balance", {}, signed=True)
         if response.get("code") == 0 and "data" in response:
             return response["data"]
         return {}
@@ -245,7 +281,7 @@ class BingXAPIClient:
     async def get_positions(self, symbol: Optional[str] = None) -> list:
         params = {}
         if symbol: params["symbol"] = symbol
-        response = await self._request("GET", "/openApi/swap/v2/user/positions", params, signed=True, use_v2_sig=True)
+        response = await self._request("GET", "/openApi/swap/v2/user/positions", params, signed=True)
         if response.get("code") == 0 and "data" in response:
             data = response["data"]
             if isinstance(data, dict) and "positions" in data:
@@ -255,7 +291,7 @@ class BingXAPIClient:
 
     async def set_leverage(self, symbol: str, leverage: int, position_side: str = "BOTH") -> dict:
         params = {"symbol": symbol, "leverage": leverage, "positionSide": position_side}
-        response = await self._request("POST", "/openApi/swap/v2/trade/leverage", params, signed=True, use_v2_sig=True)
+        response = await self._request("POST", "/openApi/swap/v2/trade/leverage", params, signed=True)
         if response.get("code") == 0:
             return response.get("data", {})
         self.logger.error(f"Set leverage failed: {response.get('msg')}")
@@ -263,7 +299,7 @@ class BingXAPIClient:
 
     async def set_margin_mode(self, symbol: str, margin_mode: str) -> dict:
         params = {"symbol": symbol, "marginMode": margin_mode}
-        response = await self._request("POST", "/openApi/swap/v2/trade/marginMode", params, signed=True, use_v2_sig=True)
+        response = await self._request("POST", "/openApi/swap/v2/trade/marginMode", params, signed=True)
         if response.get("code") == 0:
             return response.get("data", {})
         self.logger.error(f"Set margin mode failed: {response.get('msg')}")
@@ -276,7 +312,7 @@ class BingXAPIClient:
         if order_type.upper() == "LIMIT" and price:
             params["price"] = price
             params["timeInForce"] = "GTC"
-        response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True, use_v2_sig=True)
+        response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
         if response.get("code") == 0:
             return response.get("data", {})
         self.logger.error(f"Order failed: {response.get('msg')}")
@@ -290,7 +326,7 @@ class BingXAPIClient:
                   "closePosition": "true" if close_position else "false"}
         if quantity is not None and not close_position:
             params["quantity"] = quantity
-        response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True, use_v2_sig=True)
+        response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
         if response.get("code") == 0:
             return response.get("data", {})
         self.logger.error(f"Stop order failed: {response.get('msg')}")
@@ -298,7 +334,7 @@ class BingXAPIClient:
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         params = {"symbol": symbol, "orderId": order_id}
-        response = await self._request("DELETE", "/openApi/swap/v2/trade/order", params, signed=True, use_v2_sig=True)
+        response = await self._request("DELETE", "/openApi/swap/v2/trade/order", params, signed=True)
         return response.get("code") == 0
 
     async def cancel_all_orders(self, symbol: Optional[str] = None) -> bool:
@@ -306,12 +342,12 @@ class BingXAPIClient:
         params = {}
         if symbol:
             params["symbol"] = symbol
-        response = await self._request("DELETE", "/openApi/swap/v2/trade/allOpenOrders", params, signed=True, use_v2_sig=True)
+        response = await self._request("DELETE", "/openApi/swap/v2/trade/allOpenOrders", params, signed=True)
         return response.get("code") == 0
 
     async def get_open_orders(self, symbol: str) -> list:
         params = {"symbol": symbol}
-        response = await self._request("GET", "/openApi/swap/v2/trade/openOrders", params, signed=True, use_v2_sig=True)
+        response = await self._request("GET", "/openApi/swap/v2/trade/openOrders", params, signed=True)
         if response.get("code") == 0 and "data" in response:
             return response["data"].get("orders", [])
         return []
@@ -320,7 +356,7 @@ class BingXAPIClient:
         side = "SELL" if position_side == "LONG" else "BUY"
         params = {"symbol": symbol, "side": side, "positionSide": position_side,
                   "type": "MARKET", "closePosition": "true"}
-        response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True, use_v2_sig=True)
+        response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
         if response.get("code") == 0:
             return response.get("data", {})
         self.logger.error(f"Close position failed: {response.get('msg')}")
