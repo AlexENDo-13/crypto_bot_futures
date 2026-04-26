@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TradingEngine v5.1 — Self-healing adaptive engine. Never stops."""
+"""TradingEngine v5.2 — Self-healing adaptive engine. Never stops."""
 import asyncio
 import time
 import logging
@@ -65,7 +65,6 @@ class TradingEngine:
         self._csv_path = os.path.join("logs", "trades.csv")
         self._ensure_csv()
 
-        # Adaptive
         self._adaptive_scan_interval = self.scan_interval
         self._consecutive_scan_errors = 0
         self._consecutive_empty_scans = 0
@@ -84,9 +83,8 @@ class TradingEngine:
     async def start(self):
         self.running = True
         self._stop_event.clear()
-        self.logger.info("Starting TradingEngine v5.1 (Self-Healing)...")
+        self.logger.info("Starting TradingEngine v5.2 (Self-Healing)...")
 
-        # Try balance with exponential backoff
         for attempt in range(5):
             try:
                 bal_info = await self.risk_manager.get_account_balance()
@@ -129,7 +127,6 @@ class TradingEngine:
                 loop_start = time.time()
                 self._loop_count += 1
 
-                # Each operation wrapped in try/except - NEVER crash the loop
                 for operation, name in [
                     (self._update_balance, "balance"),
                     (self._sync_positions, "sync"),
@@ -141,7 +138,6 @@ class TradingEngine:
                     except Exception as e:
                         self.logger.error(f"{name} error (non-critical): {e}")
 
-                # Adaptive scan
                 now = time.time()
                 self._adapt_scan_interval()
 
@@ -203,7 +199,7 @@ class TradingEngine:
     async def _sync_positions(self):
         try:
             exchange_positions = await self.api_client.get_positions()
-            current_symbols = {p.get("symbol", "").replace("-", "/") for p in exchange_positions if p.get("positionAmt", 0) != 0}
+            current_symbols = {p.get("symbol", "").replace("-", "/") for p in exchange_positions if float(p.get("positionAmt", 0)) != 0}
 
             with self._lock:
                 for sym in list(self.positions.keys()):

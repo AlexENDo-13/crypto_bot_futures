@@ -12,6 +12,7 @@ class AntiChase:
         self.cooldown_seconds = cooldown_seconds
         self._trade_times = []
         self._last_trade_time = 0
+
     def can_trade(self):
         now = time.time()
         if now - self._last_trade_time < self.cooldown_seconds:
@@ -21,6 +22,7 @@ class AntiChase:
         if len(self._trade_times) >= self.max_orders_per_hour:
             return False, f"Hourly limit ({self.max_orders_per_hour})"
         return True, "OK"
+
     def register_trade(self):
         now = time.time()
         self._trade_times.append(now)
@@ -61,7 +63,6 @@ class RiskManager:
         self._total_trades = 0
         self._winning_trades = 0
 
-        # Adaptive parameters
         self._base_risk_per_trade = self.risk_per_trade
         self._base_max_positions = self.max_positions
         self._base_max_leverage = self.max_leverage
@@ -75,10 +76,8 @@ class RiskManager:
             logger.info("Daily stats reset")
 
     def adapt_to_balance(self, balance: float):
-        """Adapt all risk parameters based on balance tier."""
         if balance <= 0:
             return
-
         old_tier = self._current_balance_tier
 
         if balance < 50:
@@ -114,40 +113,62 @@ class RiskManager:
 
         if old_tier != self._current_balance_tier:
             logger.info(f"Balance tier changed: {old_tier} -> {self._current_balance_tier} "
-                       f"(balance=${balance:.2f}, risk={self.risk_per_trade}%, pos={self.max_positions}, lev={self.max_leverage}x)")
+                        f"(balance=${balance:.2f}, risk={self.risk_per_trade}%, pos={self.max_positions}, lev={self.max_leverage}x)")
 
     async def get_account_balance(self):
         now = time.time()
         if now - self._balance_cache_time < self._balance_cache_ttl and self._cached_balance > 0:
-            return {"total_equity": self._cached_balance, "available_balance": self._cached_balance, "used": 0.0, "equity": self._cached_balance}
+            return {
+                "total_equity": self._cached_balance,
+                "available_balance": self._cached_balance,
+                "used": 0.0,
+                "equity": self._cached_balance,
+            }
         try:
             account = await self.client.get_account_balance()
             if account and isinstance(account, dict):
-                # Try multiple field names for balance
-                balance = float(account.get("balance", 
-                    account.get("totalEquity", 
-                        account.get("equity", 
-                            account.get("availableBalance", 
-                                account.get("totalWalletBalance", 0))))))
+                # Handle nested dict structure from BingX
+                if "balance" in account and isinstance(account["balance"], dict):
+                    balance = float(account["balance"].get("balance", 0))
+                else:
+                    balance = float(account.get("balance",
+                        account.get("totalEquity",
+                            account.get("equity",
+                                account.get("availableBalance",
+                                    account.get("totalWalletBalance", 0))))))
                 self._cached_balance = balance
                 self._balance_cache_time = now
-
-                # Adapt to new balance
                 self.adapt_to_balance(balance)
+
+                available = balance
+                if "balance" in account and isinstance(account["balance"], dict):
+                    available = float(account["balance"].get("availableMargin", balance))
+                else:
+                    available = float(account.get("availableMargin",
+                        account.get("available",
+                            account.get("availableBalance", balance))))
+
+                used = 0.0
+                if "balance" in account and isinstance(account["balance"], dict):
+                    used = float(account["balance"].get("usedMargin", 0))
+                else:
+                    used = float(account.get("usedMargin", account.get("used", 0)))
 
                 return {
                     "total_equity": balance,
-                    "available_balance": float(account.get("availableMargin", 
-                        account.get("available", 
-                            account.get("availableBalance", balance)))),
-                    "used": float(account.get("usedMargin", 
-                        account.get("used", 0))),
-                    "equity": float(account.get("equity", balance)),
-                    "unrealizedProfit": float(account.get("unrealizedProfit", 0))
+                    "available_balance": available,
+                    "used": used,
+                    "equity": float(account.get("equity", balance)) if isinstance(account, dict) else balance,
+                    "unrealizedProfit": float(account.get("unrealizedProfit", 0)) if isinstance(account, dict) else 0,
                 }
         except Exception as e:
             logger.error(f"Balance error: {e}")
-        return {"total_equity": self._cached_balance, "available_balance": self._cached_balance, "used": 0.0, "equity": self._cached_balance}
+        return {
+            "total_equity": self._cached_balance,
+            "available_balance": self._cached_balance,
+            "used": 0.0,
+            "equity": self._cached_balance,
+        }
 
     async def get_account_info(self):
         return await self.get_account_balance()
@@ -158,7 +179,6 @@ class RiskManager:
             logger.warning(f"Invalid balance/price: balance={balance}, price={current_price}")
             return 0.0
 
-        # Auto-adapt if balance changed significantly
         self.adapt_to_balance(balance)
 
         is_weekend = datetime.utcnow().weekday() >= 5
@@ -177,24 +197,28 @@ class RiskManager:
             margin_required = max_margin
             position_value = margin_required * leverage if leverage > 0 else margin_required
         quantity = position_value / current_price if current_price > 0 else 0
+
         if symbol_specs:
-            step = float(symbol_specs.get("stepSize", 0.001))
-            min_notional = float(symbol_specs.get("minNotional", 5.0))
-            quantity = math.floor(quantity / step) * step
+            step = float(symbol_specs.get("stepSize", symbol_specs.get("size", 0.001)))
+            min_notional = float(symbol_specs.get("minNotional", symbol_specs.get("tradeMinUSDT", 5.0)))
+            quantity = math.floor(quantity / step) * step if step > 0 else quantity
             if quantity * current_price < min_notional:
-                quantity = math.ceil(min_notional / current_price / step) * step
+                quantity = math.ceil(min_notional / current_price / step) * step if step > 0 else min_notional / current_price
         else:
             step = 0.001
             quantity = math.floor(quantity / step) * step
             if quantity * current_price < 5.0:
                 quantity = math.ceil(5.0 / current_price / step) * step
+
         if quantity <= 0:
             logger.warning(f"{symbol}: calculated qty=0")
             return 0.0
+
         total_risk_pct = (self.total_risk_exposure + risk_amount) / balance * 100 if balance > 0 else 0
         if total_risk_pct > self.max_total_risk:
             logger.warning(f"Total risk exceeded ({total_risk_pct:.1f}% > {self.max_total_risk}%)")
             return 0.0
+
         logger.info(f"{symbol}: qty={quantity:.6f}, value=${quantity*current_price:.2f}, margin=${margin_required:.2f}, risk={risk_amount:.2f} ({risk_percent:.2f}%), leverage={leverage}x")
         return quantity
 
@@ -236,12 +260,12 @@ class RiskManager:
             daily_loss_pct = (self.daily_loss / balance) * 100
             if daily_loss_pct >= self.daily_loss_limit:
                 return False, f"Daily loss limit ({daily_loss_pct:.1f}%)"
-            if self.stop_on_target and self.daily_pnl > 0:
-                profit_pct = (self.daily_pnl / balance) * 100
-                if profit_pct >= self.daily_profit_target:
-                    return False, f"Daily profit target ({profit_pct:.1f}%)"
-            if self.consecutive_losses >= 5:
-                return False, f"Too many consecutive losses ({self.consecutive_losses})"
+        if self.stop_on_target and self.daily_pnl > 0:
+            profit_pct = (self.daily_pnl / balance) * 100
+            if profit_pct >= self.daily_profit_target:
+                return False, f"Daily profit target ({profit_pct:.1f}%)"
+        if self.consecutive_losses >= 5:
+            return False, f"Too many consecutive losses ({self.consecutive_losses})"
         return True, "OK"
 
     def can_open_position(self, current_count, balance):

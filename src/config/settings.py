@@ -39,7 +39,12 @@ class Settings:
         "discord_webhook_url": "", "web_interface_enabled": False,
         "web_interface_port": 5000, "sound_enabled": True,
         "voice_enabled": False, "dark_theme": True, "show_charts": True,
-        "symbols_whitelist": ["BTC-USDT","ETH-USDT","SOL-USDT","XRP-USDT","DOGE-USDT","ADA-USDT","AVAX-USDT","LINK-USDT","MATIC-USDT","DOT-USDT","LTC-USDT","BCH-USDT","ETC-USDT","UNI-USDT","ATOM-USDT","FIL-USDT","ALGO-USDT","NEAR-USDT","APT-USDT","ARB-USDT"],
+        "symbols_whitelist": [
+            "BTC-USDT","ETH-USDT","SOL-USDT","XRP-USDT","DOGE-USDT",
+            "ADA-USDT","AVAX-USDT","LINK-USDT","MATIC-USDT","DOT-USDT",
+            "LTC-USDT","BCH-USDT","ETC-USDT","UNI-USDT","ATOM-USDT",
+            "FIL-USDT","ALGO-USDT","NEAR-USDT","APT-USDT","ARB-USDT"
+        ],
         "blacklist": ["SHIB-USDT","PEPE-USDT","FLOKI-USDT","BONK-USDT"],
         "max_daily_trades": 15, "daily_profit_target_percent": 5.0,
         "stop_on_daily_target": False, "force_ignore_session": True,
@@ -51,13 +56,16 @@ class Settings:
         "liquidity_check_enabled": True, "min_liquidity_score": 0.3,
         "adaptive_scan_interval": True, "fast_mode_empty_scans": True,
         "aggressive_adaptation": True,
+        "cache_ttl_seconds": 60,
     }
+
     def __init__(self, config_path: str = "config/bot_config.json"):
         self.config_path = config_path
         self._data = dict(self.DEFAULTS)
         self._lock = threading.RLock()
         self._callbacks = []
         self.load()
+
     def load(self):
         with self._lock:
             if os.path.exists(self.config_path):
@@ -65,9 +73,11 @@ class Settings:
                     with open(self.config_path, "r", encoding="utf-8") as f:
                         self._data.update(json.load(f))
                 except Exception as e:
-                    print(f"⚠️ Config load error: {e}")
+                    print(f"Config load error: {e}")
             for k, v in self.DEFAULTS.items():
-                if k not in self._data: self._data[k] = v
+                if k not in self._data:
+                    self._data[k] = v
+
     def save(self):
         with self._lock:
             try:
@@ -75,34 +85,47 @@ class Settings:
                 with open(self.config_path, "w", encoding="utf-8") as f:
                     json.dump(self._data, f, indent=2, ensure_ascii=False)
             except Exception as e:
-                print(f"⚠️ Config save error: {e}")
+                print(f"Config save error: {e}")
+
     def get(self, key: str, default: Any = None):
-        with self._lock: return self._data.get(key, default)
+        with self._lock:
+            return self._data.get(key, default)
+
     def set(self, key: str, value: Any):
         with self._lock:
             old = self._data.get(key)
             self._data[key] = value
-            if old != value: self.save()
+            if old != value:
+                self.save()
+
     def update(self, new_data: Dict[str, Any]):
         with self._lock:
             for k, v in new_data.items():
-                if self._data.get(k) != v: self._data[k] = v
+                if self._data.get(k) != v:
+                    self._data[k] = v
             self.save()
+
     def to_dict(self):
-        with self._lock: return dict(self._data)
+        with self._lock:
+            return dict(self._data)
+
     def reset_to_defaults(self):
         with self._lock:
             self._data = dict(self.DEFAULTS)
             self.save()
+
     def export(self, path: str) -> bool:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
             return True
-        except Exception: return False
+        except Exception:
+            return False
+
     def import_from(self, path: str) -> bool:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 self.update(json.load(f))
             return True
-        except Exception: return False
+        except Exception:
+            return False

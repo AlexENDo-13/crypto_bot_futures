@@ -5,7 +5,8 @@ from collections import deque
 
 class StrategyEngine:
     def __init__(self, logger, settings):
-        self.logger = logger; self.settings = settings
+        self.logger = logger
+        self.settings = settings
         self._trade_results = deque(maxlen=100)
         self._strategy_performance = {}
         self._last_best = "default"
@@ -16,10 +17,12 @@ class StrategyEngine:
             self._strategy_performance[strategy] = {"trades": 0, "wins": 0, "total_pnl": 0.0}
         self._strategy_performance[strategy]["trades"] += 1
         self._strategy_performance[strategy]["total_pnl"] += pnl
-        if pnl > 0: self._strategy_performance[strategy]["wins"] += 1
+        if pnl > 0:
+            self._strategy_performance[strategy]["wins"] += 1
 
     def get_recent_performance(self) -> Dict:
-        if not self._strategy_performance: return {"best_strategy": "default", "total_trades": 0, "win_rate": 0}
+        if not self._strategy_performance:
+            return {"best_strategy": "default", "total_trades": 0, "win_rate": 0}
         best = max(self._strategy_performance.items(), key=lambda x: x[1]["total_pnl"] / max(x[1]["trades"], 1))
         self._last_best = best[0]
         total = sum(s["trades"] for s in self._strategy_performance.values())
