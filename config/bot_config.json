@@ -36,7 +36,8 @@
   "use_multi_timeframe": true,
   "mtf_timeframes": [
     "1h",
-    "4h"
+    "4h",
+    "1d"
   ],
   "mtf_required_agreement": 2,
   "use_bollinger_filter": true,

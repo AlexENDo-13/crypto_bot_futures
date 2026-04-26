@@ -1,11 +1,10 @@
 """
-BingX API Client v10.0 - FULLY FIXED based on official BingX docs
+BingX API Client v11.0 - FULLY FIXED based on official docs and CCXT
 Key fixes:
-1. Balance endpoint: /openApi/swap/v3/user/balance (v3, not v2)
-2. Signature for v3: HMAC(query_string) where query_string = sorted params WITHOUT apiKey in signature payload for some endpoints
-3. Public market data: v2 endpoints work correctly
-4. Ticker endpoint: /openApi/swap/v2/quote/ticker (not v3)
-5. Contracts: /openApi/swap/v2/quote/contracts (not v3)
+1. Signature: HMAC(query_string) where query_string includes ALL params sorted alphabetically
+2. apiKey IS in the query string and IS part of the signature
+3. recvWindow added for replay protection
+4. All signed endpoints use same signature logic
 """
 import asyncio
 import hashlib
@@ -39,6 +38,7 @@ class BingXAPIClient:
         self._circuit_recovery_after = 30
         self._last_request_time = 0
         self._adaptive_interval = 0.05
+        self._recv_window = 5000  # 5 seconds
 
     def update_credentials(self, api_key: str, api_secret: str):
         self.api_key = api_key
@@ -70,21 +70,24 @@ class BingXAPIClient:
 
     def _generate_signature(self, params: dict) -> str:
         """
-        BingX v3 signature: HMAC_SHA256(secret, query_string)
-        query_string = urlencode(sorted(params))
-        apiKey is INCLUDED in the query string and therefore in the signature
+        BingX signature: HMAC_SHA256(secret, urlencode(sorted(params)))
+
+        CRITICAL: apiKey MUST be in params and IS part of the signature!
+        Order: sort alphabetically, urlencode, HMAC with secret
         """
-        # Sort params and create query string
+        # Sort all parameters alphabetically
         sorted_params = sorted(params.items())
+        # Create query string
         query_string = urllib.parse.urlencode(sorted_params)
 
+        # Generate HMAC SHA256
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
             query_string.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
 
-        self.logger.debug(f"Signing: {query_string} -> {signature[:16]}...")
+        self.logger.debug(f"Signing string: {query_string[:80]}... -> sig={signature[:16]}...")
         return signature
 
     async def _request(self, method: str, endpoint: str, params: Optional[dict] = None,
@@ -112,8 +115,9 @@ class BingXAPIClient:
         if signed:
             timestamp = str(int(time.time() * 1000))
             query_params["timestamp"] = timestamp
-            # apiKey goes into query params for signature calculation
             query_params["apiKey"] = self.api_key
+            query_params["recvWindow"] = str(self._recv_window)
+            # Calculate signature from ALL params (including apiKey and timestamp)
             query_params["signature"] = self._generate_signature(query_params)
 
         last_error = None
@@ -156,11 +160,13 @@ class BingXAPIClient:
                     break
 
                 # Handle 100001 - signature mismatch
-                if code == 100001 or "signature" in msg:
+                if code == 100001 or ("signature" in msg and "mismatch" in msg):
                     last_error = data
                     self._consecutive_errors += 1
-                    self.logger.error(f"SIGNATURE MISMATCH on {endpoint}! Check HMAC. Attempt {attempt+1}/{retries}")
-                    self.logger.error(f"Response: {data}")
+                    self.logger.error(f"SIGNATURE MISMATCH on {endpoint}! Attempt {attempt+1}/{retries}")
+                    self.logger.error(f"Full response: {data}")
+                    # Log what we sent for debugging
+                    self.logger.error(f"Sent params: {list(query_params.keys())}")
                     await asyncio.sleep(2 ** attempt)
                     continue
 
@@ -170,6 +176,14 @@ class BingXAPIClient:
                     self._consecutive_errors += 1
                     self.logger.error(f"API KEY NOT IN HEADER! Check X-BX-APIKEY")
                     await self._close_session()
+                    await asyncio.sleep(1)
+                    continue
+
+                # Handle timestamp invalid
+                if "timestamp" in msg and ("invalid" in msg or "window" in msg):
+                    last_error = data
+                    self._consecutive_errors += 1
+                    self.logger.error(f"TIMESTAMP ERROR: {data.get('msg')}")
                     await asyncio.sleep(1)
                     continue
 
@@ -204,7 +218,7 @@ class BingXAPIClient:
         self._adaptive_interval = min(2.0, self._adaptive_interval * 1.5)
         return last_error or {"code": -1, "msg": "All retries failed"}
 
-    # ==================== PUBLIC API (v2) ====================
+    # ==================== PUBLIC API ====================
     async def get_klines(self, symbol: str, interval: str = "15m", limit: int = 100,
                          start_time: Optional[int] = None, end_time: Optional[int] = None) -> List[Dict[str, Any]]:
         params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -250,21 +264,14 @@ class BingXAPIClient:
                 sym = item.get("symbol", "")
                 if sym: self._symbol_specs[sym] = item
             return response
-        # Fallback: try v1
-        response = await self._request("GET", "/openApi/swap/v1/quote/contracts", {}, signed=False)
-        if response.get("code") == 0 and "data" in response:
-            for item in response.get("data", []):
-                sym = item.get("symbol", "")
-                if sym: self._symbol_specs[sym] = item
-            return response
         return response
 
     def get_symbol_specs(self, symbol: str) -> Optional[dict]:
         return self._symbol_specs.get(symbol)
 
-    # ==================== PRIVATE API (v3 for balance, v2 for trading) ====================
+    # ==================== PRIVATE API ====================
     async def get_account_balance(self) -> dict:
-        """Query account balance - uses v3 endpoint"""
+        """Query account balance - v3 endpoint"""
         response = await self._request("GET", "/openApi/swap/v3/user/balance", {}, signed=True)
         self.logger.info(f"Balance response: {response}")
         if response.get("code") == 0 and "data" in response:

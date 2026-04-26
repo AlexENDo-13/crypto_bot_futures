@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
+import time
+import random
 from typing import List, Dict, Any
 from src.core.market.trap_detector import detect_trap
 
@@ -19,9 +21,13 @@ class MarketScanner:
         self.use_spread_filter = settings.get("use_spread_filter", True)
         self.max_spread_pct = float(settings.get("max_spread_percent", 0.5))
         self.max_funding_rate = float(settings.get("max_funding_rate", 0.0))
+
+        # Multi-timeframe configuration
+        self.primary_timeframe = settings.get("timeframe", "15m")
+        self.mtf_timeframes = settings.get("mtf_timeframes", ["1h", "4h", "1d"])
         self.use_multi_timeframe = settings.get("use_multi_timeframe", True)
-        self.mtf_timeframes = settings.get("mtf_timeframes", ["1h", "4h"])
         self.mtf_required = int(settings.get("mtf_required_agreement", 2))
+
         self.trap_detector = settings.get("trap_detector_enabled", True)
         self.aggressive = settings.get("aggressive_adaptation", True)
         self.fast_mode = settings.get("fast_mode_empty_scans", True)
@@ -33,12 +39,16 @@ class MarketScanner:
         self._market_trend = "neutral"
 
         # Prevent looping on same pairs
-        self._failed_symbols = {}  # symbol -> fail_count
+        self._failed_symbols = {}
         self._max_symbol_fails = 3
-        self._symbol_cooldown = {}  # symbol -> cooldown_until
-        self._cooldown_duration = 300  # 5 minutes
-        self._scanned_symbols_history = []  # track last scanned symbols
+        self._symbol_cooldown = {}
+        self._cooldown_duration = 300
+        self._scanned_symbols_history = []
         self._max_history = 50
+
+        # Symbol rotation
+        self._symbol_rotation_index = 0
+        self._symbols_per_scan = 10  # Scan only 10 symbols per cycle to avoid API limits
 
     def adapt_for_balance(self, balance):
         if balance < 100:
@@ -81,42 +91,34 @@ class MarketScanner:
             self.successful_scans_count = 0
 
     def _is_symbol_available(self, symbol):
-        """Check if symbol is not in cooldown and not failed too many times"""
         now = time.time()
-
-        # Check cooldown
         if symbol in self._symbol_cooldown:
             if now < self._symbol_cooldown[symbol]:
                 return False
             else:
                 del self._symbol_cooldown[symbol]
-
-        # Check fail count
         if symbol in self._failed_symbols:
             if self._failed_symbols[symbol] >= self._max_symbol_fails:
                 return False
-
         return True
 
     def _mark_symbol_failed(self, symbol):
-        """Mark symbol as failed, increment counter"""
         self._failed_symbols[symbol] = self._failed_symbols.get(symbol, 0) + 1
         if self._failed_symbols[symbol] >= self._max_symbol_fails:
             self.logger.warning(f"Symbol {symbol} failed {self._max_symbol_fails} times, cooling down for 5min")
             self._symbol_cooldown[symbol] = time.time() + self._cooldown_duration
 
     def _mark_symbol_success(self, symbol):
-        """Reset fail counter on success"""
         if symbol in self._failed_symbols:
             del self._failed_symbols[symbol]
         if symbol in self._symbol_cooldown:
             del self._symbol_cooldown[symbol]
 
     async def scan_async(self, balance, max_pairs=100, max_asset_price_ratio=0.5, ignore_session_check=False):
-        import time
         self.adapt_for_balance(balance)
         self._adapt_filters()
-        self.logger.info(f"Scanning (balance: ${balance:.2f}, ADX>={self.current_min_adx:.1f}, "
+        self.logger.info(f"MTF Scanning (balance: ${balance:.2f}, primary={self.primary_timeframe}, "
+                         f"mtf={self.mtf_timeframes}, ADX>={self.current_min_adx:.1f}, "
                          f"ATR>={self.current_min_atr:.2f}%, Vol>={self.current_min_volume:,.0f}, "
                          f"Sig>={self.current_min_signal:.2f})")
 
@@ -126,10 +128,10 @@ class MarketScanner:
             if not contracts:
                 self.logger.warning("Contracts API failed, using whitelist")
             else:
-                self.logger.warning(f"Contracts API returned {len(contracts)} items, using whitelist to limit")
+                self.logger.warning(f"Contracts API returned {len(contracts)} items, using whitelist")
             contracts = [{"symbol": s} for s in self.whitelist]
 
-        self.logger.info(f"Scanning {len(contracts)} symbols")
+        self.logger.info(f"Total symbols: {len(contracts)}, scanning subset")
         filtered_count = {
             "total": 0, "whitelist": 0, "blacklist": 0, "ticker_fail": 0,
             "volume": 0, "funding": 0, "spread": 0, "klines_fail": 0,
@@ -140,27 +142,24 @@ class MarketScanner:
         candidates = []
         symbols_to_scan = []
 
-        for c in contracts[:max_pairs]:
+        for c in contracts:
             symbol = c.get("symbol", "").replace("-", "/")
             if not symbol:
                 continue
             filtered_count["total"] += 1
 
-            # Check whitelist
             if self.whitelist:
                 clean = symbol.replace("/", "-")
                 if clean not in self.whitelist and symbol not in self.whitelist:
                     filtered_count["whitelist"] += 1
                     continue
 
-            # Check blacklist
             if self.blacklist:
                 clean = symbol.replace("/", "-")
                 if clean in self.blacklist or symbol in self.blacklist:
                     filtered_count["blacklist"] += 1
                     continue
 
-            # Check cooldown and fail count
             if not self._is_symbol_available(symbol):
                 if symbol in self._symbol_cooldown:
                     filtered_count["cooldown"] += 1
@@ -171,20 +170,20 @@ class MarketScanner:
             symbols_to_scan.append(symbol)
 
         if not symbols_to_scan:
-            self.logger.warning("No symbols available to scan (all in cooldown or max fails reached)")
+            self.logger.warning("No symbols available to scan")
             self.empty_scans_count += 1
             self._scan_stats = {"total": filtered_count["total"], "passed": 0, "by_filter": filtered_count}
             return []
 
-        # Shuffle symbols to avoid always scanning same order
-        import random
+        # ROTATE symbols: pick different subset each scan
         random.shuffle(symbols_to_scan)
+        scan_subset = symbols_to_scan[:self._symbols_per_scan]
+        self.logger.info(f"Scanning {len(scan_subset)} symbols this cycle (rotated from {len(symbols_to_scan)} total)")
 
-        # Limit batch size to prevent API overload
-        batch_size = min(5, len(symbols_to_scan))
+        batch_size = min(3, len(scan_subset))
 
-        for i in range(0, len(symbols_to_scan), batch_size):
-            batch = symbols_to_scan[i:i+batch_size]
+        for i in range(0, len(scan_subset), batch_size):
+            batch = scan_subset[i:i+batch_size]
             tasks = [self._analyze_symbol(s, filtered_count) for s in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -196,17 +195,16 @@ class MarketScanner:
                     candidates.append(res)
                     self._mark_symbol_success(sym)
                 else:
-                    # Analysis returned empty - symbol failed filters
                     self._mark_symbol_failed(sym)
 
-            if i + batch_size < len(symbols_to_scan):
-                await asyncio.sleep(1.0)  # Longer delay between batches
+            if i + batch_size < len(scan_subset):
+                await asyncio.sleep(1.5)
 
         self.logger.info(f"Filter stats: total={filtered_count['total']}, passed={filtered_count['passed']}, "
                          f"ticker_fail={filtered_count['ticker_fail']}, vol={filtered_count['volume']}, "
                          f"klines={filtered_count['klines_fail']}, ind={filtered_count['indicators_fail']}, "
                          f"adx={filtered_count['adx']}, atr={filtered_count['atr']}, signal={filtered_count['signal']}, "
-                         f"cooldown={filtered_count['cooldown']}, max_fails={filtered_count['max_fails']}")
+                         f"mtf_reject={filtered_count['mtf_reject']}, cooldown={filtered_count['cooldown']}")
 
         if not candidates:
             self.empty_scans_count += 1
@@ -225,14 +223,16 @@ class MarketScanner:
                     ind = c["indicators"]
                     self.logger.info(f" #{i} {c['symbol']}: {ind.get('signal_direction')} [{ind.get('market_regime')}] | "
                                      f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
-                                     f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f}")
+                                     f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | "
+                                     f"MTF={ind.get('mtf_agreement',0)}/{ind.get('mtf_total',0)}")
 
         self._scan_stats = {"total": filtered_count["total"], "passed": filtered_count["passed"], "by_filter": filtered_count}
         return top if candidates else []
 
     async def _analyze_symbol(self, symbol, filtered_count):
-        tf = self.settings.get("timeframe", "15m")
+        """Analyze symbol with multi-timeframe confirmation"""
 
+        # Step 1: Get primary timeframe (15m) data
         try:
             ticker = await self.data_fetcher.get_ticker_data(symbol)
         except Exception as e:
@@ -249,7 +249,6 @@ class MarketScanner:
         bid = ticker.get("bid", 0)
         ask = ticker.get("ask", 0)
 
-        # Fallback volume calculation from klines if ticker volume is 0
         if volume_24h <= 0:
             try:
                 df_vol = await self.data_fetcher.fetch_klines_async(None, symbol, interval="1d", limit=2)
@@ -270,17 +269,18 @@ class MarketScanner:
                 filtered_count["spread"] += 1
                 return {}
 
+        # Step 2: Get primary timeframe indicators
         try:
-            df = await self.data_fetcher.fetch_klines_async(None, symbol, interval=tf, limit=80)
+            df_primary = await self.data_fetcher.fetch_klines_async(None, symbol, interval=self.primary_timeframe, limit=80)
         except Exception as e:
-            self.logger.debug(f"Klines error {symbol}: {e}")
-            df = None
+            self.logger.debug(f"Primary klines error {symbol}: {e}")
+            df_primary = None
 
-        if df is None or df.empty:
+        if df_primary is None or df_primary.empty:
             filtered_count["klines_fail"] += 1
             return {}
 
-        indicators = self.data_fetcher.compute_indicators(df)
+        indicators = self.data_fetcher.compute_indicators(df_primary)
         if not indicators:
             filtered_count["indicators_fail"] += 1
             return {}
@@ -291,7 +291,6 @@ class MarketScanner:
         signal_strength = indicators.get("signal_strength", 0)
         rsi = indicators.get("rsi", 0)
         regime = indicators.get("market_regime", "UNKNOWN")
-        entry_type = indicators.get("entry_type", "none")
 
         if direction == "NEUTRAL":
             filtered_count["neutral"] += 1
@@ -305,6 +304,48 @@ class MarketScanner:
         if signal_strength < self.current_min_signal:
             filtered_count["signal"] += 1
             return {}
+
+        # Step 3: Multi-timeframe confirmation
+        mtf_score = 0
+        mtf_total = 0
+        mtf_details = []
+
+        if self.use_multi_timeframe and self.mtf_timeframes:
+            for tf in self.mtf_timeframes:
+                try:
+                    df_tf = await self.data_fetcher.fetch_klines_async(None, symbol, interval=tf, limit=50)
+                    if df_tf is None or df_tf.empty:
+                        continue
+                    ind_tf = self.data_fetcher.compute_indicators(df_tf)
+                    if not ind_tf:
+                        continue
+
+                    dir_tf = ind_tf.get("signal_direction", "NEUTRAL")
+                    tf_adx = ind_tf.get("adx", 0)
+                    tf_rsi = ind_tf.get("rsi", 50)
+                    mtf_total += 1
+
+                    if dir_tf == direction:
+                        mtf_score += 1
+                        mtf_details.append(f"{tf}:{dir_tf}(ADX={tf_adx:.1f})")
+                    elif dir_tf == "NEUTRAL":
+                        mtf_score += 0.3
+                        mtf_details.append(f"{tf}:neutral")
+                    else:
+                        mtf_details.append(f"{tf}:{dir_tf}(opp)")
+
+                except Exception as e:
+                    self.logger.debug(f"MTF error {symbol} {tf}: {e}")
+                    continue
+
+            # Require at least mtf_required agreement
+            if mtf_total > 0 and mtf_score < self.mtf_required:
+                filtered_count["mtf_reject"] += 1
+                self.logger.debug(f"MTF reject {symbol}: {mtf_score:.1f}/{self.mtf_required} required, "
+                                  f"details: {', '.join(mtf_details)}")
+                return {}
+
+        # Step 4: Trap detection
         if self.trap_detector:
             try:
                 trap = detect_trap(indicators)
@@ -313,47 +354,20 @@ class MarketScanner:
                     return {}
             except Exception:
                 pass
-        if self.use_multi_timeframe:
-            try:
-                mtf_result = await self._check_multi_timeframe(symbol, direction)
-                if not mtf_result.get("agreement"):
-                    filtered_count["mtf_reject"] += 1
-                    return {}
-                indicators["mtf_agreement"] = mtf_result.get("agree_count", 0)
-                indicators["mtf_total"] = mtf_result.get("total", 0)
-            except Exception:
-                pass
 
         indicators["volume_24h"] = volume_24h
         indicators["funding_rate"] = funding_rate
         indicators["close_price"] = last_price
         indicators["spread_pct"] = ((ask - bid) / last_price * 100) if last_price > 0 else 0
+        indicators["mtf_agreement"] = mtf_score
+        indicators["mtf_total"] = mtf_total
+        indicators["mtf_details"] = mtf_details
+
         filtered_count["passed"] += 1
         self.logger.info(f"SIGNAL {symbol}: {direction} [{regime}] | ADX={adx:.1f} | "
                          f"ATR={atr_pct:.2f}% | Sig={signal_strength:.2f} | RSI={rsi:.1f} | "
-                         f"Vol={volume_24h:,.0f}")
+                         f"Vol={volume_24h:,.0f} | MTF={mtf_score:.1f}/{mtf_total}")
         return {"symbol": symbol, "indicators": indicators, "ticker": ticker}
-
-    async def _check_multi_timeframe(self, symbol, primary_direction):
-        agree_count = 0.0
-        total = 0
-        for tf in self.mtf_timeframes:
-            try:
-                df_tf = await self.data_fetcher.fetch_klines_async(None, symbol, interval=tf, limit=50)
-                if df_tf is None or df_tf.empty:
-                    continue
-                ind_tf = self.data_fetcher.compute_indicators(df_tf)
-                if not ind_tf:
-                    continue
-                dir_tf = ind_tf.get("signal_direction", "NEUTRAL")
-                total += 1
-                if dir_tf == primary_direction:
-                    agree_count += 1
-                elif dir_tf == "NEUTRAL":
-                    agree_count += 0.5
-            except Exception:
-                pass
-        return {"agreement": agree_count >= self.mtf_required and total > 0, "agree_count": agree_count, "total": total}
 
     def get_scan_stats(self):
         return {
