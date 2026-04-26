@@ -1,5 +1,5 @@
 """
-BingX API Client v13.0 - PRODUCTION FIX
+BingX API Client v13.1 - PRODUCTION FIX
 Based on verified BingX Futures API implementation:
 - Signature = HMAC_SHA256(secret, query_string) where query_string = urlencode(sorted(params))
 - apiKey ONLY in X-BX-APIKEY header, NEVER in query string or signature
@@ -42,13 +42,17 @@ class BingXAPIClient:
         self._recv_window = 5000
 
     def update_credentials(self, api_key: str, api_secret: str):
+        """Update API credentials and FORCE recreate session with new headers"""
+        old_key = self.api_key
         self.api_key = api_key.strip() if api_key else ""
         self.api_secret = api_secret.strip() if api_secret else ""
-        self.logger.info("API credentials updated")
+        self.logger.info(f"API credentials updated (key changed: {old_key != self.api_key})")
         self._circuit_open = False
         self._consecutive_errors = 0
+        # CRITICAL: Force recreate session on next request
         if self._session and not self._session.closed:
             asyncio.create_task(self._close_session())
+            self._session = None
 
     async def _get_or_create_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -56,6 +60,9 @@ class BingXAPIClient:
             headers = {"Accept": "application/json"}
             if self.api_key:
                 headers["X-BX-APIKEY"] = self.api_key
+                self.logger.debug(f"Session created with X-BX-APIKEY: {self.api_key[:10]}...")
+            else:
+                self.logger.warning("Session created WITHOUT api_key!")
             self._session = aiohttp.ClientSession(
                 connector=connector, timeout=self._timeout, headers=headers
             )
@@ -73,7 +80,6 @@ class BingXAPIClient:
         where query_string = urlencode(sorted(params))
         CRITICAL: apiKey is NOT included in params for signing
         """
-        # Ensure all values are strings
         str_params = {k: str(v) for k, v in sorted(params.items()) if k != "signature"}
         query_string = urllib.parse.urlencode(str_params)
         signature = hmac.new(
@@ -111,7 +117,6 @@ class BingXAPIClient:
         if signed:
             query_params["timestamp"] = str(int(time.time() * 1000))
             query_params["recvWindow"] = str(self._recv_window)
-            # apiKey is NOT added to query_params - only sent in header
             query_params["signature"] = self._generate_signature(query_params)
 
         last_error = None
@@ -127,7 +132,6 @@ class BingXAPIClient:
                         except:
                             data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
                 elif method.upper() == "POST":
-                    # Body is empty - all params in URL
                     async with session.post(url, params=query_params, timeout=self._timeout) as response:
                         text = await response.text()
                         try:
@@ -148,7 +152,6 @@ class BingXAPIClient:
                 msg = str(data.get("msg", "")).lower()
                 code = data.get("code", data.get("status", -1))
 
-                # Handle specific BingX error codes
                 if code == 100400 or "api is not exist" in msg:
                     last_error = data
                     self.logger.warning(f"Endpoint {endpoint} not found (100400)")
@@ -166,6 +169,9 @@ class BingXAPIClient:
                     self._consecutive_errors += 1
                     self.logger.error(f"SIGNATURE MISMATCH on {endpoint}! Attempt {attempt+1}/{retries}")
                     self.logger.error(f"Full response: {data}")
+                    self.logger.error(f"api_key present: {bool(self.api_key)}, api_secret present: {bool(self.api_secret)}")
+                    # Force recreate session on signature error
+                    await self._close_session()
                     await asyncio.sleep(2 ** attempt)
                     continue
 
@@ -265,7 +271,6 @@ class BingXAPIClient:
         self.logger.info(f"Balance response: {response}")
         if response.get("code") == 0 and "data" in response:
             data = response["data"]
-            # Handle nested dict structure from BingX
             if isinstance(data, dict):
                 if "balance" in data and isinstance(data["balance"], dict):
                     return data["balance"]
