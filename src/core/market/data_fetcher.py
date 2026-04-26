@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""DataFetcher — async market data loader with caching (FIXED)."""
+"""DataFetcher — async market data loader with caching (FIXED v3)."""
 import time
 import pandas as pd
 from typing import Dict, Any, List, Optional
@@ -41,6 +41,27 @@ class DataFetcher:
             self.logger.error(f"Contracts error: {e}")
         return self._contracts_cache or []
 
+    def _normalize_klines(self, klines_raw: List) -> List[dict]:
+        """Convert BingX klines from array-of-arrays or array-of-dicts to uniform dict format."""
+        if not klines_raw:
+            return []
+        result = []
+        for item in klines_raw:
+            if isinstance(item, dict):
+                result.append(item)
+            elif isinstance(item, (list, tuple)) and len(item) >= 6:
+                result.append({
+                    "timestamp": item[0],
+                    "open": item[1],
+                    "high": item[2],
+                    "low": item[3],
+                    "close": item[4],
+                    "volume": item[5],
+                })
+            else:
+                self.logger.warning(f"Unknown kline format: {type(item)} — {item}")
+        return result
+
     async def fetch_klines_async(self, session, symbol: str, interval: str = "15m", limit: int = 100) -> Optional[pd.DataFrame]:
         cache_key = f"{symbol}_{interval}_{limit}"
         now = time.time()
@@ -52,18 +73,23 @@ class DataFetcher:
             klines = await self.client.get_klines(symbol.replace("/", "-"), interval=interval, limit=limit)
             if not klines:
                 return None
+            klines = self._normalize_klines(klines)
+            if not klines:
+                return None
             df = pd.DataFrame(klines)
             if df.empty:
                 return None
             required_cols = ["timestamp", "open", "high", "low", "close", "volume"]
             for col in required_cols:
                 if col not in df.columns:
+                    self.logger.error(f"Klines missing column '{col}' for {symbol}. Columns: {list(df.columns)}")
                     return None
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
             for col in ["open", "high", "low", "close", "volume"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             df = df.dropna()
             if len(df) < 30:
+                self.logger.warning(f"Klines too short for {symbol}: {len(df)} rows")
                 return None
             df.sort_values("timestamp", inplace=True)
             df.reset_index(drop=True, inplace=True)
@@ -96,13 +122,14 @@ class DataFetcher:
             if data:
                 normalized = {
                     "symbol": data.get("symbol", sym),
-                    "lastPrice": float(data.get("lastPrice", data.get("price", 0))),
-                    "bid": float(data.get("bidPrice", data.get("bid", 0))),
-                    "ask": float(data.get("askPrice", data.get("ask", 0))),
-                    "volume24h": float(data.get("volume", data.get("volume24h", 0))),
-                    "fundingRate": float(data.get("fundingRate", 0)),
-                    "high": float(data.get("highPrice", 0)),
-                    "low": float(data.get("lowPrice", 0)),
+                    "lastPrice": float(data.get("lastPrice", data.get("price", data.get("last_price", 0)))),
+                    "markPrice": float(data.get("markPrice", data.get("lastPrice", data.get("price", 0)))),
+                    "bid": float(data.get("bidPrice", data.get("bid", data.get("bid_price", 0)))),
+                    "ask": float(data.get("askPrice", data.get("ask", data.get("ask_price", 0)))),
+                    "volume24h": float(data.get("volume", data.get("volume24h", data.get("quoteVolume", 0)))),
+                    "fundingRate": float(data.get("fundingRate", data.get("funding_rate", 0))),
+                    "high": float(data.get("highPrice", data.get("high", 0))),
+                    "low": float(data.get("lowPrice", data.get("low", 0))),
                 }
                 self._ticker_cache[sym] = (now, normalized)
                 return normalized

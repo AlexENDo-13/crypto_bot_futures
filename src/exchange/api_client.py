@@ -1,5 +1,5 @@
 """
-BingX API Client v9.2 - CORRECT Authentication
+BingX API Client v9.3 - FULLY FIXED
 BingX uses HMAC SHA256 of (timestamp + apiKey) for v2, and query string for v3.
 """
 import asyncio
@@ -11,7 +11,6 @@ import logging
 from typing import Dict, List, Optional, Any
 
 import aiohttp
-
 
 class BingXAPIClient:
     def __init__(self, api_key: str = "", api_secret: str = "",
@@ -42,7 +41,6 @@ class BingXAPIClient:
         self.logger.info("API credentials updated")
         self._circuit_open = False
         self._consecutive_errors = 0
-        # Recreate session with new headers
         if self._session and not self._session.closed:
             asyncio.create_task(self._close_session())
 
@@ -85,7 +83,7 @@ class BingXAPIClient:
         ).hexdigest()
         return signature
 
-    async def _request(self, method: str, endpoint: str, params: Optional[dict] = None, 
+    async def _request(self, method: str, endpoint: str, params: Optional[dict] = None,
                        signed: bool = False, use_v2_sig: bool = False, retries: int = 3) -> dict:
         now = time.time()
         elapsed = now - self._last_request_time
@@ -110,12 +108,10 @@ class BingXAPIClient:
         if signed:
             timestamp = str(int(time.time() * 1000))
             if use_v2_sig:
-                # BingX v2: signature = HMAC_SHA256(secret, timestamp + apiKey)
                 query_params["timestamp"] = timestamp
                 query_params["apiKey"] = self.api_key
                 query_params["signature"] = self._generate_signature_v2(timestamp)
             else:
-                # BingX v3: signature = HMAC_SHA256(secret, query_string)
                 query_params["timestamp"] = timestamp
                 query_params["apiKey"] = self.api_key
                 query_params["signature"] = self._generate_signature_v3(query_params)
@@ -138,7 +134,6 @@ class BingXAPIClient:
                     return {"code": -1, "msg": f"Unsupported method {method}"}
 
                 self._total_requests += 1
-
                 msg = str(data.get("msg", "")).lower()
 
                 if data.get("code") == 100400 or "api is not exist" in msg:
@@ -205,7 +200,11 @@ class BingXAPIClient:
     async def get_ticker(self, symbol: str) -> dict:
         response = await self._request("GET", "/openApi/swap/v3/quote/ticker", {"symbol": symbol}, signed=False)
         if response.get("code") == 0 and "data" in response:
-            return response["data"]
+            data = response["data"]
+            # Handle both single dict and list
+            if isinstance(data, list) and len(data) > 0:
+                return data[0]
+            return data
         return {}
 
     async def get_tickers_batch(self) -> dict:
@@ -300,6 +299,14 @@ class BingXAPIClient:
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         params = {"symbol": symbol, "orderId": order_id}
         response = await self._request("DELETE", "/openApi/swap/v2/trade/order", params, signed=True, use_v2_sig=True)
+        return response.get("code") == 0
+
+    async def cancel_all_orders(self, symbol: Optional[str] = None) -> bool:
+        """Cancel all open orders for a symbol."""
+        params = {}
+        if symbol:
+            params["symbol"] = symbol
+        response = await self._request("DELETE", "/openApi/swap/v2/trade/allOpenOrders", params, signed=True, use_v2_sig=True)
         return response.get("code") == 0
 
     async def get_open_orders(self, symbol: str) -> list:

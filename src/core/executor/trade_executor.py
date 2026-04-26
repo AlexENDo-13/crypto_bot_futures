@@ -13,14 +13,20 @@ class TradeExecutor:
         self.client = order_manager.client
 
     def _round_quantity(self, symbol, quantity, symbol_specs=None):
-        step = float(symbol_specs.get("stepSize", 0.001)) if symbol_specs else 0.001
+        if symbol_specs:
+            step = float(symbol_specs.get("size", symbol_specs.get("stepSize", 0.001)))
+        else:
+            step = 0.001
         if step <= 0:
             step = 0.001
         qty = math.floor(quantity / step) * step
         return max(qty, step)
 
     def _check_min_notional(self, quantity, price, symbol_specs=None):
-        min_notional = float(symbol_specs.get("minNotional", 5.0)) if symbol_specs else 5.0
+        if symbol_specs:
+            min_notional = float(symbol_specs.get("tradeMinUSDT", symbol_specs.get("minNotional", 5.0)))
+        else:
+            min_notional = 5.0
         return (quantity * price) >= min_notional
 
     async def execute_trade_async(self, candidate, balance, open_positions, trailing_enabled, trailing_distance, telegram, daily_pnl, weekly_pnl, start_balance):
@@ -67,7 +73,11 @@ class TradeExecutor:
             return None
 
         if not self._check_min_notional(qty, current_price, symbol_specs):
-            min_notional = float(symbol_specs.get("minNotional", 5.0)) if symbol_specs else 5.0
+            if symbol_specs:
+                min_notional = float(symbol_specs.get("tradeMinUSDT", symbol_specs.get("minNotional", 5.0)))
+            else:
+                min_notional = 5.0
+            step = float(symbol_specs.get("size", symbol_specs.get("stepSize", 0.001))) if symbol_specs else 0.001
             qty = self._round_quantity(symbol, (min_notional * 1.05) / current_price, symbol_specs)
             if qty <= 0 or not self._check_min_notional(qty, current_price, symbol_specs):
                 self.logger.warning(f"{symbol}: does not meet min lot")

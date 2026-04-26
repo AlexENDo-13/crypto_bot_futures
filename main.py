@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CryptoBot v9.1 - Neural Adaptive Trading System (FIXED)
+CryptoBot v9.2 - Neural Adaptive Trading System (FULLY FIXED)
 """
 import sys
 import asyncio
@@ -16,7 +16,6 @@ from src.config.settings import Settings
 from src.core.engine.trading_engine import TradingEngine
 from src.core.logger import BotLogger
 from src.ui.main_window import MainWindow
-
 
 def setup_logging():
     log_dir = Path("logs")
@@ -35,18 +34,15 @@ def setup_logging():
     logger.addHandler(console_handler)
     return logger
 
-
 async def main():
     logger = setup_logging()
-    logger.info("Starting CryptoBot v9.1 (FIXED)")
+    logger.info("Starting CryptoBot v9.2 (FULLY FIXED)")
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
-    # Load settings
     settings = Settings("config/bot_config.json")
 
-    # Read API keys from settings (can be updated via GUI later)
     import os
     api_key = os.getenv("BINGX_API_KEY", settings.get("api_key", ""))
     api_secret = os.getenv("BINGX_API_SECRET", settings.get("api_secret", ""))
@@ -64,7 +60,6 @@ async def main():
     else:
         logger.info("PAPER / DEMO MODE")
 
-    # Init API client with keys from settings
     api_client = BingXAPIClient(
         api_key=api_key,
         api_secret=api_secret,
@@ -86,7 +81,6 @@ async def main():
 
     logger.info("MainWindow displayed")
 
-    # Keep asyncio responsive
     timer = QTimer()
     timer.timeout.connect(lambda: None)
     timer.start(100)
@@ -101,7 +95,6 @@ async def main():
 
     await future
 
-    # Cleanup
     logger.info("Shutting down application...")
     if engine.running:
         await engine.stop()
@@ -109,7 +102,6 @@ async def main():
     logger.info("Application shutdown complete")
 
     app.quit()
-
 
 if __name__ == "__main__":
     try:

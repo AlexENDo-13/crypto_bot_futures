@@ -55,10 +55,10 @@ class MarketScanner:
             self.current_min_volume = max(5000, self.current_min_volume * decay)
             self.current_min_signal = max(0.12, self.current_min_signal * decay)
             self.logger.info(f"Relaxing filters (empty streak {self.empty_scans_count}): "
-                           f"ADX {old['adx']:.1f}->{self.current_min_adx:.1f}, "
-                           f"ATR {old['atr']:.2f}%->{self.current_min_atr:.2f}%, "
-                           f"Vol {old['vol']:,.0f}->{self.current_min_volume:,.0f}, "
-                           f"Sig {old['sig']:.2f}->{self.current_min_signal:.2f}")
+                             f"ADX {old['adx']:.1f}->{self.current_min_adx:.1f}, "
+                             f"ATR {old['atr']:.2f}%->{self.current_min_atr:.2f}%, "
+                             f"Vol {old['vol']:,.0f}->{self.current_min_volume:,.0f}, "
+                             f"Sig {old['sig']:.2f}->{self.current_min_signal:.2f}")
             self.empty_scans_count = 0
         elif self.successful_scans_count >= 3:
             base_adx = float(self.settings.get("min_adx", 10))
@@ -76,13 +76,11 @@ class MarketScanner:
         self.adapt_for_balance(balance)
         self._adapt_filters()
         self.logger.info(f"Scanning (balance: ${balance:.2f}, ADX>={self.current_min_adx:.1f}, "
-                        f"ATR>={self.current_min_atr:.2f}%, Vol>={self.current_min_volume:,.0f}, "
-                        f"Sig>={self.current_min_signal:.2f})")
+                         f"ATR>={self.current_min_atr:.2f}%, Vol>={self.current_min_volume:,.0f}, "
+                         f"Sig>={self.current_min_signal:.2f})")
 
-        # Try to get contracts from API
         contracts = await self.data_fetcher.get_all_usdt_contracts()
 
-        # If API fails or returns too many, use whitelist ONLY
         if not contracts or len(contracts) > 200:
             if not contracts:
                 self.logger.warning("Contracts API failed, using whitelist")
@@ -117,7 +115,6 @@ class MarketScanner:
                     continue
             symbols_to_scan.append(symbol)
 
-        # Limit batch size to avoid API overload
         batch_size = min(10, len(symbols_to_scan))
 
         for i in range(0, len(symbols_to_scan), batch_size):
@@ -127,14 +124,13 @@ class MarketScanner:
             for res in results:
                 if isinstance(res, dict) and res:
                     candidates.append(res)
-            # Small delay between batches
             if i + batch_size < len(symbols_to_scan):
                 await asyncio.sleep(0.5)
 
         self.logger.info(f"Filter stats: total={filtered_count['total']}, passed={filtered_count['passed']}, "
-                        f"ticker_fail={filtered_count['ticker_fail']}, vol={filtered_count['volume']}, "
-                        f"klines={filtered_count['klines_fail']}, ind={filtered_count['indicators_fail']}, "
-                        f"adx={filtered_count['adx']}, atr={filtered_count['atr']}, signal={filtered_count['signal']}")
+                         f"ticker_fail={filtered_count['ticker_fail']}, vol={filtered_count['volume']}, "
+                         f"klines={filtered_count['klines_fail']}, ind={filtered_count['indicators_fail']}, "
+                         f"adx={filtered_count['adx']}, atr={filtered_count['atr']}, signal={filtered_count['signal']}")
 
         if not candidates:
             self.empty_scans_count += 1
@@ -143,27 +139,24 @@ class MarketScanner:
         else:
             self.empty_scans_count = 0
             self.successful_scans_count += 1
-            candidates.sort(key=lambda x: x["indicators"].get("signal_strength", 0) * 
-                           x["indicators"].get("adx", 0) * 
-                           x["indicators"].get("atr_percent", 0), reverse=True)
+            candidates.sort(key=lambda x: x["indicators"].get("signal_strength", 0) *
+                                         x["indicators"].get("adx", 0) *
+                                         x["indicators"].get("atr_percent", 0), reverse=True)
             top = candidates[:5]
             if top:
                 self.logger.info(f"Found {len(candidates)} signals, top-{len(top)}")
                 for i, c in enumerate(top[:3], 1):
                     ind = c["indicators"]
                     self.logger.info(f" #{i} {c['symbol']}: {ind.get('signal_direction')} [{ind.get('market_regime')}] | "
-                                   f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
-                                   f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f}")
-            self._scan_stats = {"total": filtered_count["total"], "passed": filtered_count["passed"], "by_filter": filtered_count}
-            return top if candidates else []
+                                     f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
+                                     f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f}")
 
         self._scan_stats = {"total": filtered_count["total"], "passed": filtered_count["passed"], "by_filter": filtered_count}
-        return []
+        return top if candidates else []
 
     async def _analyze_symbol(self, symbol, filtered_count):
         tf = self.settings.get("timeframe", "15m")
 
-        # Get ticker data
         try:
             ticker = await self.data_fetcher.get_ticker_data(symbol)
         except Exception:
@@ -179,7 +172,6 @@ class MarketScanner:
         bid = ticker.get("bid", 0)
         ask = ticker.get("ask", 0)
 
-        # Fallback volume
         if volume_24h <= 0:
             try:
                 df_vol = await self.data_fetcher.fetch_klines_async(None, symbol, interval="1d", limit=2)
@@ -200,7 +192,6 @@ class MarketScanner:
                 filtered_count["spread"] += 1
                 return {}
 
-        # Get klines
         try:
             df = await self.data_fetcher.fetch_klines_async(None, symbol, interval=tf, limit=80)
         except Exception:
@@ -260,8 +251,8 @@ class MarketScanner:
         indicators["spread_pct"] = ((ask - bid) / last_price * 100) if last_price > 0 else 0
         filtered_count["passed"] += 1
         self.logger.info(f"SIGNAL {symbol}: {direction} [{regime}] | ADX={adx:.1f} | "
-                        f"ATR={atr_pct:.2f}% | Sig={signal_strength:.2f} | RSI={rsi:.1f} | "
-                        f"Vol={volume_24h:,.0f}")
+                         f"ATR={atr_pct:.2f}% | Sig={signal_strength:.2f} | RSI={rsi:.1f} | "
+                         f"Vol={volume_24h:,.0f}")
         return {"symbol": symbol, "indicators": indicators, "ticker": ticker}
 
     async def _check_multi_timeframe(self, symbol, primary_direction):

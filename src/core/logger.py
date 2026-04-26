@@ -8,7 +8,6 @@ from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Callable
 
-
 class CallbackLogHandler(logging.Handler):
     def __init__(self, callback: Callable[[str, int], None] = None):
         super().__init__()
@@ -29,7 +28,6 @@ class CallbackLogHandler(logging.Handler):
                     pass
         except Exception:
             self.handleError(record)
-
 
 class BotLogger:
     _instance = None
@@ -137,7 +135,6 @@ class BotLogger:
     def log_decision(self, action: str, symbol, data: dict):
         msg = f"DECISION {action} | sym={symbol} | " + " | ".join(f"{k}={v}" for k, v in data.items())
         self.logger.info(msg)
-
 
 def get_logger(name: str = "CryptoBot") -> logging.Logger:
     return BotLogger().get_logger(name)

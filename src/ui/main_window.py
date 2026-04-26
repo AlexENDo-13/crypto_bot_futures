@@ -20,7 +20,6 @@ from src.exchange.api_client import BingXAPIClient
 from src.config.settings import Settings
 from src.core.engine.trading_engine import TradingEngine
 
-
 class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
     stats_signal = pyqtSignal(dict)
@@ -81,10 +80,10 @@ class MainWindow(QMainWindow):
 
         self.nav_buttons = {}
         pages = [
-            ("dashboard", "📊 Dashboard"),
-            ("positions", "📈 Positions"),
-            ("config", "⚙️ Config"),
-            ("logs", "📜 Logs"),
+            ("dashboard", "Dashboard"),
+            ("positions", "Positions"),
+            ("config", "Config"),
+            ("logs", "Logs"),
         ]
         for key, label in pages:
             btn = QPushButton(label)
@@ -95,16 +94,16 @@ class MainWindow(QMainWindow):
 
         sidebar_layout.addStretch()
 
-        self.engine_btn = QPushButton("▶ Start Engine")
+        self.engine_btn = QPushButton("Start Engine")
         self.engine_btn.setStyleSheet("color: #a6e3a1; font-weight: bold;")
         self.engine_btn.clicked.connect(self.toggle_engine)
         sidebar_layout.addWidget(self.engine_btn)
 
-        self.scan_btn = QPushButton("🔍 Scan Now")
+        self.scan_btn = QPushButton("Scan Now")
         self.scan_btn.clicked.connect(self.run_scan)
         sidebar_layout.addWidget(self.scan_btn)
 
-        self.autopilot_btn = QPushButton("🤖 AutoPilot OFF")
+        self.autopilot_btn = QPushButton("AutoPilot OFF")
         self.autopilot_btn.setCheckable(True)
         self.autopilot_btn.clicked.connect(self.toggle_autopilot)
         sidebar_layout.addWidget(self.autopilot_btn)
@@ -181,11 +180,11 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
 
         header = QHBoxLayout()
-        title = QLabel("📊 Open Positions")
+        title = QLabel("Open Positions")
         title.setStyleSheet("font-size: 16px; font-weight: bold; color: #cdd6f4;")
         header.addWidget(title)
 
-        self.btn_close_all = QPushButton("❌ Close All")
+        self.btn_close_all = QPushButton("Close All")
         self.btn_close_all.setEnabled(False)
         self.btn_close_all.setStyleSheet("""
             QPushButton { background-color: #f38ba8; color: #1e1e2e; padding: 6px 12px; border-radius: 4px; font-weight: bold; }
@@ -217,11 +216,10 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        # API Settings
         api_group = QFrame()
         api_group.setStyleSheet("QFrame { background-color: #313244; border-radius: 8px; padding: 10px; }")
         api_layout = QVBoxLayout(api_group)
-        api_title = QLabel("🔑 API Settings")
+        api_title = QLabel("API Settings")
         api_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #cdd6f4;")
         api_layout.addWidget(api_title)
 
@@ -245,11 +243,10 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(api_group)
 
-        # Trading Settings
         trade_group = QFrame()
         trade_group.setStyleSheet("QFrame { background-color: #313244; border-radius: 8px; padding: 10px; }")
         trade_layout = QVBoxLayout(trade_group)
-        trade_title = QLabel("📊 Trading Settings")
+        trade_title = QLabel("Trading Settings")
         trade_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #cdd6f4;")
         trade_layout.addWidget(trade_title)
 
@@ -279,8 +276,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(trade_group)
 
-        # Save button
-        self.btn_save = QPushButton("💾 Save Settings")
+        self.btn_save = QPushButton("Save Settings")
         self.btn_save.setStyleSheet("""
             QPushButton {
                 background-color: #a6e3a1; color: #1e1e2e;
@@ -369,7 +365,7 @@ class MainWindow(QMainWindow):
                 side = pos.get("side", "UNKNOWN")
                 qty = float(pos.get("quantity", 0))
                 entry = float(pos.get("entry_price", 0))
-                mark = float(pos.get("mark_price", entry))
+                mark = float(pos.get("current_price", entry))
                 leverage = int(pos.get("leverage", 1))
 
                 if side.upper() in ("LONG", "BUY"):
@@ -391,7 +387,7 @@ class MainWindow(QMainWindow):
                         item.setForeground(Qt.GlobalColor.red)
                     self.pos_table.setItem(row, col, item)
 
-                btn = QPushButton("❌")
+                btn = QPushButton("X")
                 btn.setMaximumWidth(40)
                 btn.clicked.connect(lambda checked, s=symbol: self._close_position(s))
                 self.pos_table.setCellWidget(row, 7, btn)
@@ -460,11 +456,8 @@ class MainWindow(QMainWindow):
             "scan_interval_minutes": int(self.cfg_scan_interval.currentText()),
         }
         self.settings.update(updates)
-
-        # Update API client credentials immediately
         self.api_client.update_credentials(api_key, api_secret)
 
-        # Update mode label
         demo = self.cfg_demo.isChecked()
         self.mode_label.setText("MODE: PAPER" if demo else "MODE: LIVE")
         self.mode_label.setStyleSheet(
@@ -527,7 +520,7 @@ class MainWindow(QMainWindow):
 
     def toggle_engine(self):
         if not self.engine.running:
-            self.engine_btn.setText("⏹ Stop Engine")
+            self.engine_btn.setText("Stop Engine")
             self.engine_btn.setStyleSheet("color: #f38ba8; font-weight: bold;")
             self.status_label.setText("Engine starting...")
             async def start_engine():
@@ -537,12 +530,12 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self.logger.error(f"Engine start error: {e}")
                     self.status_label.setText("Start failed")
-                    self.engine_btn.setText("▶ Start Engine")
+                    self.engine_btn.setText("Start Engine")
                     self.engine_btn.setStyleSheet("color: #a6e3a1; font-weight: bold;")
             asyncio.create_task(start_engine())
             self.logger.info("TradingEngine START requested")
         else:
-            self.engine_btn.setText("▶ Start Engine")
+            self.engine_btn.setText("Start Engine")
             self.engine_btn.setStyleSheet("color: #a6e3a1; font-weight: bold;")
             self.status_label.setText("Engine stopping...")
             async def stop_engine():
@@ -556,7 +549,7 @@ class MainWindow(QMainWindow):
 
     def toggle_autopilot(self):
         checked = self.autopilot_btn.isChecked()
-        self.autopilot_btn.setText("🤖 AutoPilot ON" if checked else "🤖 AutoPilot OFF")
+        self.autopilot_btn.setText("AutoPilot ON" if checked else "AutoPilot OFF")
         status = "ACTIVE" if checked else "STANDBY"
         self.logger.info(f"AutoPilot {status}")
 
@@ -571,7 +564,6 @@ class MainWindow(QMainWindow):
         self.update_timer.stop()
         self.scan_timer.stop()
         event.accept()
-
 
 class GuiLogHandler(logging.Handler):
     def __init__(self, signal):

@@ -53,7 +53,8 @@ class Position:
         self.breakeven_moved = False
 
     def update_market_price(self, price):
-        if price <= 0: return
+        if price <= 0:
+            return
         self.current_price = price
         self.max_price_seen = max(self.max_price_seen, price)
         self.min_price_seen = min(self.min_price_seen, price)
@@ -64,7 +65,7 @@ class Position:
         margin = self.entry_price * self.quantity / self.leverage if self.quantity > 0 else 1.0
         self.unrealized_pnl_percent = (self.unrealized_pnl / margin) * 100 if margin > 0 else 0.0
 
-    def calculate_pnl_percent(self): 
+    def calculate_pnl_percent(self):
         return self.unrealized_pnl_percent
 
     def update_trailing_stop(self, distance_pct):
@@ -85,7 +86,8 @@ class Position:
         return False
 
     def partial_close(self, percent, exit_price, commission=0.0):
-        if percent <= 0 or percent > 1 or self.quantity <= 0: return 0.0
+        if percent <= 0 or percent > 1 or self.quantity <= 0:
+            return 0.0
         close_qty = self.quantity * percent
         self.quantity -= close_qty
         if self.side == OrderSide.BUY:
@@ -112,7 +114,7 @@ class Position:
             self.realized_pnl += (exit_price - self.entry_price) * self.quantity - commission
         else:
             self.realized_pnl += (self.entry_price - exit_price) * self.quantity - commission
-        margin = self.entry_price * self.initial_quantity / self.leverage
+        margin = self.entry_price * self.initial_quantity / self.leverage if self.initial_quantity > 0 and self.leverage > 0 else 1.0
         self.realized_pnl_percent = (self.realized_pnl / margin) * 100 if margin > 0 else 0.0
         self.quantity = 0
 
@@ -145,7 +147,7 @@ class Position:
             "trailing_activated": self.trailing_activated,
             "order_id": self.order_id,
             "sl_order_id": self.sl_order_id,
-            "tp_order_id": self.tp_order_id
+            "tp_order_id": self.tp_order_id,
         }
 
     @classmethod
