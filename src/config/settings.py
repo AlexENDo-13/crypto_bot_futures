@@ -39,13 +39,8 @@ class Settings:
         "discord_webhook_url": "", "web_interface_enabled": False,
         "web_interface_port": 5000, "sound_enabled": True,
         "voice_enabled": False, "dark_theme": True, "show_charts": True,
-        "symbols_whitelist": [
-            "BTC-USDT","ETH-USDT","SOL-USDT","XRP-USDT","DOGE-USDT",
-            "ADA-USDT","AVAX-USDT","LINK-USDT","MATIC-USDT","DOT-USDT",
-            "LTC-USDT","BCH-USDT","ETC-USDT","UNI-USDT","ATOM-USDT",
-            "FIL-USDT","ALGO-USDT","NEAR-USDT","APT-USDT","ARB-USDT"
-        ],
-        "blacklist": ["SHIB-USDT","PEPE-USDT","FLOKI-USDT","BONK-USDT"],
+        "symbols_whitelist": [],  # EMPTY = scan ALL available USDT pairs
+        "blacklist": ["SHIB-USDT","PEPE-USDT","FLOKI-USDT","BONK-USDT","DOGE-USDT"],
         "max_daily_trades": 15, "daily_profit_target_percent": 5.0,
         "stop_on_daily_target": False, "force_ignore_session": True,
         "log_level": "INFO", "log_to_file": True, "log_max_mb": 10,
@@ -57,6 +52,7 @@ class Settings:
         "adaptive_scan_interval": True, "fast_mode_empty_scans": True,
         "aggressive_adaptation": True,
         "cache_ttl_seconds": 60,
+        "position_mode": "HEDGE",  # HEDGE mode requires positionSide
     }
 
     def __init__(self, config_path: str = "config/bot_config.json"):
@@ -72,7 +68,7 @@ class Settings:
                 try:
                     with open(self.config_path, "r", encoding="utf-8") as f:
                         loaded = json.load(f)
-                        self._data.update(loaded)
+                    self._data.update(loaded)
                 except Exception as e:
                     print(f"Config load error: {e}")
             for k, v in self.DEFAULTS.items():

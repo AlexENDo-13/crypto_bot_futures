@@ -33,7 +33,7 @@ class OrderManager:
         ok = await self.client.cancel_order(symbol, order_id)
         if ok:
             self._pending_orders.pop(order_id, None)
-        return ok
+            return ok
 
     async def cancel_all_orders(self, symbol=None):
         ok = await self.client.cancel_all_orders(symbol)
@@ -42,7 +42,7 @@ class OrderManager:
                 self._pending_orders = {k: v for k, v in self._pending_orders.items() if v.get("symbol") != symbol}
             else:
                 self._pending_orders.clear()
-        return ok
+            return ok
 
     def get_pending_orders(self):
         return dict(self._pending_orders)

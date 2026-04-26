@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TradingEngine v5.3 — Self-healing adaptive engine. Never stops."""
+"""TradingEngine v5.4 — Self-healing adaptive engine. Never stops."""
 import asyncio
 import time
 import logging
@@ -85,9 +85,8 @@ class TradingEngine:
     async def start(self):
         self.running = True
         self._stop_event.clear()
-        self.logger.info("Starting TradingEngine v5.3 (Self-Healing)...")
+        self.logger.info("Starting TradingEngine v5.4 (Self-Healing)...")
 
-        # Try to get balance with extended retries
         for attempt in range(self._max_balance_attempts):
             try:
                 bal_info = await self.risk_manager.get_account_balance()
@@ -109,7 +108,6 @@ class TradingEngine:
 
         if self.balance <= 0:
             self.logger.warning("Balance not received. Running in monitoring mode. Trading disabled until balance available.")
-            # Still continue - bot will keep trying to fetch balance in main loop
 
         await self._sync_positions()
         self._task = asyncio.create_task(self._main_loop())
@@ -132,7 +130,6 @@ class TradingEngine:
                 loop_start = time.time()
                 self._loop_count += 1
 
-                # Update balance every loop if it's 0
                 if self.balance <= 0:
                     try:
                         bal_info = await self.risk_manager.get_account_balance()
@@ -313,7 +310,6 @@ class TradingEngine:
         self.logger.info("Starting market scan...")
         self.logger.log_decision("scan_start", None, {"balance": self.balance, "positions": len(self.positions)})
 
-        # If balance is 0, still scan but log warning
         if self.balance <= 0:
             self.logger.warning("Balance is 0, scanning in monitoring mode only (no trades)")
 

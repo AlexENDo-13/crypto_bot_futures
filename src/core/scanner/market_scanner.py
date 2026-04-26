@@ -46,17 +46,20 @@ class MarketScanner:
         self._scanned_symbols_history = []
         self._max_history = 50
 
-        # Symbol rotation
+        # Symbol rotation - adaptive based on balance
         self._symbol_rotation_index = 0
-        self._symbols_per_scan = 10  # Scan only 10 symbols per cycle to avoid API limits
+        self._symbols_per_scan = 15  # Increased for better market coverage
 
     def adapt_for_balance(self, balance):
         if balance < 100:
             self.mtf_required = 1
+            self._symbols_per_scan = 10
         elif balance < 1000:
             self.mtf_required = min(2, len(self.mtf_timeframes))
+            self._symbols_per_scan = 15
         else:
             self.mtf_required = int(self.settings.get("mtf_required_agreement", 2))
+            self._symbols_per_scan = 20
 
     def _adapt_filters(self):
         threshold = 1 if self.aggressive else 2
@@ -124,12 +127,18 @@ class MarketScanner:
 
         contracts = await self.data_fetcher.get_all_usdt_contracts()
 
-        if not contracts or len(contracts) > 200:
-            if not contracts:
-                self.logger.warning("Contracts API failed, using whitelist")
+        # If contracts API fails or whitelist is explicitly set, use whitelist
+        if not contracts:
+            self.logger.warning("Contracts API failed, using whitelist if configured")
+            if self.whitelist:
+                contracts = [{"symbol": s} for s in self.whitelist]
             else:
-                self.logger.warning(f"Contracts API returned {len(contracts)} items, using whitelist")
-            contracts = [{"symbol": s} for s in self.whitelist]
+                self.logger.warning("No contracts and no whitelist - cannot scan")
+                return []
+        elif self.whitelist:
+            # If whitelist is set, filter contracts to whitelist only
+            whitelist_set = set(self.whitelist)
+            contracts = [c for c in contracts if c.get("symbol", "") in whitelist_set]
 
         self.logger.info(f"Total symbols: {len(contracts)}, scanning subset")
         filtered_count = {
@@ -147,12 +156,6 @@ class MarketScanner:
             if not symbol:
                 continue
             filtered_count["total"] += 1
-
-            if self.whitelist:
-                clean = symbol.replace("/", "-")
-                if clean not in self.whitelist and symbol not in self.whitelist:
-                    filtered_count["whitelist"] += 1
-                    continue
 
             if self.blacklist:
                 clean = symbol.replace("/", "-")
@@ -338,12 +341,12 @@ class MarketScanner:
                     self.logger.debug(f"MTF error {symbol} {tf}: {e}")
                     continue
 
-            # Require at least mtf_required agreement
-            if mtf_total > 0 and mtf_score < self.mtf_required:
-                filtered_count["mtf_reject"] += 1
-                self.logger.debug(f"MTF reject {symbol}: {mtf_score:.1f}/{self.mtf_required} required, "
-                                  f"details: {', '.join(mtf_details)}")
-                return {}
+        # Require at least mtf_required agreement
+        if mtf_total > 0 and mtf_score < self.mtf_required:
+            filtered_count["mtf_reject"] += 1
+            self.logger.debug(f"MTF reject {symbol}: {mtf_score:.1f}/{self.mtf_required} required, "
+                              f"details: {', '.join(mtf_details)}")
+            return {}
 
         # Step 4: Trap detection
         if self.trap_detector:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""DataFetcher — async market data loader with caching (FIXED v3)."""
+"""DataFetcher — async market data loader with caching (FIXED v4)."""
 import time
 import pandas as pd
 from typing import Dict, Any, List, Optional
@@ -48,6 +48,10 @@ class DataFetcher:
         result = []
         for item in klines_raw:
             if isinstance(item, dict):
+                # BingX v2 returns 'time' instead of 'timestamp'
+                if "time" in item and "timestamp" not in item:
+                    item = dict(item)
+                    item["timestamp"] = item.pop("time")
                 result.append(item)
             elif isinstance(item, (list, tuple)) and len(item) >= 6:
                 result.append({

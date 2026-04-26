@@ -36,6 +36,7 @@ class ExitManager:
                 pos.update_market_price(current_price)
                 pnl_pct = pos.calculate_pnl_percent()
                 hold_time = (datetime.utcnow() - pos.entry_time).total_seconds() / 60 if pos.entry_time else 0
+                position_side = "LONG" if pos.side.value == "BUY" else "SHORT"
 
                 # Partial close at 50% TP progress
                 if self.partial_close and not pos.partial_closes:
@@ -48,16 +49,16 @@ class ExitManager:
                             if self.breakeven_after_tp1:
                                 if pos.move_to_breakeven():
                                     self.logger.info(f"SL {symbol} moved to breakeven")
-                                    try:
-                                        await self.client.cancel_all_orders(symbol.replace("/", "-"))
-                                        sl_side = "SELL" if pos.side.value == "BUY" else "BUY"
-                                        await self.client.place_stop_order(
-                                            symbol=symbol.replace("/", "-"), side=sl_side,
-                                            stop_price=pos.entry_price, order_type="STOP_MARKET",
-                                            position_side="BOTH", close_position=True
-                                        )
-                                    except Exception as e:
-                                        self.logger.warning(f"Could not update SL {symbol}: {e}")
+                                try:
+                                    await self.client.cancel_all_orders(symbol.replace("/", "-"))
+                                    sl_side = "SELL" if pos.side.value == "BUY" else "BUY"
+                                    await self.client.place_stop_order(
+                                        symbol=symbol.replace("/", "-"), side=sl_side,
+                                        stop_price=pos.entry_price, order_type="STOP_MARKET",
+                                        position_side=position_side, close_position=True
+                                    )
+                                except Exception as e:
+                                    self.logger.warning(f"Could not update SL {symbol}: {e}")
 
                 # Partial close at 80% TP progress
                 if self.partial_close and len(pos.partial_closes) == 1:
@@ -75,13 +76,13 @@ class ExitManager:
 
                 # Stop loss hit
                 if pos.stop_loss_price > 0:
-                    if (pos.side.value == "BUY" and current_price <= pos.stop_loss_price) or                        (pos.side.value == "SELL" and current_price >= pos.stop_loss_price):
+                    if (pos.side.value == "BUY" and current_price <= pos.stop_loss_price) or (pos.side.value == "SELL" and current_price >= pos.stop_loss_price):
                         await self._close_position(pos, current_price, ExitReason.STOP_LOSS, positions, on_close)
                         continue
 
                 # Take profit hit
                 if pos.take_profit_price > 0:
-                    if (pos.side.value == "BUY" and current_price >= pos.take_profit_price) or                        (pos.side.value == "SELL" and current_price <= pos.take_profit_price):
+                    if (pos.side.value == "BUY" and current_price >= pos.take_profit_price) or (pos.side.value == "SELL" and current_price <= pos.take_profit_price):
                         await self._close_position(pos, current_price, ExitReason.TAKE_PROFIT, positions, on_close)
                         continue
 
@@ -110,14 +111,28 @@ class ExitManager:
     async def _close_position(self, pos, exit_price, reason, positions, on_close=None):
         try:
             bingx_symbol = pos.symbol.replace("/", "-")
+            position_side = "LONG" if pos.side.value == "BUY" else "SHORT"
             try:
                 await self.client.cancel_all_orders(bingx_symbol)
             except Exception:
                 pass
+            # Use close_position API first (with closePosition=true)
+            result = await self.client.close_position(
+                symbol=bingx_symbol, position_side=position_side, quantity="0"
+            )
+            if result and not result.get("error") and result.get("orderId"):
+                pos.close(exit_price, reason)
+                positions.pop(pos.symbol, None)
+                self.risk_manager.register_position_close(pos)
+                if on_close:
+                    on_close(pos)
+                self.logger.info(f"Position {pos.symbol} closed: {reason.value} | Entry: {pos.entry_price:.4f} | Exit: {exit_price:.4f} | PnL: {pos.realized_pnl:.4f} ({pos.realized_pnl_percent:.2f}%)")
+                return
+            # Fallback to market order
             close_side = "SELL" if pos.side.value == "BUY" else "BUY"
             result = await self.client.place_order(
-                symbol=bingx_symbol, side=close_side, quantity=pos.quantity,
-                order_type="MARKET", position_side="BOTH"
+                symbol=bingx_symbol, side=close_side, position_side=position_side,
+                quantity=pos.quantity, order_type="MARKET"
             )
             if result and not result.get("error") and result.get("orderId"):
                 pos.close(exit_price, reason)
