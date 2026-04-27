@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TradingEngine v6.0 — Production-ready adaptive engine with detailed decision logging."""
+"""TradingEngine v11 — Fixed: scan scheduling, clearer decision logs, better error recovery."""
 import asyncio
 import time
 import logging
@@ -51,7 +51,7 @@ class TradingEngine:
         self.daily_pnl = 0.0
         self.weekly_pnl = 0.0
         self.last_scan_time = 0
-        self.scan_interval = settings.get("scan_interval_minutes", 5) * 60
+        self.scan_interval = settings.get("scan_interval_minutes", 3) * 60
         self._balance_fetch_failures = 0
         self._last_scan_result: List[Dict] = []
         self._api_latency_ms = 0.0
@@ -85,7 +85,7 @@ class TradingEngine:
     async def start(self):
         self.running = True
         self._stop_event.clear()
-        self.logger.info("Starting TradingEngine v6.0 (Production Ready)...")
+        self.logger.info("Starting TradingEngine v11...")
 
         for attempt in range(self._max_balance_attempts):
             try:
@@ -93,9 +93,8 @@ class TradingEngine:
                 self.balance = bal_info.get("total_equity", 0)
                 self.start_balance = self.balance
                 if self.balance > 0:
-                    self.logger.info(f"Balance: {self.balance:.4f} USDT")
+                    self.logger.info(f"Balance loaded: {self.balance:.4f} USDT")
                     self._balance_fetch_failures = 0
-                    self._balance_fetch_attempts = 0
                     break
                 else:
                     self.logger.warning(f"Balance = 0 (attempt {attempt + 1}/{self._max_balance_attempts})")
@@ -107,11 +106,11 @@ class TradingEngine:
                     await asyncio.sleep(min(2 ** attempt, 15))
 
         if self.balance <= 0:
-            self.logger.warning("Balance not received. Running in monitoring mode. Trading disabled until balance available.")
+            self.logger.warning("Balance not received. Running in monitoring mode. Trading disabled.")
 
         await self._sync_positions()
         self._task = asyncio.create_task(self._main_loop())
-        self.logger.info("Engine started - self-healing active")
+        self.logger.info("Engine started — self-healing active")
 
     async def stop(self):
         self.running = False
@@ -130,6 +129,7 @@ class TradingEngine:
                 loop_start = time.time()
                 self._loop_count += 1
 
+                # Balance recovery
                 if self.balance <= 0:
                     try:
                         bal_info = await self.risk_manager.get_account_balance()
@@ -137,7 +137,7 @@ class TradingEngine:
                         if new_balance > 0:
                             self.balance = new_balance
                             self.start_balance = new_balance
-                            self.logger.info(f"Balance updated: {self.balance:.4f} USDT")
+                            self.logger.info(f"Balance recovered: {self.balance:.4f} USDT")
                     except Exception as e:
                         self.logger.debug(f"Balance fetch retry error: {e}")
 
@@ -307,18 +307,17 @@ class TradingEngine:
             self.closed_positions = self.closed_positions[-500:]
 
     async def _scan_and_trade(self):
-        self.logger.info("=== MARKET SCAN STARTED ===")
-        self.logger.info(f"DECISION: scan_start | balance=${self.balance:.2f} | positions={len(self.positions)} | max_positions={self.risk_manager.max_positions}")
+        self.logger.info("=" * 50)
+        self.logger.info(f"DECISION: SCAN_START | balance=${self.balance:.2f} | positions={len(self.positions)} | max_pos={self.risk_manager.max_positions}")
 
         if self.balance <= 0:
-            self.logger.warning("Balance is 0, scanning in monitoring mode only (no trades)")
+            self.logger.warning("Balance is 0 — scanning in monitoring mode only (no trades)")
 
         ok, reason = self.risk_manager.can_open_position(len(self.positions), self.balance)
         if not ok:
-            self.logger.info(f"SCAN BLOCKED: {reason}")
+            self.logger.info(f"SCAN BLOCKED by risk: {reason}")
             return
-
-        self.logger.info(f"RISK CHECK PASSED: can_open_position=True | reason={reason}")
+        self.logger.info(f"RISK CHECK: PASSED | {reason}")
 
         candidates = await self.market_scanner.scan_async(
             balance=self.balance, max_pairs=100,
@@ -331,7 +330,7 @@ class TradingEngine:
         if not candidates:
             self._consecutive_empty_scans += 1
             self.logger.info(f"No signals found (empty streak: {self._consecutive_empty_scans})")
-            self.logger.info("DECISION: scan_empty | No qualifying signals after all filters")
+            self.logger.info("DECISION: SCAN_EMPTY — no qualifying signals")
             return
 
         self._consecutive_empty_scans = 0
@@ -339,20 +338,21 @@ class TradingEngine:
 
         candidates = self.risk_controller.filter_signals(candidates, list(self.positions.values()), self.balance)
         if not candidates:
-            self.logger.info("All signals filtered out by risk controller (correlation/risk limits)")
+            self.logger.info("All signals filtered out by risk controller")
             return
 
-        self.logger.info(f"EXECUTING TRADES: {len(candidates)} candidates after risk filter")
+        self.logger.info(f"EXECUTING: {len(candidates)} candidates after risk filter")
 
         for candidate in candidates:
             if len(self.positions) >= self.risk_manager.max_positions:
-                self.logger.info("Max positions reached — stopping trade execution")
+                self.logger.info("Max positions reached — stopping execution")
                 break
             try:
                 ind = candidate.get("indicators", {})
-                self.logger.info(f"ATTEMPTING ENTRY: {candidate.get('symbol')} {ind.get('signal_direction')} | "
-                                f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
-                                f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f}")
+                self.logger.info(f"ATTEMPT ENTRY: {candidate.get('symbol')} {ind.get('signal_direction')} | "
+                                 f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
+                                 f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | "
+                                 f"Type={ind.get('entry_type','mixed')}")
                 pos = await self.trade_executor.execute_trade_async(
                     candidate=candidate, balance=self.balance, open_positions=self.positions,
                     trailing_enabled=self.settings.get("trailing_stop_enabled", True),
@@ -365,14 +365,14 @@ class TradingEngine:
                         self.positions[pos.symbol] = pos
                         self.risk_controller.register_position_open(pos.symbol)
                     self.logger.info(f"SUCCESS: Position opened {pos.symbol} {pos.side.value} | "
-                                      f"Entry={pos.entry_price:.4f} | Qty={pos.quantity:.6f} | "
-                                      f"SL={pos.stop_loss_price:.4f} | TP={pos.take_profit_price:.4f}")
+                                     f"Entry={pos.entry_price:.4f} | Qty={pos.quantity:.6f} | "
+                                     f"SL={pos.stop_loss_price:.4f} | TP={pos.take_profit_price:.4f}")
                 else:
-                    self.logger.warning(f"FAILED: Trade execution returned None for {candidate.get('symbol')}")
+                    self.logger.warning(f"FAILED: Trade returned None for {candidate.get('symbol')}")
             except Exception as e:
-                self.logger.error(f"Trade execution error (non-critical): {e}")
+                self.logger.error(f"Trade execution error: {e}")
 
-        self.logger.info("=== MARKET SCAN COMPLETE ===")
+        self.logger.info("=" * 50)
 
     def get_stats(self) -> dict:
         with self._lock:

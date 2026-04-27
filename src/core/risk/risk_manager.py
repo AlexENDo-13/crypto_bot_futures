@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""RiskManager v11 — Fixed position sizing for micro balances, better adaptation."""
 import logging, math, time
 from typing import Dict, Optional
 from datetime import datetime
@@ -7,7 +8,7 @@ from src.core.trading.position import Position, OrderSide
 logger = logging.getLogger("RiskManager")
 
 class AntiChase:
-    def __init__(self, max_orders_per_hour=6, cooldown_seconds=300):
+    def __init__(self, max_orders_per_hour=8, cooldown_seconds=180):
         self.max_orders_per_hour = max_orders_per_hour
         self.cooldown_seconds = cooldown_seconds
         self._trade_times = []
@@ -54,7 +55,7 @@ class RiskManager:
         self.reduce_weekend = settings.get("reduce_risk_on_weekends", True)
         self.daily_profit_target = float(settings.get("daily_profit_target_percent", 5.0))
         self.stop_on_target = settings.get("stop_on_daily_target", False)
-        self.anti_chase = AntiChase(max_orders_per_hour=int(settings.get("max_orders_per_hour", 6)))
+        self.anti_chase = AntiChase(max_orders_per_hour=int(settings.get("max_orders_per_hour", 8)))
         self.daily_pnl = 0.0
         self.daily_loss = 0.0
         self.consecutive_losses = 0
@@ -82,59 +83,54 @@ class RiskManager:
 
         if balance < 50:
             self._current_balance_tier = "micro"
-            self.risk_per_trade = min(self._base_risk_per_trade, 2.0)  # was 0.5, now 2.0%
+            self.risk_per_trade = min(self._base_risk_per_trade, 5.0)
             self.max_positions = 1
-            self.max_leverage = min(self._base_max_leverage, 5)
-            self.max_total_risk = 5.0  # was 2.0, now 5.0% to allow trades
+            self.max_leverage = min(self._base_max_leverage, 10)
+            self.max_total_risk = 10.0
         elif balance < 200:
             self._current_balance_tier = "small"
-            self.risk_per_trade = min(self._base_risk_per_trade, 1.5)
+            self.risk_per_trade = min(self._base_risk_per_trade, 3.0)
             self.max_positions = min(self._base_max_positions, 2)
-            self.max_leverage = min(self._base_max_leverage, 10)
-            self.max_total_risk = 5.0
+            self.max_leverage = min(self._base_max_leverage, 15)
+            self.max_total_risk = 8.0
         elif balance < 1000:
             self._current_balance_tier = "medium"
-            self.risk_per_trade = min(self._base_risk_per_trade, 1.0)
+            self.risk_per_trade = min(self._base_risk_per_trade, 2.0)
             self.max_positions = min(self._base_max_positions, 3)
-            self.max_leverage = min(self._base_max_leverage, 15)
-            self.max_total_risk = 5.0
+            self.max_leverage = min(self._base_max_leverage, 20)
+            self.max_total_risk = 6.0
         elif balance < 5000:
             self._current_balance_tier = "large"
             self.risk_per_trade = min(self._base_risk_per_trade, 1.5)
             self.max_positions = min(self._base_max_positions, 5)
-            self.max_leverage = min(self._base_max_leverage, 20)
+            self.max_leverage = min(self._base_max_leverage, 25)
             self.max_total_risk = 8.0
         else:
             self._current_balance_tier = "whale"
-            self.risk_per_trade = min(self._base_risk_per_trade, 2.0)
+            self.risk_per_trade = min(self._base_risk_per_trade, 1.0)
             self.max_positions = min(self._base_max_positions, 7)
-            self.max_leverage = min(self._base_max_leverage, 25)
+            self.max_leverage = min(self._base_max_leverage, 30)
             self.max_total_risk = 10.0
 
         if old_tier != self._current_balance_tier:
             logger.info(f"Balance tier: {old_tier} -> {self._current_balance_tier} "
-                       f"(bal=${balance:.2f}, risk={self.risk_per_trade}%, pos={self.max_positions}, lev={self.max_leverage}x, max_risk={self.max_total_risk}%)")
+                        f"(bal=${balance:.2f}, risk={self.risk_per_trade}%, pos={self.max_positions}, "
+                        f"lev={self.max_leverage}x, max_risk={self.max_total_risk}%)")
 
     async def get_account_balance(self):
         now = time.time()
         if now - self._balance_cache_time < self._balance_cache_ttl and self._cached_balance > 0:
-            return {
-                "total_equity": self._cached_balance,
-                "available_balance": self._cached_balance,
-                "used": 0.0,
-                "equity": self._cached_balance,
-            }
+            return {"total_equity": self._cached_balance, "available_balance": self._cached_balance,
+                    "used": 0.0, "equity": self._cached_balance}
         try:
             account = await self.client.get_account_balance()
             if account and isinstance(account, dict):
                 if "balance" in account and isinstance(account["balance"], dict):
                     balance = float(account["balance"].get("balance", 0))
                 else:
-                    balance = float(account.get("balance",
-                        account.get("totalEquity",
-                            account.get("equity",
-                                account.get("availableBalance",
-                                    account.get("totalWalletBalance", 0))))))
+                    balance = float(account.get("balance", account.get("totalEquity",
+                             account.get("equity", account.get("availableBalance",
+                             account.get("totalWalletBalance", 0))))))
                 self._cached_balance = balance
                 self._balance_cache_time = now
                 self.adapt_to_balance(balance)
@@ -143,9 +139,8 @@ class RiskManager:
                 if "balance" in account and isinstance(account["balance"], dict):
                     available = float(account["balance"].get("availableMargin", balance))
                 else:
-                    available = float(account.get("availableMargin",
-                        account.get("available",
-                            account.get("availableBalance", balance))))
+                    available = float(account.get("availableMargin", account.get("available",
+                             account.get("availableBalance", balance))))
 
                 used = 0.0
                 if "balance" in account and isinstance(account["balance"], dict):
@@ -153,24 +148,13 @@ class RiskManager:
                 else:
                     used = float(account.get("usedMargin", account.get("used", 0)))
 
-                return {
-                    "total_equity": balance,
-                    "available_balance": available,
-                    "used": used,
-                    "equity": float(account.get("equity", balance)) if isinstance(account, dict) else balance,
-                    "unrealizedProfit": float(account.get("unrealizedProfit", 0)) if isinstance(account, dict) else 0,
-                }
+                return {"total_equity": balance, "available_balance": available,
+                        "used": used, "equity": float(account.get("equity", balance)) if isinstance(account, dict) else balance,
+                        "unrealizedProfit": float(account.get("unrealizedProfit", 0)) if isinstance(account, dict) else 0}
         except Exception as e:
             logger.error(f"Balance error: {e}")
-            return {
-                "total_equity": self._cached_balance,
-                "available_balance": self._cached_balance,
-                "used": 0.0,
-                "equity": self._cached_balance,
-            }
-
-    async def get_account_info(self):
-        return await self.get_account_balance()
+        return {"total_equity": self._cached_balance, "available_balance": self._cached_balance,
+                "used": 0.0, "equity": self._cached_balance}
 
     def calculate_position_size(self, symbol, balance, risk_percent, stop_distance_pct, leverage, atr, current_price, symbol_specs=None):
         self._reset_daily_if_needed()
@@ -187,26 +171,42 @@ class RiskManager:
         if self.consecutive_losses > 0 and self.anti_martingale:
             risk_percent *= self.anti_martingale_reduction ** self.consecutive_losses
 
-        risk_percent = max(0.1, min(risk_percent, 5.0))
+        risk_percent = max(0.5, min(risk_percent, 10.0))
         risk_amount = balance * (risk_percent / 100.0)
-        # No hard $0.5 floor — proportional to balance
-        risk_amount = max(risk_amount, 0.01)  # min $0.01
+        risk_amount = max(risk_amount, 0.05)
 
-        stop_distance_pct = max(0.3, min(stop_distance_pct, 10.0))
+        stop_distance_pct = max(0.2, min(stop_distance_pct, 15.0))
         position_value = risk_amount / (stop_distance_pct / 100.0)
         margin_required = position_value / leverage if leverage > 0 else position_value
-        max_margin = balance * 0.5
+
+        # For micro balances, allow up to 90% of balance as margin (single position)
+        if self._current_balance_tier == "micro":
+            max_margin = balance * 0.9
+        else:
+            max_margin = balance * 0.6
+
         if margin_required > max_margin:
             margin_required = max_margin
-        position_value = margin_required * leverage if leverage > 0 else margin_required
+            position_value = margin_required * leverage if leverage > 0 else margin_required
+
         quantity = position_value / current_price if current_price > 0 else 0
 
         if symbol_specs:
             step = float(symbol_specs.get("stepSize", symbol_specs.get("size", 0.001)))
             min_notional = float(symbol_specs.get("minNotional", symbol_specs.get("tradeMinUSDT", 5.0)))
-            quantity = math.floor(quantity / step) * step if step > 0 else quantity
+            if step > 0:
+                quantity = math.floor(quantity / step) * step
+            # If below min notional, boost to minimum
             if quantity * current_price < min_notional:
                 quantity = math.ceil(min_notional / current_price / step) * step if step > 0 else min_notional / current_price
+                # Recalculate margin after min_notional adjustment
+                new_position_value = quantity * current_price
+                new_margin = new_position_value / leverage if leverage > 0 else new_position_value
+                if new_margin > balance * 0.95:
+                    logger.warning(f"{symbol}: min notional requires ${new_margin:.2f} margin > 95% balance")
+                    return 0.0
+                margin_required = new_margin
+                position_value = new_position_value
         else:
             step = 0.001
             quantity = math.floor(quantity / step) * step
@@ -214,15 +214,17 @@ class RiskManager:
                 quantity = math.ceil(5.0 / current_price / step) * step
 
         if quantity <= 0:
-            logger.warning(f"{symbol}: calculated qty=0 (bal={balance:.2f}, price={current_price:.6f}, risk_amt={risk_amount:.4f})")
+            logger.warning(f"{symbol}: qty=0 (bal={balance:.2f}, price={current_price:.6f})")
             return 0.0
 
+        # Final risk check
         total_risk_pct = (self.total_risk_exposure + risk_amount) / balance * 100 if balance > 0 else 0
         if total_risk_pct > self.max_total_risk:
             logger.warning(f"Total risk exceeded ({total_risk_pct:.2f}% > {self.max_total_risk}%) for {symbol}")
             return 0.0
 
-        logger.info(f"{symbol}: qty={quantity:.6f}, value=${quantity*current_price:.2f}, margin=${margin_required:.2f}, risk=${risk_amount:.4f} ({risk_percent:.2f}%), lev={leverage}x")
+        logger.info(f"{symbol}: qty={quantity:.6f}, value=${quantity*current_price:.2f}, "
+                    f"margin=${margin_required:.2f}, risk=${risk_amount:.4f} ({risk_percent:.2f}%), lev={leverage}x")
         return quantity
 
     def calculate_sl_tp(self, position, atr=None):
@@ -263,12 +265,12 @@ class RiskManager:
             daily_loss_pct = (self.daily_loss / balance) * 100
             if daily_loss_pct >= self.daily_loss_limit:
                 return False, f"Daily loss limit ({daily_loss_pct:.1f}%)"
-        if self.stop_on_target and self.daily_pnl > 0:
-            profit_pct = (self.daily_pnl / balance) * 100
-            if profit_pct >= self.daily_profit_target:
-                return False, f"Daily profit target ({profit_pct:.1f}%)"
-        if self.consecutive_losses >= 5:
-            return False, f"Too many consecutive losses ({self.consecutive_losses})"
+            if self.stop_on_target and self.daily_pnl > 0:
+                profit_pct = (self.daily_pnl / balance) * 100
+                if profit_pct >= self.daily_profit_target:
+                    return False, f"Daily profit target ({profit_pct:.1f}%)"
+            if self.consecutive_losses >= 5:
+                return False, f"Too many consecutive losses ({self.consecutive_losses})"
         return True, "OK"
 
     def can_open_position(self, current_count, balance):

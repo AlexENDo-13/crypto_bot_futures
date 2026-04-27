@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Enhanced Technical Indicators — Swing/Trend focused, no scalping."""
+"""Enhanced Technical Indicators v11 — More entry opportunities, adaptive thresholds."""
 import pandas as pd
 import numpy as np
 from typing import Dict, Any
@@ -41,14 +41,10 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     atr = np.concatenate([[np.nan], atr_raw])
 
     # ADX
-    plus_dm = np.where(
-        (high[1:] - high[:-1]) > (low[:-1] - low[1:]),
-        np.maximum(high[1:] - high[:-1], 0.0), 0.0
-    )
-    minus_dm = np.where(
-        (low[:-1] - low[1:]) > (high[1:] - high[:-1]),
-        np.maximum(low[:-1] - low[1:], 0.0), 0.0
-    )
+    plus_dm = np.where((high[1:] - high[:-1]) > (low[:-1] - low[1:]),
+                       np.maximum(high[1:] - high[:-1], 0.0), 0.0)
+    minus_dm = np.where((low[:-1] - low[1:]) > (high[1:] - high[:-1]),
+                        np.maximum(low[:-1] - low[1:], 0.0), 0.0)
     plus_di = 100.0 * pd.Series(plus_dm).rolling(window=14).mean().values / (atr[1:] + 1e-10)
     minus_di = 100.0 * pd.Series(minus_dm).rolling(window=14).mean().values / (atr[1:] + 1e-10)
     dx = 100.0 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
@@ -85,10 +81,8 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     # Ichimoku
     tenkan_sen = (pd.Series(high).rolling(window=9).max().values + pd.Series(low).rolling(window=9).min().values) / 2.0
     kijun_sen = (pd.Series(high).rolling(window=26).max().values + pd.Series(low).rolling(window=26).min().values) / 2.0
-    senkou_span_a = (tenkan_sen + kijun_sen) / 2.0
-    senkou_span_b = (pd.Series(high).rolling(window=52).max().values + pd.Series(low).rolling(window=52).min().values) / 2.0
 
-    # Volume profile (simple)
+    # Volume profile
     vol_sma20 = pd.Series(volume).rolling(window=20).mean().values
     vol_ratio = volume / (vol_sma20 + 1e-10)
 
@@ -112,12 +106,12 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
     current_vol_ratio = float(vol_ratio[idx]) if not np.isnan(vol_ratio[idx]) else 1.0
     current_bb_width = float(bb_width[idx]) if not np.isnan(bb_width[idx]) else 0.0
 
-    # === SIGNAL SCORING (Swing/Trend focused, NO scalping) ===
-    bullish_signals = 0
-    bearish_signals = 0
+    # === SIGNAL SCORING v11 — More permissive for micro balances ===
+    bullish_signals = 0.0
+    bearish_signals = 0.0
     signal_details = []
 
-    # 1. MACD trend
+    # 1. MACD
     if current_macd > current_signal and current_macd_hist > 0:
         bullish_signals += 1
         signal_details.append("MACD bullish")
@@ -125,23 +119,23 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
         bearish_signals += 1
         signal_details.append("MACD bearish")
 
-    # 2. RSI momentum (not overbought/oversold extremes)
-    if 50 < current_rsi < 75:
+    # 2. RSI momentum (wider zones)
+    if 45 < current_rsi < 78:
         bullish_signals += 1
-        signal_details.append("RSI bullish momentum")
-    elif 25 < current_rsi < 50:
+        signal_details.append("RSI bullish zone")
+    elif 22 < current_rsi < 55:
         bearish_signals += 1
-        signal_details.append("RSI bearish momentum")
+        signal_details.append("RSI bearish zone")
 
     # 3. Price vs VWAP
     if current_close > current_vwap:
         bullish_signals += 1
-        signal_details.append("Price > VWAP")
+        signal_details.append("Price>VWAP")
     elif current_close < current_vwap:
         bearish_signals += 1
-        signal_details.append("Price < VWAP")
+        signal_details.append("Price<VWAP")
 
-    # 4. Ichimoku cloud
+    # 4. Ichimoku
     if current_close > current_tenkan and current_tenkan > current_kijun:
         bullish_signals += 1
         signal_details.append("Ichimoku bullish")
@@ -150,43 +144,58 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
         signal_details.append("Ichimoku bearish")
 
     # 5. Stochastic
-    if current_stoch_k > current_stoch_d and current_stoch_k > 20 and current_stoch_k < 80:
+    if current_stoch_k > current_stoch_d and current_stoch_k > 15 and current_stoch_k < 85:
         bullish_signals += 1
         signal_details.append("Stoch bullish")
-    elif current_stoch_k < current_stoch_d and current_stoch_k < 80 and current_stoch_k > 20:
+    elif current_stoch_k < current_stoch_d and current_stoch_k < 85 and current_stoch_k > 15:
         bearish_signals += 1
         signal_details.append("Stoch bearish")
 
-    # 6. Bollinger Bands (trend confirmation, not mean reversion)
-    if current_close > upper_band[idx] and current_adx > 20:
+    # 6. Bollinger Bands
+    if current_close > upper_band[idx] and current_adx > 15:
         bullish_signals += 1
-        signal_details.append("BB breakout bullish")
-    elif current_close < lower_band[idx] and current_adx > 20:
+        signal_details.append("BB breakout")
+    elif current_close < lower_band[idx] and current_adx > 15:
         bearish_signals += 1
-        signal_details.append("BB breakout bearish")
+        signal_details.append("BB breakdown")
 
     # 7. EMA trend
     if current_close > current_ema50 > current_ema200:
         bullish_signals += 1
-        signal_details.append("EMA trend bullish")
+        signal_details.append("EMA trend up")
     elif current_close < current_ema50 < current_ema200:
         bearish_signals += 1
-        signal_details.append("EMA trend bearish")
+        signal_details.append("EMA trend down")
+    elif current_close > current_ema50 and current_ema50 < current_ema200:
+        bullish_signals += 0.5
+        signal_details.append("EMA golden cross forming")
+    elif current_close < current_ema50 and current_ema50 > current_ema200:
+        bearish_signals += 0.5
+        signal_details.append("EMA death cross forming")
 
-    # 8. Volume confirmation
-    if current_vol_ratio > 1.2:
+    # 8. Volume
+    if current_vol_ratio > 1.1:
         if bullish_signals > bearish_signals:
             bullish_signals += 0.5
-            signal_details.append("Volume confirming bullish")
+            signal_details.append("Volume confirms up")
         elif bearish_signals > bullish_signals:
             bearish_signals += 0.5
-            signal_details.append("Volume confirming bearish")
+            signal_details.append("Volume confirms down")
 
-    # Direction determination (need strong consensus for swing trading)
+    # 9. ADX direction bias
+    if current_adx > 20:
+        if plus_di[-1] > minus_di[-1]:
+            bullish_signals += 0.5
+            signal_details.append("ADX+DI bullish")
+        else:
+            bearish_signals += 0.5
+            signal_details.append("ADX-DI bearish")
+
+    # Direction — RELAXED: need 3+ signals, ADX >= 12
     total_checks = bullish_signals + bearish_signals
-    if bullish_signals >= 4 and bearish_signals <= 2 and current_adx >= 15:
+    if bullish_signals >= 3.0 and bearish_signals <= 2.5 and current_adx >= 12:
         direction = "LONG"
-    elif bearish_signals >= 4 and bullish_signals <= 2 and current_adx >= 15:
+    elif bearish_signals >= 3.0 and bullish_signals <= 2.5 and current_adx >= 12:
         direction = "SHORT"
     else:
         direction = "NEUTRAL"
@@ -198,20 +207,22 @@ def compute_indicators(df: pd.DataFrame) -> Dict[str, Any]:
         regime = "STRONG_TREND"
     elif current_adx > 20:
         regime = "TRENDING"
-    elif current_adx > 15:
+    elif current_adx > 12:
         regime = "WEAK_TREND"
     else:
         regime = "RANGING"
 
     # Entry type classification
-    if current_macd > current_signal and 50 < current_rsi < 70 and current_adx > 25:
+    if current_macd > current_signal and 45 < current_rsi < 72 and current_adx > 20:
         entry_type = "trend_momentum"
-    elif current_close < lower_band[idx] and current_rsi < 35 and current_adx > 20:
+    elif current_close < lower_band[idx] and current_rsi < 38 and current_adx > 15:
         entry_type = "oversold_bounce"
-    elif current_close > upper_band[idx] and current_rsi > 65 and current_adx > 20:
+    elif current_close > upper_band[idx] and current_rsi > 62 and current_adx > 15:
         entry_type = "overbought_short"
-    elif current_adx > 25 and current_vol_ratio > 1.5:
+    elif current_adx > 20 and current_vol_ratio > 1.4:
         entry_type = "volume_breakout"
+    elif abs(current_close - current_ema50) / current_close < 0.01 and current_adx > 15:
+        entry_type = "ema_compression"
     else:
         entry_type = "mixed"
 

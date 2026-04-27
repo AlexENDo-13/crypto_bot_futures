@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""TradeExecutor v11 — Fixed: better order validation, quantity handling, clearer logs."""
 import math
 from typing import Optional, Dict, Any
 from src.core.trading.position import Position, OrderSide
@@ -29,13 +30,14 @@ class TradeExecutor:
             min_notional = 5.0
         return (quantity * price) >= min_notional
 
-    async def execute_trade_async(self, candidate, balance, open_positions, trailing_enabled, trailing_distance, telegram, daily_pnl, weekly_pnl, start_balance):
+    async def execute_trade_async(self, candidate, balance, open_positions, trailing_enabled,
+                                   trailing_distance, telegram, daily_pnl, weekly_pnl, start_balance):
         symbol = candidate.get("symbol")
         indicators = candidate.get("indicators", {})
         direction = indicators.get("signal_direction", "NEUTRAL")
         current_price = indicators.get("close_price", 0.0)
-        atr = indicators.get("atr_percent", 1.0)
-        atr_value = indicators.get("atr", current_price * atr / 100)
+        atr = indicators.get("atr", current_price * 0.01)
+        atr_pct = indicators.get("atr_percent", 1.0)
 
         if not symbol or current_price <= 0 or direction == "NEUTRAL":
             self.logger.warning(f"Invalid candidate: {symbol}, price={current_price}, dir={direction}")
@@ -45,6 +47,7 @@ class TradeExecutor:
         position_side = "LONG" if side == OrderSide.BUY else "SHORT"
         bingx_symbol = symbol.replace("/", "-")
 
+        # Get symbol specs
         symbol_specs = self.client.get_symbol_specs(bingx_symbol)
         if not symbol_specs:
             try:
@@ -58,12 +61,12 @@ class TradeExecutor:
         if symbol_specs:
             leverage = min(leverage, symbol_specs.get("maxLeverage", leverage))
 
-        # Adaptive stop distance based on ATR
-        stop_distance_pct = max(0.5, min(1.5 * atr, 10.0))
+        # Adaptive stop distance
+        stop_distance_pct = max(0.3, min(1.5 * atr_pct, 10.0))
         risk_percent = float(self.settings.get("max_risk_per_trade", 1.0))
 
         quantity = self.risk_manager.calculate_position_size(
-            symbol, balance, risk_percent, stop_distance_pct, leverage, atr_value, current_price, symbol_specs
+            symbol, balance, risk_percent, stop_distance_pct, leverage, atr, current_price, symbol_specs
         )
         if quantity is None or quantity <= 0:
             self.logger.warning(f"{symbol}: qty=0 (balance={balance}, price={current_price})")
@@ -75,49 +78,48 @@ class TradeExecutor:
             return None
 
         if not self._check_min_notional(qty, current_price, symbol_specs):
-            if symbol_specs:
-                min_notional = float(symbol_specs.get("tradeMinUSDT", symbol_specs.get("minNotional", 5.0)))
-            else:
-                min_notional = 5.0
+            min_notional = float(symbol_specs.get("tradeMinUSDT", symbol_specs.get("minNotional", 5.0))) if symbol_specs else 5.0
             step = float(symbol_specs.get("size", symbol_specs.get("stepSize", 0.001))) if symbol_specs else 0.001
             qty = self._round_quantity(symbol, (min_notional * 1.05) / current_price, symbol_specs)
             if qty <= 0 or not self._check_min_notional(qty, current_price, symbol_specs):
-                self.logger.warning(f"{symbol}: does not meet min lot")
+                self.logger.warning(f"{symbol}: does not meet min lot (min_notional={min_notional}, price={current_price})")
                 return None
 
-        self.logger.info(f"ENTRY {side.value} {symbol} | Qty: {qty:.6f} | Price: ~{current_price:.4f} | Leverage: {leverage}x | PositionSide: {position_side}")
+        self.logger.info(f"ENTRY PREPARE {side.value} {symbol} | Qty: {qty:.6f} | Price: ~{current_price:.4f} | "
+                         f"Leverage: {leverage}x | PositionSide: {position_side} | StopDist: {stop_distance_pct:.2f}%")
 
-        # Set leverage (ignore errors, may already be set)
+        # Set leverage
         try:
             lev_res = await self.client.set_leverage(bingx_symbol, leverage, position_side=position_side)
             if lev_res and not lev_res.get("error"):
                 self.logger.info(f"Leverage set: {bingx_symbol} {leverage}x {position_side}")
             else:
                 err = lev_res.get("msg", "unknown") if lev_res else "no response"
-                self.logger.warning(f"Leverage set warning {symbol}: {err} (may already be set)")
+                self.logger.warning(f"Leverage warning {symbol}: {err} (may already be set)")
         except Exception as e:
-            self.logger.warning(f"Leverage set error {symbol}: {e} (continuing)")
+            self.logger.warning(f"Leverage error {symbol}: {e} (continuing)")
 
-        # Set margin mode (ignore errors, endpoint may not exist on v2)
+        # Set margin mode (ignore errors)
         try:
             margin_res = await self.client.set_margin_mode(bingx_symbol, "CROSSED")
             if margin_res and margin_res.get("code") == 0:
                 self.logger.info(f"Margin mode set: {bingx_symbol} CROSSED")
             else:
-                self.logger.debug(f"Margin mode skipped for {symbol} (endpoint not available)")
+                self.logger.debug(f"Margin mode skipped for {symbol}")
         except Exception as e:
             self.logger.debug(f"Margin mode error {symbol}: {e} (ignoring)")
 
         # Calculate SL/TP
         try:
             temp_pos = Position(symbol=symbol, side=side, quantity=qty, entry_price=current_price, leverage=leverage)
-            sl_price, tp_price = self.risk_manager.calculate_sl_tp(temp_pos, atr_value)
+            sl_price, tp_price = self.risk_manager.calculate_sl_tp(temp_pos, atr)
         except Exception as e:
             self.logger.error(f"SL/TP error {symbol}: {e}")
             return None
 
         # Place MARKET entry order
         order_side_str = "BUY" if side == OrderSide.BUY else "SELL"
+        self.logger.info(f"PLACING ORDER: {bingx_symbol} {order_side_str} {position_side} qty={qty:.6f} MARKET")
         result = await self.client.place_order(
             symbol=bingx_symbol, side=order_side_str, position_side=position_side,
             quantity=qty, order_type="MARKET"
@@ -125,10 +127,10 @@ class TradeExecutor:
         if result is None or result.get("error") or not result.get("orderId"):
             err = result.get("msg", "Unknown") if result else "No response"
             code = result.get("code", -1) if result else -1
-            self.logger.error(f"Order REJECTED {symbol}: [{code}] {err}")
+            self.logger.error(f"ORDER REJECTED {symbol}: [{code}] {err}")
             return None
 
-        avg_price = float(result.get("avgPrice", current_price))
+        avg_price = float(result.get("avgPrice", result.get("avg_price", current_price)))
         if avg_price <= 0:
             avg_price = current_price
         order_id = result.get("orderId", "")
@@ -162,7 +164,7 @@ class TradeExecutor:
             pos = Position(
                 symbol=symbol, side=side, quantity=qty, entry_price=avg_price, leverage=leverage,
                 stop_loss_price=sl_price, take_profit_price=tp_price,
-                strategy=indicators.get("entry_type", "macd_rsi"),
+                strategy=indicators.get("entry_type", "mixed"),
                 order_id=order_id, sl_order_id=sl_order_id, tp_order_id=tp_order_id
             )
         except Exception as e:
@@ -170,21 +172,21 @@ class TradeExecutor:
             return None
 
         self.risk_manager.register_position_open(pos)
-        self.logger.info(f"POSITION OPENED: {symbol} {side.value} | Entry: {avg_price:.4f} | SL: {sl_price:.4f} | TP: {tp_price:.4f} | Qty: {qty:.6f} | Value: ${qty*avg_price:.2f} | Leverage: {leverage}x")
+        self.logger.info(f"POSITION OPENED: {symbol} {side.value} | Entry: {avg_price:.4f} | "
+                         f"SL: {sl_price:.4f} | TP: {tp_price:.4f} | Qty: {qty:.6f} | "
+                         f"Value: ${qty*avg_price:.2f} | Leverage: {leverage}x")
         return pos
 
     async def close_position_async(self, symbol, side, quantity, position_side="LONG"):
         bingx_symbol = symbol.replace("/", "-")
         close_side = "SELL" if side == OrderSide.BUY else "BUY"
         try:
-            # Try close_position API first
             res = await self.client.close_position(
                 symbol=bingx_symbol, position_side=position_side, quantity="0"
             )
             if res and not res.get("error") and res.get("orderId"):
                 self.logger.info(f"Position {symbol} closed via close_position API | ID: {res.get('orderId')}")
                 return True
-            # Fallback to regular market order
             res = await self.client.place_order(
                 symbol=bingx_symbol, side=close_side, position_side=position_side,
                 quantity=quantity, order_type="MARKET"

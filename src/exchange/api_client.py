@@ -1,5 +1,5 @@
 """
-BingX API Client v18.0 — FINAL FIX
+BingX API Client v18.1 — Fixed: quantity always as string, better error logging.
 BingX signature algorithm:
 1. Sort all params alphabetically by key
 2. Build query string: key1=value1&key2=value2 (URL encoded)
@@ -73,7 +73,6 @@ class BingXAPIClient:
         self._session = None
 
     def _build_signed_payload(self, params: Optional[dict] = None) -> dict:
-        """Build payload with timestamp, recvWindow, and signature."""
         payload = {}
         if params:
             for k, v in params.items():
@@ -82,7 +81,6 @@ class BingXAPIClient:
         payload["timestamp"] = str(int(time.time() * 1000))
         payload["recvWindow"] = str(self._recv_window)
 
-        # Sign: sorted params as query string
         sorted_items = sorted(payload.items(), key=lambda x: x[0])
         query_string = urllib.parse.urlencode(sorted_items)
         signature = hmac.new(
@@ -120,47 +118,33 @@ class BingXAPIClient:
                 if signed:
                     payload = self._build_signed_payload(params)
 
-                    if method.upper() == "GET":
-                        # For GET: build full URL with query string including signature
-                        url = f"{self.base_url}{endpoint}"
-                        async with session.get(url, params=payload, timeout=self._timeout) as response:
-                            text = await response.text()
-                            try:
-                                data = await response.json(content_type=None)
-                            except:
-                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
-                    elif method.upper() == "POST":
-                        # For POST: send as form-data in body
-                        url = f"{self.base_url}{endpoint}"
-                        body = urllib.parse.urlencode(payload)
-                        async with session.post(url, data=body, timeout=self._timeout) as response:
-                            text = await response.text()
-                            try:
-                                data = await response.json(content_type=None)
-                            except:
-                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
-                    elif method.upper() == "DELETE":
-                        url = f"{self.base_url}{endpoint}"
-                        async with session.delete(url, params=payload, timeout=self._timeout) as response:
-                            text = await response.text()
-                            try:
-                                data = await response.json(content_type=None)
-                            except:
-                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
-                    else:
-                        return {"code": -1, "msg": f"Unsupported method {method}"}
-                else:
-                    # Unsigned request
+                if method.upper() == "GET":
                     url = f"{self.base_url}{endpoint}"
-                    if method.upper() == "GET":
-                        async with session.get(url, params=params, timeout=self._timeout) as response:
-                            text = await response.text()
-                            try:
-                                data = await response.json(content_type=None)
-                            except:
-                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
-                    else:
-                        return {"code": -1, "msg": f"Unsupported unsigned method {method}"}
+                    async with session.get(url, params=payload if signed else params, timeout=self._timeout) as response:
+                        text = await response.text()
+                        try:
+                            data = await response.json(content_type=None)
+                        except:
+                            data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+                elif method.upper() == "POST":
+                    url = f"{self.base_url}{endpoint}"
+                    body = urllib.parse.urlencode(payload) if signed else urllib.parse.urlencode(params or {})
+                    async with session.post(url, data=body, timeout=self._timeout) as response:
+                        text = await response.text()
+                        try:
+                            data = await response.json(content_type=None)
+                        except:
+                            data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+                elif method.upper() == "DELETE":
+                    url = f"{self.base_url}{endpoint}"
+                    async with session.delete(url, params=payload if signed else params, timeout=self._timeout) as response:
+                        text = await response.text()
+                        try:
+                            data = await response.json(content_type=None)
+                        except:
+                            data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+                else:
+                    return {"code": -1, "msg": f"Unsupported method {method}"}
 
                 self._total_requests += 1
                 msg = str(data.get("msg", "")).lower()
@@ -186,9 +170,7 @@ class BingXAPIClient:
                     self.logger.error(f"SIGNATURE MISMATCH on {endpoint}! Attempt {attempt+1}/{retries}")
                     self.logger.error(f"Response: {data}")
                     self.logger.error(f"api_key present: {bool(self.api_key)}, secret_len: {len(self.api_secret)}")
-                    # Log what we signed
                     debug_payload = self._build_signed_payload(params)
-                    # Remove actual signature for safety
                     debug_payload.pop("signature", None)
                     self.logger.error(f"Signed payload keys: {list(debug_payload.keys())}")
                     self.logger.error(f"Base URL: {self.base_url}")
@@ -320,7 +302,6 @@ class BingXAPIClient:
         return response
 
     async def set_margin_mode(self, symbol: str, margin_mode: str) -> dict:
-        # v2 doesn't have marginMode endpoint — skip or use v1
         self.logger.debug(f"Margin mode skipped (not available on v2)")
         return {"code": 0}
 
@@ -344,8 +325,8 @@ class BingXAPIClient:
         return {"error": True, "msg": response.get("msg", "Unknown"), "code": response.get("code", -1)}
 
     async def place_stop_order(self, symbol: str, side: str, stop_price: float,
-                                order_type: str = "STOP_MARKET", position_side: str = "BOTH",
-                                close_position: bool = True, quantity: Optional[float] = None) -> dict:
+                               order_type: str = "STOP_MARKET", position_side: str = "BOTH",
+                               close_position: bool = True, quantity: Optional[float] = None) -> dict:
         params = {
             "symbol": symbol,
             "side": side,
@@ -388,7 +369,7 @@ class BingXAPIClient:
             "side": side,
             "positionSide": position_side,
             "type": "MARKET",
-            "quantity": quantity,
+            "quantity": str(quantity),
             "closePosition": "true" if quantity == "0" else "false"
         }
         response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)

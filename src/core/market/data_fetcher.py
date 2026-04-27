@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""DataFetcher — async market data loader with caching (FIXED v5)."""
+"""DataFetcher v11 — Fixed: better kline normalization, error handling."""
 import time
 import pandas as pd
 from typing import Dict, Any, List, Optional
@@ -39,19 +39,19 @@ class DataFetcher:
         except Exception as e:
             self._fetch_failures += 1
             self.logger.error(f"Contracts error: {e}")
-            return self._contracts_cache or []
+        return self._contracts_cache or []
 
     def _normalize_klines(self, klines_raw: List) -> List[dict]:
-        """Convert BingX klines from array-of-arrays or array-of-dicts to uniform dict format."""
         if not klines_raw:
             return []
         result = []
         for item in klines_raw:
             if isinstance(item, dict):
-                if "time" in item and "timestamp" not in item:
-                    item = dict(item)
-                    item["timestamp"] = item.pop("time")
-                result.append(item)
+                # Handle both "time" and "timestamp" keys
+                item_copy = dict(item)
+                if "time" in item_copy and "timestamp" not in item_copy:
+                    item_copy["timestamp"] = item_copy.pop("time")
+                result.append(item_copy)
             elif isinstance(item, (list, tuple)) and len(item) >= 6:
                 result.append({
                     "timestamp": item[0],

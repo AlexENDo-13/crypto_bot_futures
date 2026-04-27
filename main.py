@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CryptoBot v10.0 — Neural Adaptive Trading System (PRODUCTION READY)
-Fixed: Real trading execution, proper position sizing, enhanced strategy engine.
+CryptoBot v11.0 — Neural Adaptive Trading System (PRODUCTION READY)
+Fixed: More trading opportunities, better micro-balance support, clearer logs.
 """
 import sys
 import asyncio
@@ -37,7 +37,7 @@ def setup_logging():
 
 async def main():
     logger = setup_logging()
-    logger.info("Starting CryptoBot v10.0 (PRODUCTION READY)")
+    logger.info("Starting CryptoBot v11.0 (PRODUCTION READY)")
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
