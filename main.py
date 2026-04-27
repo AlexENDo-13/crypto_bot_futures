@@ -15,7 +15,7 @@ from PyQt6.QtCore import QTimer
 from src.exchange.api_client import BingXAPIClient
 from src.config.settings import Settings
 from src.core.engine.trading_engine import TradingEngine
-from src.core.logger import BotLogger
+from src.core.bot_logger import BotLogger
 from src.ui.main_window import MainWindow
 
 def setup_logging():
