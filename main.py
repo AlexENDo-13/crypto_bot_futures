@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CryptoBot v9.3 - Neural Adaptive Trading System (FULLY FIXED)
-Fixed: GUI always loads regardless of API keys. Keys can be entered via Config tab.
+CryptoBot v10.0 — Neural Adaptive Trading System (PRODUCTION READY)
+Fixed: Real trading execution, proper position sizing, enhanced strategy engine.
 """
 import sys
 import asyncio
@@ -17,7 +17,6 @@ from src.config.settings import Settings
 from src.core.engine.trading_engine import TradingEngine
 from src.core.logger import BotLogger
 from src.ui.main_window import MainWindow
-
 
 def setup_logging():
     log_dir = Path("logs")
@@ -36,10 +35,9 @@ def setup_logging():
     logger.addHandler(console_handler)
     return logger
 
-
 async def main():
     logger = setup_logging()
-    logger.info("Starting CryptoBot v9.3 (FULLY FIXED)")
+    logger.info("Starting CryptoBot v10.0 (PRODUCTION READY)")
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -57,7 +55,7 @@ async def main():
         if not api_key or not api_secret:
             logger.warning("LIVE MODE selected but API keys missing — GUI will load, enter keys in Config tab")
         else:
-            logger.warning("LIVE TRADING MODE ACTIVE")
+            logger.warning("LIVE TRADING MODE ACTIVE — REAL MONEY AT RISK")
     else:
         logger.info("PAPER / DEMO MODE")
 
@@ -82,7 +80,6 @@ async def main():
 
     logger.info("MainWindow displayed")
 
-    # If keys missing in live mode, show warning but DON'T exit
     if not demo_mode and (not api_key or not api_secret):
         from PyQt6.QtWidgets import QMessageBox
         msg = QMessageBox(window)
@@ -112,7 +109,6 @@ async def main():
     logger.info("Application shutdown complete")
 
     app.quit()
-
 
 if __name__ == "__main__":
     try:

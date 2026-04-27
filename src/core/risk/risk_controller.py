@@ -50,7 +50,7 @@ class RiskController:
         max_total_risk = float(self.settings.get("max_total_risk_percent", 5.0)) / 100
         max_risk_per_trade = float(self.settings.get("max_risk_per_trade", 1.0)) / 100
         if len(positions) >= max_positions:
-            self.logger.info(f"Position limit ({max_positions})")
+            self.logger.info(f"RISK FILTER: Position limit reached ({max_positions})")
             return []
         filtered = []
         total_risk = 0.0
@@ -62,7 +62,7 @@ class RiskController:
             symbol = signal.get("symbol", "")
             base = symbol.split("/")[0] if "/" in symbol else symbol.split("-")[0]
             if self._correlation_limit and base in open_bases:
-                self.logger.debug(f"{symbol}: correlation skip")
+                self.logger.info(f"RISK FILTER: {symbol} skipped — correlation with existing position in {base}")
                 continue
             entry_price = signal.get("indicators", {}).get("close_price", 0)
             quantity = signal.get("quantity", 0)
@@ -74,15 +74,20 @@ class RiskController:
                 quantity = (balance * (risk_pct / 100)) / (entry_price * sl_distance) if sl_distance > 0 and balance > 0 else 0
             risk = quantity * entry_price * sl_distance if sl_distance > 0 else 0
             if balance > 0 and (total_risk + risk) / balance > max_total_risk:
-                self.logger.info("Total risk exceeded")
+                self.logger.info(f"RISK FILTER: Total portfolio risk exceeded ({((total_risk+risk)/balance*100):.1f}% > {max_total_risk*100:.1f}%)")
                 break
             if balance > 0 and risk / balance > max_risk_per_trade:
-                self.logger.info(f"Risk per trade exceeded {symbol}")
+                self.logger.info(f"RISK FILTER: {symbol} skipped — risk per trade exceeded ({(risk/balance*100):.1f}% > {max_risk_per_trade*100:.1f}%)")
                 continue
             filtered.append(signal)
             total_risk += risk
+            self.logger.info(f"RISK FILTER: {symbol} APPROVED | risk=${risk:.2f} | total_risk=${total_risk:.2f} | portfolio_risk={((total_risk)/balance*100 if balance>0 else 0):.1f}%")
             if len(positions) + len(filtered) >= max_positions:
                 break
+        if not filtered:
+            self.logger.info("RISK FILTER: All signals rejected by risk controller")
+        else:
+            self.logger.info(f"RISK FILTER: {len(filtered)}/{len(signals)} signals approved")
         return filtered
 
     def add_pnl(self, pnl):

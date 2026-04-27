@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""DataFetcher — async market data loader with caching (FIXED v4)."""
+"""DataFetcher — async market data loader with caching (FIXED v5)."""
 import time
 import pandas as pd
 from typing import Dict, Any, List, Optional
@@ -39,7 +39,7 @@ class DataFetcher:
         except Exception as e:
             self._fetch_failures += 1
             self.logger.error(f"Contracts error: {e}")
-        return self._contracts_cache or []
+            return self._contracts_cache or []
 
     def _normalize_klines(self, klines_raw: List) -> List[dict]:
         """Convert BingX klines from array-of-arrays or array-of-dicts to uniform dict format."""
@@ -48,7 +48,6 @@ class DataFetcher:
         result = []
         for item in klines_raw:
             if isinstance(item, dict):
-                # BingX v2 returns 'time' instead of 'timestamp'
                 if "time" in item and "timestamp" not in item:
                     item = dict(item)
                     item["timestamp"] = item.pop("time")
@@ -139,10 +138,10 @@ class DataFetcher:
                 return normalized
         except Exception as e:
             self.logger.debug(f"Ticker error {symbol}: {e}")
-        cached = self._ticker_cache.get(sym)
-        if cached:
-            return cached[1]
-        return None
+            cached = self._ticker_cache.get(sym)
+            if cached:
+                return cached[1]
+            return None
 
     def clear_cache(self) -> None:
         self._klines_cache.clear()

@@ -113,7 +113,7 @@ class RiskManager:
 
         if old_tier != self._current_balance_tier:
             logger.info(f"Balance tier changed: {old_tier} -> {self._current_balance_tier} "
-                        f"(balance=${balance:.2f}, risk={self.risk_per_trade}%, pos={self.max_positions}, lev={self.max_leverage}x)")
+                       f"(balance=${balance:.2f}, risk={self.risk_per_trade}%, pos={self.max_positions}, lev={self.max_leverage}x)")
 
     async def get_account_balance(self):
         now = time.time()
@@ -162,12 +162,12 @@ class RiskManager:
                 }
         except Exception as e:
             logger.error(f"Balance error: {e}")
-        return {
-            "total_equity": self._cached_balance,
-            "available_balance": self._cached_balance,
-            "used": 0.0,
-            "equity": self._cached_balance,
-        }
+            return {
+                "total_equity": self._cached_balance,
+                "available_balance": self._cached_balance,
+                "used": 0.0,
+                "equity": self._cached_balance,
+            }
 
     async def get_account_info(self):
         return await self.get_account_balance()
@@ -194,7 +194,7 @@ class RiskManager:
         max_margin = balance * 0.5
         if margin_required > max_margin:
             margin_required = max_margin
-            position_value = margin_required * leverage if leverage > 0 else margin_required
+        position_value = margin_required * leverage if leverage > 0 else margin_required
         quantity = position_value / current_price if current_price > 0 else 0
 
         if symbol_specs:

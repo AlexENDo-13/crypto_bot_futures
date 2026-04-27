@@ -1,35 +1,27 @@
 #!/usr/bin/env python3
-
 def detect_trap(indicators: dict) -> dict:
+    """Detect potential bull/bear traps."""
     adx = indicators.get("adx", 0)
     rsi = indicators.get("rsi", 50)
+    atr_pct = indicators.get("atr_percent", 1.0)
     direction = indicators.get("signal_direction", "NEUTRAL")
-    atr_percent = indicators.get("atr_percent", 0)
-    stoch_k = indicators.get("stoch_k", 50)
-    stoch_d = indicators.get("stoch_d", 50)
 
     is_trap = False
-    reason = ""
     confidence = 0.0
 
-    if direction == "SHORT" and rsi < 30 and stoch_k < 20 and stoch_k > stoch_d:
+    # Bear trap: price drops hard but RSI oversold + low ADX (weak trend)
+    if direction == "SHORT" and rsi < 25 and adx < 20:
         is_trap = True
-        reason = "bear_trap_oversold"
-        confidence = 0.6 + (30 - rsi) / 100
+        confidence = 0.6
 
-    if direction == "LONG" and rsi > 70 and stoch_k > 80 and stoch_k < stoch_d:
+    # Bull trap: price spikes but RSI overbought + low ADX
+    if direction == "LONG" and rsi > 75 and adx < 20:
         is_trap = True
-        reason = "bull_trap_overbought"
-        confidence = 0.6 + (rsi - 70) / 100
+        confidence = 0.6
 
-    if adx < 12 and direction != "NEUTRAL":
+    # Extreme ATR spike trap
+    if atr_pct > 3.0 and adx < 15:
         is_trap = True
-        reason = "low_adx_chop"
-        confidence = 0.5
+        confidence = max(confidence, 0.5)
 
-    if atr_percent > 8 and direction != "NEUTRAL":
-        is_trap = True
-        reason = "extreme_volatility"
-        confidence = min(0.9, atr_percent / 10)
-
-    return {"is_trap": is_trap, "reason": reason, "confidence": round(min(confidence, 1.0), 2)}
+    return {"is_trap": is_trap, "confidence": confidence, "reason": "adx_rsi_divergence"}
