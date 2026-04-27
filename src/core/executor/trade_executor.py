@@ -42,7 +42,6 @@ class TradeExecutor:
             return None
 
         side = OrderSide.BUY if direction == "LONG" else OrderSide.SELL
-        # HEDGE mode: positionSide must match the direction
         position_side = "LONG" if side == OrderSide.BUY else "SHORT"
         bingx_symbol = symbol.replace("/", "-")
 
@@ -59,6 +58,7 @@ class TradeExecutor:
         if symbol_specs:
             leverage = min(leverage, symbol_specs.get("maxLeverage", leverage))
 
+        # Adaptive stop distance based on ATR
         stop_distance_pct = max(0.5, min(1.5 * atr, 10.0))
         risk_percent = float(self.settings.get("max_risk_per_trade", 1.0))
 
@@ -87,18 +87,26 @@ class TradeExecutor:
 
         self.logger.info(f"ENTRY {side.value} {symbol} | Qty: {qty:.6f} | Price: ~{current_price:.4f} | Leverage: {leverage}x | PositionSide: {position_side}")
 
-        # Set leverage first
+        # Set leverage (ignore errors, may already be set)
         try:
-            await self.client.set_leverage(bingx_symbol, leverage, position_side=position_side)
-            self.logger.info(f"Leverage set: {bingx_symbol} {leverage}x {position_side}")
+            lev_res = await self.client.set_leverage(bingx_symbol, leverage, position_side=position_side)
+            if lev_res and not lev_res.get("error"):
+                self.logger.info(f"Leverage set: {bingx_symbol} {leverage}x {position_side}")
+            else:
+                err = lev_res.get("msg", "unknown") if lev_res else "no response"
+                self.logger.warning(f"Leverage set warning {symbol}: {err} (may already be set)")
         except Exception as e:
-            self.logger.warning(f"Leverage set error {symbol}: {e}")
+            self.logger.warning(f"Leverage set error {symbol}: {e} (continuing)")
 
-        # Set margin mode
+        # Set margin mode (ignore errors, endpoint may not exist on v2)
         try:
-            await self.client.set_margin_mode(bingx_symbol, "CROSSED")
+            margin_res = await self.client.set_margin_mode(bingx_symbol, "CROSSED")
+            if margin_res and margin_res.get("code") == 0:
+                self.logger.info(f"Margin mode set: {bingx_symbol} CROSSED")
+            else:
+                self.logger.debug(f"Margin mode skipped for {symbol} (endpoint not available)")
         except Exception as e:
-            self.logger.warning(f"Margin mode error {symbol}: {e}")
+            self.logger.debug(f"Margin mode error {symbol}: {e} (ignoring)")
 
         # Calculate SL/TP
         try:

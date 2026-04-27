@@ -9,13 +9,10 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
     QProgressBar, QFrame, QScrollArea, QFormLayout, QComboBox
 )
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QThread
+from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QThread, QObject
 from PyQt6.QtGui import QFont, QColor
 
 logger = logging.getLogger("CryptoBot")
-
-class LogSignal(QObject):
-    new_log = pyqtSignal(str)
 
 class MainWindow(QMainWindow):
     def __init__(self, api_client, engine, settings):
