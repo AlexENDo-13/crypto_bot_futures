@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 from src.config.settings import Settings
-from src.core.logger import BotLogger
+from src.core.bot_logger import BotLogger
 from src.core.trading.position import Position, OrderSide
 from src.core.market.data_fetcher import DataFetcher
 from src.core.scanner.market_scanner import MarketScanner
