@@ -1,12 +1,6 @@
 """
-BingX API Client v18.1 — Fixed: quantity always as string, better error logging.
-BingX signature algorithm:
-1. Sort all params alphabetically by key
-2. Build query string: key1=value1&key2=value2 (URL encoded)
-3. Sign with HMAC SHA256 using api_secret
-4. For GET: append &signature=xxx to URL
-5. For POST: send all params + signature as form-data in body
-6. apiKey ONLY in X-BX-APIKEY header
+BingX API Client v18.2 — CRITICAL FIX: GET requests now use pre-built query string
+for signature consistency. aiohttp params encoding caused signature mismatch.
 """
 import asyncio
 import hashlib
@@ -73,6 +67,7 @@ class BingXAPIClient:
         self._session = None
 
     def _build_signed_payload(self, params: Optional[dict] = None) -> dict:
+        """Build payload with timestamp and recvWindow. All values as strings."""
         payload = {}
         if params:
             for k, v in params.items():
@@ -80,7 +75,10 @@ class BingXAPIClient:
                     payload[k] = str(v)
         payload["timestamp"] = str(int(time.time() * 1000))
         payload["recvWindow"] = str(self._recv_window)
+        return payload
 
+    def _sign_payload(self, payload: dict) -> str:
+        """Create HMAC SHA256 signature from sorted payload."""
         sorted_items = sorted(payload.items(), key=lambda x: x[0])
         query_string = urllib.parse.urlencode(sorted_items)
         signature = hmac.new(
@@ -88,8 +86,7 @@ class BingXAPIClient:
             query_string.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
-        payload["signature"] = signature
-        return payload
+        return signature, query_string
 
     async def _request(self, method: str, endpoint: str, params: Optional[dict] = None,
                        signed: bool = False, retries: int = 3) -> dict:
@@ -115,34 +112,66 @@ class BingXAPIClient:
             try:
                 session = await self._get_or_create_session()
 
-                if signed:
-                    payload = self._build_signed_payload(params)
-
                 if method.upper() == "GET":
-                    url = f"{self.base_url}{endpoint}"
-                    async with session.get(url, params=payload if signed else params, timeout=self._timeout) as response:
-                        text = await response.text()
-                        try:
-                            data = await response.json(content_type=None)
-                        except:
-                            data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+                    if signed:
+                        payload = self._build_signed_payload(params)
+                        signature, query_string = self._sign_payload(payload)
+                        # CRITICAL FIX: Build full URL with query string manually
+                        # so aiohttp does NOT re-encode params
+                        full_url = f"{self.base_url}{endpoint}?{query_string}&signature={signature}"
+                        self.logger.debug(f"GET {full_url[:120]}...")
+                        async with session.get(full_url, timeout=self._timeout) as response:
+                            text = await response.text()
+                            try:
+                                data = await response.json(content_type=None)
+                            except:
+                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+                    else:
+                        # Unsigned GET — aiohttp can handle params normally
+                        url = f"{self.base_url}{endpoint}"
+                        async with session.get(url, params=params, timeout=self._timeout) as response:
+                            text = await response.text()
+                            try:
+                                data = await response.json(content_type=None)
+                            except:
+                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+
                 elif method.upper() == "POST":
+                    if signed:
+                        payload = self._build_signed_payload(params)
+                        signature, query_string = self._sign_payload(payload)
+                        payload["signature"] = signature
+                        body = urllib.parse.urlencode(payload)
+                    else:
+                        body = urllib.parse.urlencode(params or {})
                     url = f"{self.base_url}{endpoint}"
-                    body = urllib.parse.urlencode(payload) if signed else urllib.parse.urlencode(params or {})
+                    self.logger.debug(f"POST {url} body={body[:100]}...")
                     async with session.post(url, data=body, timeout=self._timeout) as response:
                         text = await response.text()
                         try:
                             data = await response.json(content_type=None)
                         except:
                             data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+
                 elif method.upper() == "DELETE":
-                    url = f"{self.base_url}{endpoint}"
-                    async with session.delete(url, params=payload if signed else params, timeout=self._timeout) as response:
-                        text = await response.text()
-                        try:
-                            data = await response.json(content_type=None)
-                        except:
-                            data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+                    if signed:
+                        payload = self._build_signed_payload(params)
+                        signature, query_string = self._sign_payload(payload)
+                        full_url = f"{self.base_url}{endpoint}?{query_string}&signature={signature}"
+                        async with session.delete(full_url, timeout=self._timeout) as response:
+                            text = await response.text()
+                            try:
+                                data = await response.json(content_type=None)
+                            except:
+                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+                    else:
+                        url = f"{self.base_url}{endpoint}"
+                        async with session.delete(url, params=params, timeout=self._timeout) as response:
+                            text = await response.text()
+                            try:
+                                data = await response.json(content_type=None)
+                            except:
+                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
                 else:
                     return {"code": -1, "msg": f"Unsupported method {method}"}
 
@@ -170,9 +199,10 @@ class BingXAPIClient:
                     self.logger.error(f"SIGNATURE MISMATCH on {endpoint}! Attempt {attempt+1}/{retries}")
                     self.logger.error(f"Response: {data}")
                     self.logger.error(f"api_key present: {bool(self.api_key)}, secret_len: {len(self.api_secret)}")
+                    # Debug: show what we signed
                     debug_payload = self._build_signed_payload(params)
-                    debug_payload.pop("signature", None)
-                    self.logger.error(f"Signed payload keys: {list(debug_payload.keys())}")
+                    _, debug_qs = self._sign_payload(debug_payload)
+                    self.logger.error(f"Signed query string: {debug_qs}")
                     self.logger.error(f"Base URL: {self.base_url}")
                     await self._close_session()
                     await asyncio.sleep(2 ** attempt)
