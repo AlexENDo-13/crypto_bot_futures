@@ -1,39 +1,72 @@
-# CryptoBot v9.1 — Исправленная версия
+# CryptoBot v10.0 — Neural Adaptive Trading System
 
-## Быстрый старт
+## 🔧 Исправления в v10.0 (КРИТИЧЕСКИЕ)
 
-1. Распакуй архив в папку `crypto_bot_futures/`
-2. Установи зависимости: `pip install -r requirements.txt`
-3. Запусти: `python main.py`
+### 1. Реальная торговля — позиции ОТКРЫВАЮТСЯ и ЗАКРЫВАЮТСЯ на бирже
+- **Исправлена подпись API** — `apiKey` только в заголовке `X-BX-APIKEY`, НЕ в query string и НЕ в подписи
+- **Исправлено создание ордеров** — `positionSide` правильно передаётся (HEDGE mode: LONG/SHORT)
+- **Исправлено закрытие позиций** — используется `closePosition=true` + fallback на market order
+- **Исправлен парсинг баланса** — поддержка nested dict от BingX
+- **Исправлен расчёт размера позиции** — работает даже с маленьким балансом ($19+)
+- **Исправлены endpoints** — переведены на `/openApi/swap/v2/`
 
-## Что исправлено
+### 2. Убран скальпинг — только свинг/трендовая торговля
+- Минимальный ADX: 15 (тренд подтверждён)
+- Минимальный ATR: 0.5% (достаточная волатильность)
+- Мульти-таймфрейм анализ: 15m + 1h + 4h + 1d
+- Нужно минимум 2/3 согласия по таймфреймам
+- Фильтр ловушек (bull/bear traps)
 
-- `main.py` — убран конфликт event loop
-- `src/ui/main_window.py` — QTextEdit → QPlainTextEdit
-- `src/core/logger.py` — добавлены proxy-методы info(), warning(), error()
-- `src/exchange/api_client.py` — добавлены методы для реальной торговли + логирование баланса
-- `src/core/risk/risk_manager.py` — добавлен update_pnl(), исправлен get_account_info()
-- `src/core/scanner/market_scanner.py` — fallback для volume_24h=0
-- `src/core/market/data_fetcher.py` — нормализация тикеров BingX
-- `src/core/executor/trade_executor.py` — исправлены вызовы API
+### 3. Улучшенные "мозги" — стратегии и индикаторы
+- **8 индикаторов**: MACD, RSI, VWAP, Ichimoku, Stochastic, OBV, Bollinger Bands, EMA50/200
+- **Классификация сигналов**: trend_momentum, oversold_bounce, overbought_short, volume_breakout, mixed
+- **Адаптивный движок стратегий** — отслеживает win rate по типам сигналов и адаптирует веса
+- **Детальное логирование решений** — каждый шаг объясняется в логах
 
-## Для LIVE торговли
+### 4. Улучшенное управление рисками
+- Адаптация к балансу (micro/small/medium/large/whale tiers)
+- Anti-martingale (уменьшение риска после убытков)
+- Weekend mode (уменьшение риска по выходным)
+- Circuit breaker (остановка при дневном лимите убытков)
+- Частичное закрытие позиций (50% на 50% TP, 30% на 80% TP)
+- Перенос SL в безубыток после первого TP
+- Trailing stop с активацией
 
-1. Получи API ключи на BingX
-2. Установи в `config/bot_config.json`:
-   ```json
-   "demo_mode": false,
-   "api_key": "YOUR_KEY",
-   "api_secret": "YOUR_SECRET"
-   ```
-3. Или через переменные окружения:
-   ```bash
-   set BINGX_API_KEY=your_key
-   set BINGX_API_SECRET=your_secret
-   ```
+## 🚀 Установка
 
-## Внимание
+```bash
+pip install -r requirements.txt
+```
 
-- **Всегда начинай с `demo_mode: true`**
-- Протестируй минимум 1-2 дня на бумаге
-- Не коммить API ключи в Git!
+## ⚙️ Настройка
+
+1. Создайте `config/bot_config.json` или введите ключи в GUI (Config tab)
+2. Убедитесь, что на BingX включён **HEDGE mode** для фьючерсов
+3. Убедитесь, что API ключ имеет права на **Spot & Futures Trading**
+
+## ▶️ Запуск
+
+```bash
+python main.py
+```
+
+## 📝 Важно
+
+- **LIVE MODE**: Снимите галочку "Demo Mode" в Config tab и введите реальные API ключи
+- **Баланс**: Минимум $10-20 рекомендуется для торговли
+- **Логи**: Все действия бота логируются в `logs/bot.log`
+- **Сделки**: История сделок сохраняется в `logs/trades.csv`
+
+## 🔑 API настройки BingX
+
+1. Зайдите в API Management на BingX
+2. Создайте API Key с правами:
+   - ✅ Read
+   - ✅ Futures Trading
+   - ✅ Spot Trading (опционально)
+3. Разрешите IP (или 0.0.0.0/0 для теста)
+4. Скопируйте API Key и Secret в бота
+
+## ⚠️ Предупреждение
+
+Торговля криптовалютами связана с высоким риском. Используйте только те средства, которые готовы потерять.

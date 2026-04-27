@@ -42,7 +42,7 @@ class TradeExecutor:
             return None
 
         side = OrderSide.BUY if direction == "LONG" else OrderSide.SELL
-        # Determine positionSide for hedge mode: LONG for BUY, SHORT for SELL
+        # HEDGE mode: positionSide must match the direction
         position_side = "LONG" if side == OrderSide.BUY else "SHORT"
         bingx_symbol = symbol.replace("/", "-")
 
@@ -87,16 +87,20 @@ class TradeExecutor:
 
         self.logger.info(f"ENTRY {side.value} {symbol} | Qty: {qty:.6f} | Price: ~{current_price:.4f} | Leverage: {leverage}x | PositionSide: {position_side}")
 
+        # Set leverage first
         try:
             await self.client.set_leverage(bingx_symbol, leverage, position_side=position_side)
+            self.logger.info(f"Leverage set: {bingx_symbol} {leverage}x {position_side}")
         except Exception as e:
             self.logger.warning(f"Leverage set error {symbol}: {e}")
 
+        # Set margin mode
         try:
             await self.client.set_margin_mode(bingx_symbol, "CROSSED")
         except Exception as e:
             self.logger.warning(f"Margin mode error {symbol}: {e}")
 
+        # Calculate SL/TP
         try:
             temp_pos = Position(symbol=symbol, side=side, quantity=qty, entry_price=current_price, leverage=leverage)
             sl_price, tp_price = self.risk_manager.calculate_sl_tp(temp_pos, atr_value)
@@ -104,6 +108,7 @@ class TradeExecutor:
             self.logger.error(f"SL/TP error {symbol}: {e}")
             return None
 
+        # Place MARKET entry order
         order_side_str = "BUY" if side == OrderSide.BUY else "SELL"
         result = await self.client.place_order(
             symbol=bingx_symbol, side=order_side_str, position_side=position_side,
@@ -112,15 +117,16 @@ class TradeExecutor:
         if result is None or result.get("error") or not result.get("orderId"):
             err = result.get("msg", "Unknown") if result else "No response"
             code = result.get("code", -1) if result else -1
-            self.logger.error(f"Order rejected {symbol}: [{code}] {err}")
+            self.logger.error(f"Order REJECTED {symbol}: [{code}] {err}")
             return None
 
         avg_price = float(result.get("avgPrice", current_price))
         if avg_price <= 0:
             avg_price = current_price
         order_id = result.get("orderId", "")
-        self.logger.info(f"Order executed: {symbol} {side.value} | Qty: {qty:.6f} | Avg: {avg_price:.4f} | ID: {order_id}")
+        self.logger.info(f"ORDER EXECUTED: {symbol} {side.value} | Qty: {qty:.6f} | Avg: {avg_price:.4f} | ID: {order_id}")
 
+        # Place STOP LOSS order
         sl_side = "SELL" if side == OrderSide.BUY else "BUY"
         sl_result = await self.client.place_stop_order(
             symbol=bingx_symbol, side=sl_side, stop_price=sl_price,
@@ -128,20 +134,22 @@ class TradeExecutor:
         )
         sl_order_id = sl_result.get("orderId", "") if sl_result and not sl_result.get("error") else ""
         if sl_order_id:
-            self.logger.info(f"SL set: {symbol} @ {sl_price:.4f}")
+            self.logger.info(f"SL SET: {symbol} @ {sl_price:.4f} | ID: {sl_order_id}")
         else:
-            self.logger.warning(f"SL not set {symbol}")
+            self.logger.warning(f"SL NOT SET {symbol}: {sl_result.get('msg', 'unknown error')}")
 
+        # Place TAKE PROFIT order
         tp_result = await self.client.place_stop_order(
             symbol=bingx_symbol, side=sl_side, stop_price=tp_price,
             order_type="TAKE_PROFIT_MARKET", position_side=position_side, close_position=True
         )
         tp_order_id = tp_result.get("orderId", "") if tp_result and not tp_result.get("error") else ""
         if tp_order_id:
-            self.logger.info(f"TP set: {symbol} @ {tp_price:.4f}")
+            self.logger.info(f"TP SET: {symbol} @ {tp_price:.4f} | ID: {tp_order_id}")
         else:
-            self.logger.warning(f"TP not set {symbol}")
+            self.logger.warning(f"TP NOT SET {symbol}: {tp_result.get('msg', 'unknown error')}")
 
+        # Create position object
         try:
             pos = Position(
                 symbol=symbol, side=side, quantity=qty, entry_price=avg_price, leverage=leverage,
@@ -154,26 +162,27 @@ class TradeExecutor:
             return None
 
         self.risk_manager.register_position_open(pos)
-        self.logger.info(f"Position opened: {symbol} {side.value} | Entry: {avg_price:.4f} | SL: {sl_price:.4f} | TP: {tp_price:.4f} | Qty: {qty:.6f} | Value: ${qty*avg_price:.2f} | Leverage: {leverage}x")
+        self.logger.info(f"POSITION OPENED: {symbol} {side.value} | Entry: {avg_price:.4f} | SL: {sl_price:.4f} | TP: {tp_price:.4f} | Qty: {qty:.6f} | Value: ${qty*avg_price:.2f} | Leverage: {leverage}x")
         return pos
 
     async def close_position_async(self, symbol, side, quantity, position_side="LONG"):
         bingx_symbol = symbol.replace("/", "-")
         close_side = "SELL" if side == OrderSide.BUY else "BUY"
         try:
+            # Try close_position API first
             res = await self.client.close_position(
                 symbol=bingx_symbol, position_side=position_side, quantity="0"
             )
             if res and not res.get("error") and res.get("orderId"):
-                self.logger.info(f"Position {symbol} closed via close_position API")
+                self.logger.info(f"Position {symbol} closed via close_position API | ID: {res.get('orderId')}")
                 return True
-            # Fallback to regular order if close_position fails
+            # Fallback to regular market order
             res = await self.client.place_order(
                 symbol=bingx_symbol, side=close_side, position_side=position_side,
                 quantity=quantity, order_type="MARKET"
             )
             if res and not res.get("error") and res.get("orderId"):
-                self.logger.info(f"Position {symbol} closed via market order")
+                self.logger.info(f"Position {symbol} closed via market order | ID: {res.get('orderId')}")
                 return True
             err = f"[{res.get('code')}] {res.get('msg')}" if res and res.get("error") else "No orderId"
             self.logger.error(f"Close error {symbol}: {err}")
