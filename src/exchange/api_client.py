@@ -36,6 +36,7 @@ class BingXAPIClient:
         self._recv_window = 5000
         self._session_lock = asyncio.Lock()
         self._offline = False
+        self._symbol_specs: Dict[str, dict] = {}
 
     def set_offline(self, offline: bool):
         self._offline = offline

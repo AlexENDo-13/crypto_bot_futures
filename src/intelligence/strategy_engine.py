@@ -2,7 +2,7 @@
 """StrategyEngine v11.3 — Enhanced with Session #2 learning + Session #3 ML."""
 import time
 from collections import deque
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 from src.intelligence.trade_journal import TradeJournal
 from src.intelligence.parameter_optimizer import ParameterOptimizer
@@ -43,11 +43,11 @@ class StrategyEngine:
         self.correlation = CorrelationMatrix()
 
     def record_trade_result(self, pnl: float, strategy: str = "", entry_type: str = "",
-                           market_regime: str = "", symbol: str = "",
-                           entry_time_iso: str = "", sl_pct: float = 1.5,
-                           tp_pct: float = 3.0, exit_reason: str = "",
-                           max_profit_pct: float = 0.0, max_loss_pct: float = 0.0,
-                           candidate: Dict = None):
+                            market_regime: str = "", symbol: str = "",
+                            entry_time_iso: str = "", sl_pct: float = 1.5,
+                            tp_pct: float = 3.0, exit_reason: str = "",
+                            max_profit_pct: float = 0.0, max_loss_pct: float = 0.0,
+                            candidate: Dict = None):
         """Record trade outcome across all learning and ML modules."""
         self._total_trades += 1
         if pnl > 0:
@@ -79,8 +79,8 @@ class StrategyEngine:
         perf["last_trade_time"] = time.time()
 
         self.logger.info(f"STRATEGY TRACK: {strategy_name} | PnL={pnl:+.4f} | "
-            f"Total={perf['trades']} | Wins={perf['wins']} | Avg={perf['avg_pnl']:+.4f} | "
-            f"WinStreak={perf['win_streak']} | LossStreak={perf['loss_streak']}")
+                         f"Total={perf['trades']} | Wins={perf['wins']} | Avg={perf['avg_pnl']:+.4f} | "
+                         f"WinStreak={perf['win_streak']} | LossStreak={perf['loss_streak']}")
 
         # Feed Session #2 modules
         trade_record = {
@@ -97,10 +97,10 @@ class StrategyEngine:
         # Feed Session #3: ML
         if candidate:
             self.ml_predictor.record_outcome(candidate, pnl)
-            # Feed return for volatility forecasting
-            if symbol:
-                ret = (pnl / max(abs(max_profit_pct), 0.1)) if max_profit_pct != 0 else 0
-                self.vol_forecaster.feed_return(symbol, ret)
+        # Feed return for volatility forecasting
+        if symbol:
+            ret = (pnl / max(abs(max_profit_pct), 0.1)) if max_profit_pct != 0 else 0
+            self.vol_forecaster.feed_return(symbol, ret)
 
         # Periodic adaptation
         now = time.time()
@@ -116,7 +116,7 @@ class StrategyEngine:
         self._current_best_strategy = best[0]
         recent_wr = sum(self._recent_results) / len(self._recent_results) * 100 if self._recent_results else 0
         self.logger.info(f"STRATEGY ADAPT: Best={best[0]} (avg_pnl={best[1]['avg_pnl']:+.4f}) | "
-            f"Recent WR: {recent_wr:.1f}% | Strategies tracked: {len(self._strategy_performance)}")
+                         f"Recent WR: {recent_wr:.1f}% | Strategies tracked: {len(self._strategy_performance)}")
 
     def score_candidate(self, candidate: Dict, balance: float = 100.0) -> float:
         """Score a candidate 0-100 using all learning + ML modules."""
@@ -147,7 +147,7 @@ class StrategyEngine:
 
         return min(100, max(0, base_score))
 
-    def can_trade(self, balance: float = 100.0) -> tuple:
+    def can_trade(self, balance: float = 100.0) -> Tuple[bool, str]:
         """Check if bot should trade now. Returns (ok, reason)."""
         ok, reason = self.error_patterns.can_trade()
         if not ok:

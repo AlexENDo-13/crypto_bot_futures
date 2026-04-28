@@ -9,7 +9,7 @@ import time
 import logging
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 
 logger = logging.getLogger("CryptoBot.TimeLearning")
 
@@ -31,10 +31,10 @@ class TimeBasedLearning:
             try:
                 with open(self.data_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    for k, v in data.get("hours", {}).items():
-                        self._hour_stats[int(k)] = v
-                    for k, v in data.get("weekdays", {}).items():
-                        self._weekday_stats[int(k)] = v
+                for k, v in data.get("hours", {}).items():
+                    self._hour_stats[int(k)] = v
+                for k, v in data.get("weekdays", {}).items():
+                    self._weekday_stats[int(k)] = v
                 logger.info(f"Time learning loaded: {len(self._hour_stats)} hours, {len(self._weekday_stats)} weekdays")
             except Exception as e:
                 logger.error(f"Time learning load error: {e}")

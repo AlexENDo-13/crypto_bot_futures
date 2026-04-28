@@ -11,8 +11,9 @@ import logging
 import time
 from typing import Optional, Dict, Any, List
 
-logger = logging.getLogger("ExitManager")
+from src.core.trading.position import OrderSide
 
+logger = logging.getLogger("ExitManager")
 
 class ExitManager:
     def __init__(self, settings, logger, api_client, risk_manager):
@@ -68,7 +69,7 @@ class ExitManager:
 
     async def _check_trailing_stop(self, pos, position_side, on_position_closed):
         """Check trailing stop condition"""
-        if not pos.highest_price or not pos.current_price:
+        if not hasattr(pos, 'highest_price') or not pos.highest_price or not pos.current_price:
             return
 
         trail_dist = self.settings.get("trailing_stop_distance_percent", 2.0) / 100
@@ -145,7 +146,3 @@ class ExitManager:
                 self.logger.warning(f"{open_count} positions still open after emergency close")
         except Exception as e:
             self.logger.error(f"Failed to verify positions after emergency close: {e}")
-
-
-# Import OrderSide for type checking
-from src.core.trading.position import OrderSide
