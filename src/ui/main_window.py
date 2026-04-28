@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MainWindow v11.0 — Enhanced GUI for CryptoBot v11.0"""
+"""MainWindow v11.1 — FIXED: emergency close side, syntax error"""
 import asyncio
 import logging
 from PyQt6.QtWidgets import (
@@ -37,13 +37,13 @@ class MainWindow(QMainWindow):
         layout.setSpacing(6)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        # ===== HEADER =====
+        # === HEADER ===
         header_frame = QFrame()
         header_frame.setStyleSheet("background: #0d1117; border-radius: 8px; padding: 6px; border: 1px solid #30363d;")
         header_layout = QHBoxLayout(header_frame)
         header_layout.setContentsMargins(12, 6, 12, 6)
 
-        self.title_label = QLabel("🤖 CryptoBot v11.0")
+        self.title_label = QLabel("🔖 CryptoBot v11.0")
         self.title_label.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
         self.title_label.setStyleSheet("color: #58a6ff;")
         header_layout.addWidget(self.title_label)
@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
 
         # Status badges
-        self.status_badge = QLabel("● STOPPED")
+        self.status_badge = QLabel("⏏ STOPPED")
         self.status_badge.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self.status_badge.setStyleSheet("color: #f85149; padding: 4px 12px; background: #3d0d0d; border-radius: 12px; border: 1px solid #f85149;")
         header_layout.addWidget(self.status_badge)
@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(header_frame)
 
-        # ===== STATS BAR =====
+        # === STATS BAR ===
         stats_frame = QFrame()
         stats_frame.setStyleSheet("background: #161b22; border-radius: 6px; padding: 4px; border: 1px solid #30363d;")
         stats_layout = QHBoxLayout(stats_frame)
@@ -79,10 +79,10 @@ class MainWindow(QMainWindow):
         self.stat_positions = self._create_stat_label("📊 Positions", "0")
         self.stat_daily_pnl = self._create_stat_label("📈 Daily PnL", "--")
         self.stat_winrate = self._create_stat_label("🎯 Win Rate", "--")
-        self.stat_trades = self._create_stat_label("🔄 Trades", "0")
-        self.stat_tier = self._create_stat_label("⚡ Tier", "--")
-        self.stat_health = self._create_stat_label("❤️ Health", "OK")
-        self.stat_next_scan = self._create_stat_label("⏱️ Next Scan", "--")
+        self.stat_trades = self._create_stat_label("📄 Trades", "0")
+        self.stat_tier = self._create_stat_label("⭐ Tier", "--")
+        self.stat_health = self._create_stat_label("✅ Health", "OK")
+        self.stat_next_scan = self._create_stat_label("⏳ Next Scan", "--")
 
         for lbl in [self.stat_balance, self.stat_positions, self.stat_daily_pnl,
                     self.stat_winrate, self.stat_trades, self.stat_tier, self.stat_health, self.stat_next_scan]:
@@ -90,12 +90,12 @@ class MainWindow(QMainWindow):
         stats_layout.addStretch()
         layout.addWidget(stats_frame)
 
-        # ===== CONTROL BUTTONS =====
+        # === CONTROL BUTTONS ===
         btn_frame = QFrame()
         btn_layout = QHBoxLayout(btn_frame)
         btn_layout.setContentsMargins(0, 2, 0, 2)
 
-        self.start_btn = QPushButton("▶️ START ENGINE")
+        self.start_btn = QPushButton("▶ START ENGINE")
         self.start_btn.setStyleSheet("""
             QPushButton { background: #238636; color: white; font-size: 13px; font-weight: bold;
                 padding: 10px 20px; border-radius: 6px; border: 1px solid #2ea043; }
@@ -105,7 +105,7 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self._start_engine)
         btn_layout.addWidget(self.start_btn)
 
-        self.stop_btn = QPushButton("⏹️ STOP ENGINE")
+        self.stop_btn = QPushButton("⏏ STOP ENGINE")
         self.stop_btn.setStyleSheet("""
             QPushButton { background: #da3633; color: white; font-size: 13px; font-weight: bold;
                 padding: 10px 20px; border-radius: 6px; border: 1px solid #f85149; }
@@ -137,7 +137,7 @@ class MainWindow(QMainWindow):
         btn_layout.addStretch()
         layout.addWidget(btn_frame)
 
-        # ===== TABS =====
+        # === TABS ===
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
             QTabWidget::pane { border: 1px solid #30363d; border-radius: 4px; background: #0d1117; }
@@ -185,7 +185,7 @@ class MainWindow(QMainWindow):
         pnl_frame = QFrame()
         pnl_frame.setStyleSheet("background: #0d1117; border: 1px solid #30363d; border-radius: 6px;")
         pnl_layout = QVBoxLayout(pnl_frame)
-        pnl_title = QLabel("📊 Live Trading Activity")
+        pnl_title = QLabel("📈 Live Trading Activity")
         pnl_title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         pnl_title.setStyleSheet("color: #58a6ff;")
         pnl_layout.addWidget(pnl_title)
@@ -226,7 +226,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(6, 6, 6, 6)
 
         # Open positions
-        open_group = QGroupBox("🔓 Open Positions")
+        open_group = QGroupBox("📓 Open Positions")
         open_group.setStyleSheet("QGroupBox { color: #3fb950; font-weight: bold; font-size: 12px; border: 1px solid #30363d; padding-top: 8px; }")
         open_layout = QVBoxLayout(open_group)
 
@@ -248,7 +248,7 @@ class MainWindow(QMainWindow):
         open_layout.addWidget(self.pos_table)
 
         btn_layout = QHBoxLayout()
-        self.refresh_pos_btn = QPushButton("🔄 Refresh")
+        self.refresh_pos_btn = QPushButton("📄 Refresh")
         self.refresh_pos_btn.clicked.connect(self._refresh_positions)
         btn_layout.addWidget(self.refresh_pos_btn)
         self.close_sel_btn = QPushButton("❌ Close Selected")
@@ -298,7 +298,7 @@ class MainWindow(QMainWindow):
         sig_layout.addWidget(self.sig_table)
 
         btn_layout = QHBoxLayout()
-        self.refresh_sig_btn = QPushButton("🔄 Refresh Signals")
+        self.refresh_sig_btn = QPushButton("📄 Refresh Signals")
         self.refresh_sig_btn.clicked.connect(self._refresh_signals)
         btn_layout.addWidget(self.refresh_sig_btn)
         btn_layout.addStretch()
@@ -353,7 +353,7 @@ class MainWindow(QMainWindow):
         scroll_layout.addWidget(perf_group)
 
         # Engine
-        engine_group = QGroupBox("⚙️ Engine Health")
+        engine_group = QGroupBox("⚙ Engine Health")
         engine_group.setStyleSheet("QGroupBox { color: #58a6ff; font-weight: bold; font-size: 13px; border: 1px solid #30363d; padding-top: 8px; }")
         engine_grid = QGridLayout(engine_group)
         self.stat_uptime = QLabel("Uptime: --")
@@ -400,7 +400,7 @@ class MainWindow(QMainWindow):
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
 
-        risk_group = QGroupBox("🛡️ Risk Metrics")
+        risk_group = QGroupBox("⛔ Risk Metrics")
         risk_group.setStyleSheet("QGroupBox { color: #f85149; font-weight: bold; font-size: 13px; border: 1px solid #30363d; padding-top: 8px; }")
         risk_grid = QGridLayout(risk_group)
         self.risk_daily_pnl = QLabel("Daily PnL: --")
@@ -450,7 +450,7 @@ class MainWindow(QMainWindow):
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
-        self.tabs.addTab(tab, "🛡️ Risk")
+        self.tabs.addTab(tab, "⛔ Risk")
 
     def _init_config_tab(self):
         tab = QWidget()
@@ -477,7 +477,7 @@ class MainWindow(QMainWindow):
         form.addRow(api_group)
 
         # Risk
-        risk_group = QGroupBox("⚖️ Risk Settings")
+        risk_group = QGroupBox("⚖ Risk Settings")
         risk_group.setStyleSheet(api_group.styleSheet())
         risk_form = QFormLayout(risk_group)
         self.max_pos_spin = QSpinBox()
@@ -560,7 +560,7 @@ class MainWindow(QMainWindow):
 
         scroll.setWidget(scroll_content)
         layout.addWidget(scroll)
-        self.tabs.addTab(tab, "⚙️ Config")
+        self.tabs.addTab(tab, "⚙ Config")
 
     def _init_log_tab(self):
         tab = QWidget()
@@ -575,7 +575,7 @@ class MainWindow(QMainWindow):
         """)
         layout.addWidget(self.full_log)
 
-        clear_btn = QPushButton("🗑️ Clear Log")
+        clear_btn = QPushButton("🗑 Clear Log")
         clear_btn.clicked.connect(self.full_log.clear)
         layout.addWidget(clear_btn)
 
@@ -634,7 +634,7 @@ class MainWindow(QMainWindow):
             self.api_key_input.text().strip(),
             self.api_secret_input.text().strip()
         )
-        self.mode_badge.setText("📄 PAPER" if self.demo_check.isChecked() else "🔴 LIVE")
+        self.mode_badge.setText("📄 PAPER" if self.demo_check.isChecked() else "🔥 LIVE")
         self.mode_badge.setStyleSheet(
             "color: #d29922; padding: 4px 12px; background: #2d2210; border-radius: 12px; border: 1px solid #d29922;"
             if self.demo_check.isChecked() else
@@ -648,7 +648,7 @@ class MainWindow(QMainWindow):
             asyncio.create_task(self.engine.start())
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
-            self.status_badge.setText("● RUNNING")
+            self.status_badge.setText("▶ RUNNING")
             self.status_badge.setStyleSheet("color: #3fb950; padding: 4px 12px; background: #0d2815; border-radius: 12px; border: 1px solid #3fb950;")
             logger.info("TradingEngine START requested by user")
 
@@ -657,7 +657,7 @@ class MainWindow(QMainWindow):
             asyncio.create_task(self.engine.stop())
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
-            self.status_badge.setText("● STOPPED")
+            self.status_badge.setText("⏏ STOPPED")
             self.status_badge.setStyleSheet("color: #f85149; padding: 4px 12px; background: #3d0d0d; border-radius: 12px; border: 1px solid #f85149;")
             logger.info("TradingEngine STOP requested by user")
 
@@ -681,8 +681,9 @@ class MainWindow(QMainWindow):
         for sym, pos in list(self.engine.positions.items()):
             try:
                 await self.engine.trade_executor.close_position_async(
-                    sym, pos.side, pos.quantity,
-                    "LONG" if pos.side.value == "BUY" else "SHORT"
+                    symbol=sym,
+                    side=pos.side,
+                    quantity=pos.quantity,
                 )
                 logger.info(f"Emergency closed {sym}")
             except Exception as e:
@@ -707,8 +708,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
                 asyncio.create_task(self.engine.trade_executor.close_position_async(
-                    symbol, pos.side, pos.quantity,
-                    "LONG" if pos.side.value == "BUY" else "SHORT"
+                    symbol, pos.side, pos.quantity
                 ))
                 logger.info(f"Manual close requested for {symbol}")
 
@@ -727,7 +727,8 @@ class MainWindow(QMainWindow):
 
             # Next scan countdown
             if self.engine.running and self.engine.last_scan_time > 0:
-                elapsed = __import__('time').time() - self.engine.last_scan_time
+                import time
+                elapsed = time.time() - self.engine.last_scan_time
                 remaining = max(0, adaptive_interval - elapsed)
                 self.stat_next_scan.val_lbl.setText(f"{remaining:.0f}s")
             else:
@@ -763,7 +764,7 @@ class MainWindow(QMainWindow):
             if not self.engine.running:
                 self.start_btn.setEnabled(True)
                 self.stop_btn.setEnabled(False)
-                self.status_badge.setText("● STOPPED")
+                self.status_badge.setText("⏏ STOPPED")
                 self.status_badge.setStyleSheet("color: #f85149; padding: 4px 12px; background: #3d0d0d; border-radius: 12px; border: 1px solid #f85149;")
         except Exception as e:
             pass
@@ -857,8 +858,8 @@ class MainWindow(QMainWindow):
         self.stat_total_trades.setText(f"Total Trades: {stats.get('total_trades', 0)}")
         self.stat_winning.setText(f"Winning: {stats.get('winning_trades', 0)}")
         self.stat_losing.setText(f"Losing: {stats.get('total_trades', 0) - stats.get('winning_trades', 0)}")
-        total_trades = max(stats.get('total_trades', 1), 1)
-        self.stat_avg_pnl.setText(f"Avg PnL: {stats.get('total_pnl', 0) / total_trades:+.4f}")
+        total_t = max(stats.get('total_trades', 1), 1)
+        self.stat_avg_pnl.setText(f"Avg PnL: {stats.get('total_pnl', 0) / total_t:+.4f}")
 
         closed = self.engine.get_closed_positions()
         if closed:

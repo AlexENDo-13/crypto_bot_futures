@@ -1,5 +1,6 @@
-#!/usr/bin/env python3
-"""ExitManager v11.1 — Fixed: current_price cast to float from API string."""
+"""
+ExitManager v11.2 - FIXED: uses close_position with correct side
+"""
 import asyncio
 from typing import Dict, Callable
 from datetime import datetime
@@ -40,8 +41,7 @@ class ExitManager:
                 hold_time = (datetime.utcnow() - pos.entry_time).total_seconds() / 60 if pos.entry_time else 0
                 position_side = "LONG" if pos.side.value == "BUY" else "SHORT"
 
-                self.logger.debug(f"CHECK {symbol}: price={current_price:.4f} PnL={pnl_pct:+.2f}% hold={hold_time:.0f}min")
-
+                # Partial close
                 if self.partial_close and not pos.partial_closes:
                     tp_distance = abs(pos.take_profit_price - pos.entry_price)
                     if tp_distance > 0:
@@ -63,42 +63,31 @@ class ExitManager:
                                     except Exception as e:
                                         self.logger.warning(f"Could not update SL {symbol}: {e}")
 
-                if self.partial_close and len(pos.partial_closes) == 1:
-                    tp_distance = abs(pos.take_profit_price - pos.entry_price)
-                    if tp_distance > 0:
-                        progress = abs(current_price - pos.entry_price) / tp_distance
-                        if progress >= 0.8:
-                            pnl = pos.partial_close(self.partial_at_tp2, current_price)
-                            self.logger.info(f"PARTIAL CLOSE {symbol}: {self.partial_at_tp2*100:.0f}% | PnL: {pnl:.4f} USDT | Reason: 80% TP reached")
-
-                if self.trailing_enabled and pnl_pct >= self.trailing_activation:
-                    if not pos.trailing_activated:
-                        self.logger.info(f"TRAILING STOP ACTIVATED {symbol} at {pnl_pct:+.2f}% profit")
-                        pos.trailing_activated = True
-                        pos.update_trailing_stop(self.trailing_distance)
-
+                # Stop Loss
                 if pos.stop_loss_price > 0:
-                    if (pos.side.value == "BUY" and current_price <= pos.stop_loss_price) or (pos.side.value == "SELL" and current_price >= pos.stop_loss_price):
+                    if (pos.side.value == "BUY" and current_price <= pos.stop_loss_price) or \
+                       (pos.side.value == "SELL" and current_price >= pos.stop_loss_price):
                         self.logger.info(f"STOP LOSS TRIGGERED {symbol}: price={current_price:.4f} SL={pos.stop_loss_price:.4f}")
                         await self._close_position(pos, current_price, ExitReason.STOP_LOSS, positions, on_close)
                         continue
 
+                # Take Profit
                 if pos.take_profit_price > 0:
-                    if (pos.side.value == "BUY" and current_price >= pos.take_profit_price) or (pos.side.value == "SELL" and current_price <= pos.take_profit_price):
+                    if (pos.side.value == "BUY" and current_price >= pos.take_profit_price) or \
+                       (pos.side.value == "SELL" and current_price <= pos.take_profit_price):
                         self.logger.info(f"TAKE PROFIT TRIGGERED {symbol}: price={current_price:.4f} TP={pos.take_profit_price:.4f}")
                         await self._close_position(pos, current_price, ExitReason.TAKE_PROFIT, positions, on_close)
                         continue
 
+                # Trailing Stop
                 if self.trailing_enabled and pos.trailing_activated and pos.trailing_stop_price > 0:
-                    if pos.side.value == "BUY" and current_price <= pos.trailing_stop_price:
-                        self.logger.info(f"TRAILING STOP TRIGGERED {symbol}: price={current_price:.4f} trail={pos.trailing_stop_price:.4f}")
-                        await self._close_position(pos, current_price, ExitReason.TRAILING_STOP, positions, on_close)
-                        continue
-                    elif pos.side.value == "SELL" and current_price >= pos.trailing_stop_price:
+                    if (pos.side.value == "BUY" and current_price <= pos.trailing_stop_price) or \
+                       (pos.side.value == "SELL" and current_price >= pos.trailing_stop_price):
                         self.logger.info(f"TRAILING STOP TRIGGERED {symbol}: price={current_price:.4f} trail={pos.trailing_stop_price:.4f}")
                         await self._close_position(pos, current_price, ExitReason.TRAILING_STOP, positions, on_close)
                         continue
 
+                # Time Exit & Dead Weight
                 if self.max_hold_time > 0 and hold_time >= self.max_hold_time:
                     self.logger.info(f"TIME EXIT {symbol}: held {hold_time:.0f}min (max {self.max_hold_time}min)")
                     await self._close_position(pos, current_price, ExitReason.TIME_EXIT, positions, on_close)
@@ -116,10 +105,7 @@ class ExitManager:
         try:
             bingx_symbol = pos.symbol.replace("/", "-")
             position_side = "LONG" if pos.side.value == "BUY" else "SHORT"
-            try:
-                await self.client.cancel_all_orders(bingx_symbol)
-            except Exception:
-                pass
+            await self.client.cancel_all_orders(bingx_symbol)
             result = await self.client.close_position(
                 symbol=bingx_symbol, position_side=position_side, quantity="0"
             )
@@ -132,6 +118,7 @@ class ExitManager:
                 self.logger.info(f"POSITION CLOSED {pos.symbol}: {reason.value} | Entry: {pos.entry_price:.4f} | "
                                  f"Exit: {exit_price:.4f} | PnL: {pos.realized_pnl:.4f} ({pos.realized_pnl_percent:.2f}%)")
                 return
+            # Fallback: market order
             close_side = "SELL" if pos.side.value == "BUY" else "BUY"
             result = await self.client.place_order(
                 symbol=bingx_symbol, side=close_side, position_side=position_side,

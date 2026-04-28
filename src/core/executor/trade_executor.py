@@ -1,5 +1,6 @@
-#!/usr/bin/env python3
-"""TradeExecutor v11.1 — Fixed: set_leverage uses 'side' param per BingX spec."""
+"""
+TradeExecutor v11.2 - FIXED: quantity rounding, close position side logic
+"""
 import math
 from typing import Optional, Dict, Any
 from src.core.trading.position import Position, OrderSide
@@ -55,7 +56,6 @@ class TradeExecutor:
                 symbol_specs = self.client.get_symbol_specs(bingx_symbol)
             except Exception as e:
                 self.logger.warning(f"Could not get specs for {symbol}: {e}")
-                symbol_specs = None
 
         leverage = int(self.settings.get("max_leverage", 3))
         if symbol_specs:
@@ -77,11 +77,10 @@ class TradeExecutor:
             return None
 
         if not self._check_min_notional(qty, current_price, symbol_specs):
-            min_notional = float(symbol_specs.get("tradeMinUSDT", symbol_specs.get("minNotional", 5.0))) if symbol_specs else 5.0
-            step = float(symbol_specs.get("size", symbol_specs.get("stepSize", 0.001))) if symbol_specs else 0.001
-            qty = self._round_quantity(symbol, (min_notional * 1.05) / current_price, symbol_specs)
+            min_n = float(symbol_specs.get("tradeMinUSDT", symbol_specs.get("minNotional", 5.0))) if symbol_specs else 5.0
+            qty = self._round_quantity(symbol, (min_n * 1.05) / current_price, symbol_specs)
             if qty <= 0 or not self._check_min_notional(qty, current_price, symbol_specs):
-                self.logger.warning(f"{symbol}: does not meet min lot (min_notional={min_notional}, price={current_price})")
+                self.logger.warning(f"{symbol}: below min notional")
                 return None
 
         self.logger.info(f"ENTRY PREPARE {side.value} {symbol} | Qty: {qty:.6f} | Price: ~{current_price:.4f} | "
@@ -89,11 +88,8 @@ class TradeExecutor:
 
         try:
             lev_res = await self.client.set_leverage(bingx_symbol, leverage, side=position_side)
-            if lev_res and not lev_res.get("error"):
-                self.logger.info(f"Leverage set: {bingx_symbol} {leverage}x {position_side}")
-            else:
-                err = lev_res.get("msg", "unknown") if lev_res else "no response"
-                self.logger.warning(f"Leverage warning {symbol}: {err} (may already be set)")
+            if lev_res and lev_res.get("error"):
+                self.logger.warning(f"Leverage warning {symbol}: {lev_res.get('msg')} (may already be set)")
         except Exception as e:
             self.logger.warning(f"Leverage error {symbol}: {e} (continuing)")
 
@@ -101,8 +97,6 @@ class TradeExecutor:
             margin_res = await self.client.set_margin_mode(bingx_symbol, "CROSSED")
             if margin_res and margin_res.get("code") == 0:
                 self.logger.info(f"Margin mode set: {bingx_symbol} CROSSED")
-            else:
-                self.logger.debug(f"Margin mode skipped for {symbol}")
         except Exception as e:
             self.logger.debug(f"Margin mode error {symbol}: {e} (ignoring)")
 
@@ -119,6 +113,7 @@ class TradeExecutor:
             symbol=bingx_symbol, side=order_side_str, position_side=position_side,
             quantity=qty, order_type="MARKET"
         )
+        # Проверяем ответ
         if result is None or result.get("error") or not result.get("orderId"):
             err = result.get("msg", "Unknown") if result else "No response"
             code = result.get("code", -1) if result else -1
@@ -170,17 +165,30 @@ class TradeExecutor:
         return pos
 
     async def close_position_async(self, symbol, side, quantity, position_side="LONG"):
+        """
+        Закрывает позицию. side - OrderSide позиции.
+        position_side игнорируется, определяется автоматически.
+        """
         bingx_symbol = symbol.replace("/", "-")
-        close_side = "SELL" if side == OrderSide.BUY else "BUY"
+        # Определяем сторону закрытия
+        if side == OrderSide.BUY:
+            close_side = "SELL"
+            actual_position_side = "LONG"
+        else:
+            close_side = "BUY"
+            actual_position_side = "SHORT"
+
         try:
+            # Сначала пытаемся закрыть через close_position (передаём 0 для полного закрытия)
             res = await self.client.close_position(
-                symbol=bingx_symbol, position_side=position_side, quantity="0"
+                symbol=bingx_symbol, position_side=actual_position_side, quantity="0"
             )
             if res and not res.get("error") and res.get("orderId"):
                 self.logger.info(f"Position {symbol} closed via close_position API | ID: {res.get('orderId')}")
                 return True
+            # Fallback: рыночный ордер на конкретное количество
             res = await self.client.place_order(
-                symbol=bingx_symbol, side=close_side, position_side=position_side,
+                symbol=bingx_symbol, side=close_side, position_side=actual_position_side,
                 quantity=quantity, order_type="MARKET"
             )
             if res and not res.get("error") and res.get("orderId"):
