@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Settings v11 — Updated defaults for better micro-balance trading."""
+"""Settings v11.2 — Added Session #2 learning parameters."""
 import json
 import os
 from typing import Any, Dict
@@ -54,6 +54,16 @@ DEFAULT_CONFIG = {
     "dynamic_sl_enabled": True,
     "dynamic_tp_enabled": True,
     "dead_weight_exit_enabled": True,
+    # Session #2: Learning parameters
+    "learning_enabled": True,
+    "min_confidence_threshold": 45.0,
+    "auto_optimize_sl_tp": True,
+    "time_filter_enabled": True,
+    "regime_filter_enabled": True,
+    "error_pattern_pause": True,
+    "max_loss_streak": 3,
+    "cooldown_minutes": 30,
+    "overtrade_threshold": 6,
 }
 
 class Settings:
@@ -66,7 +76,9 @@ class Settings:
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
-                    self._config = json.load(f)
+                    loaded = json.load(f)
+                    self._config = dict(DEFAULT_CONFIG)
+                    self._config.update(loaded)
             except Exception as e:
                 print(f"Config load error: {e}, using defaults")
                 self._config = dict(DEFAULT_CONFIG)

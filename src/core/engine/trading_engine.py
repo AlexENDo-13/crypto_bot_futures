@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TradingEngine v11.1 — STABLE
-Fixed: asyncio.Lock (no threading lock), symbol format preserved, graceful stop, memory-safe.
+"""TradingEngine v11.2 — Enhanced with Session #2 learning modules.
+Fixed: asyncio.Lock, symbol format, graceful stop, memory-safe.
 """
 import asyncio
 import time
@@ -34,7 +34,7 @@ class TradingEngine:
         self.telegram = telegram
         self.running = False
         self._task = None
-        self._lock = asyncio.Lock()  # FIXED: was threading.Lock()
+        self._lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
 
         self.order_manager = OrderManager(api_client, logger)
@@ -89,7 +89,7 @@ class TradingEngine:
         self.running = True
         self._stop_event.clear()
         self._shutdown_requested = False
-        self.logger.info("Starting TradingEngine v11.1 (STABLE)...")
+        self.logger.info("Starting TradingEngine v11.2 (LEARNING)...")
 
         for attempt in range(self._max_balance_attempts):
             try:
@@ -114,7 +114,7 @@ class TradingEngine:
 
         await self._sync_positions()
         self._task = asyncio.create_task(self._main_loop())
-        self.logger.info("Engine started — self-healing active")
+        self.logger.info("Engine started — self-healing + learning active")
 
     async def stop(self):
         if self._shutdown_requested:
@@ -136,7 +136,6 @@ class TradingEngine:
                 loop_start = time.time()
                 self._loop_count += 1
 
-                # Periodic garbage collection to prevent memory growth
                 if self._loop_count % 50 == 0:
                     gc.collect()
 
@@ -229,7 +228,6 @@ class TradingEngine:
     async def _sync_positions(self):
         try:
             exchange_positions = await self.api_client.get_positions()
-            # FIXED: Keep original symbol format (BTC-USDT), do NOT replace with "/"
             current_symbols = {p.get("symbol", "") for p in exchange_positions if float(p.get("positionAmt", 0)) != 0}
 
             async with self._lock:
@@ -292,9 +290,21 @@ class TradingEngine:
                 if pos.realized_pnl > 0:
                     self._winning_trades += 1
                 self._total_trades += 1
-                self.strategy_engine.record_trade_result(pos.realized_pnl)
+                # Session #2: Enhanced recording with all metadata
+                self.strategy_engine.record_trade_result(
+                    pnl=pos.realized_pnl,
+                    strategy=pos.strategy,
+                    entry_type=pos.strategy,
+                    market_regime=self.strategy_engine._market_regime,
+                    symbol=pos.symbol,
+                    entry_time_iso=pos.entry_time.isoformat() if pos.entry_time else "",
+                    sl_pct=abs((pos.stop_loss_price - pos.entry_price) / pos.entry_price * 100) if pos.entry_price > 0 else 1.5,
+                    tp_pct=abs((pos.take_profit_price - pos.entry_price) / pos.entry_price * 100) if pos.entry_price > 0 else 3.0,
+                    exit_reason=pos.exit_reason.value if pos.exit_reason else "UNKNOWN",
+                    max_profit_pct=pos.max_profit_pct,
+                    max_loss_pct=pos.max_loss_pct
+                )
                 self._append_csv(pos)
-        # Schedule safely
         try:
             asyncio.create_task(_do())
         except Exception:
@@ -336,6 +346,14 @@ class TradingEngine:
         if self.balance <= 0:
             self.logger.warning("Balance is 0 — scanning in monitoring mode only (no trades)")
 
+        # Session #2: Check learning modules before trading
+        if self.settings.get("learning_enabled", True):
+            ok, reason = self.strategy_engine.can_trade(self.balance)
+            if not ok:
+                self.logger.info(f"LEARNING BLOCK: {reason}")
+                return
+            self.logger.info(f"LEARNING CHECK: PASSED | {reason}")
+
         ok, reason = self.risk_manager.can_open_position(len(self.positions), self.balance)
         if not ok:
             self.logger.info(f"SCAN BLOCKED by risk: {reason}")
@@ -364,7 +382,23 @@ class TradingEngine:
             self.logger.info("All signals filtered out by risk controller")
             return
 
-        self.logger.info(f"EXECUTING: {len(candidates)} candidates after risk filter")
+        # Session #2: Score and filter by confidence
+        if self.settings.get("learning_enabled", True):
+            scored = []
+            for c in candidates:
+                score = self.strategy_engine.score_candidate(c, self.balance)
+                c["confidence_score"] = score
+                if self.strategy_engine.confidence.should_take_trade(score):
+                    scored.append(c)
+                else:
+                    self.logger.info(f"CONFIDENCE REJECT: {c.get('symbol')} score={score:.0f}% < threshold")
+            candidates = scored
+            if not candidates:
+                self.logger.info("All signals rejected by confidence filter")
+                return
+            candidates.sort(key=lambda x: x.get("confidence_score", 0), reverse=True)
+
+        self.logger.info(f"EXECUTING: {len(candidates)} candidates after all filters")
 
         for candidate in candidates:
             if len(self.positions) >= self.risk_manager.max_positions:
@@ -372,10 +406,21 @@ class TradingEngine:
                 break
             try:
                 ind = candidate.get("indicators", {})
+                conf = candidate.get("confidence_score", 0)
                 self.logger.info(f"ATTEMPT ENTRY: {candidate.get('symbol')} {ind.get('signal_direction')} | "
                     f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
                     f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | "
-                    f"Type={ind.get('entry_type','mixed')}")
+                    f"Type={ind.get('entry_type','mixed')} | CONF={conf:.0f}%")
+
+                # Session #2: Use optimized SL/TP if enabled
+                sl_pct = self.settings.get("default_sl_pct", 1.5)
+                tp_pct = self.settings.get("default_tp_pct", 3.0)
+                if self.settings.get("auto_optimize_sl_tp", True):
+                    opt_sl, opt_tp = self.strategy_engine.optimizer.get_recommended_sl_tp(ind.get("atr_percent"))
+                    sl_pct = opt_sl
+                    tp_pct = opt_tp
+                    self.logger.info(f"OPTIMIZED SL/TP: SL={sl_pct:.2f}% TP={tp_pct:.2f}%")
+
                 pos = await self.trade_executor.execute_trade_async(
                     candidate=candidate, balance=self.balance, open_positions=self.positions,
                     trailing_enabled=self.settings.get("trailing_stop_enabled", True),
