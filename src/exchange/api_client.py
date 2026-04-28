@@ -1,5 +1,6 @@
 """
-BingX API Client v18.9 - FIXED: quantity rounding, close_position logic
+BingX API Client v19.0 — STABLE
+Fixed: asyncio-safe session, 100001/100412 retry, offline-aware, no threading locks.
 """
 import asyncio
 import hashlib
@@ -11,7 +12,6 @@ from typing import Dict, List, Optional, Any
 
 import aiohttp
 
-
 class BingXAPIClient:
     def __init__(self, api_key: str = "", api_secret: str = "",
                  base_url: str = "https://open-api.bingx.com", testnet: bool = True, pool_size: int = 10):
@@ -21,7 +21,6 @@ class BingXAPIClient:
         self.testnet = testnet
         self.logger = logging.getLogger("CryptoBot.API")
         self._session: Optional[aiohttp.ClientSession] = None
-        self._symbol_specs: Dict[str, dict] = {}
         self._connector_kwargs = {
             "limit": pool_size * 2, "limit_per_host": pool_size,
             "enable_cleanup_closed": True, "force_close": False
@@ -35,6 +34,15 @@ class BingXAPIClient:
         self._last_request_time = 0
         self._adaptive_interval = 0.05
         self._recv_window = 5000
+        self._session_lock = asyncio.Lock()
+        self._offline = False
+
+    def set_offline(self, offline: bool):
+        self._offline = offline
+        if offline:
+            self.logger.warning("API client set to OFFLINE mode — requests blocked")
+        else:
+            self.logger.info("API client back ONLINE")
 
     def update_credentials(self, api_key: str, api_secret: str):
         old_key = self.api_key
@@ -43,28 +51,35 @@ class BingXAPIClient:
         self.logger.info(f"API credentials updated (key changed: {old_key != self.api_key})")
         self._circuit_open = False
         self._consecutive_errors = 0
-        if self._session and not self._session.closed:
-            asyncio.create_task(self._close_session())
-        self._session = None
+        # Schedule session close safely
+        asyncio.create_task(self._recreate_session())
+
+    async def _recreate_session(self):
+        async with self._session_lock:
+            if self._session and not self._session.closed:
+                await self._session.close()
+            self._session = None
 
     async def _get_or_create_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            connector = aiohttp.TCPConnector(**self._connector_kwargs)
-            headers = {"Accept": "application/json"}
-            if self.api_key:
-                headers["X-BX-APIKEY"] = self.api_key
-                self.logger.info(f"Session created with X-BX-APIKEY: {self.api_key[:8]}...")
-            else:
-                self.logger.warning("Session created WITHOUT api_key!")
-            self._session = aiohttp.ClientSession(
-                connector=connector, timeout=self._timeout, headers=headers
-            )
-        return self._session
+        async with self._session_lock:
+            if self._session is None or self._session.closed:
+                connector = aiohttp.TCPConnector(**self._connector_kwargs)
+                headers = {"Accept": "application/json"}
+                if self.api_key:
+                    headers["X-BX-APIKEY"] = self.api_key
+                    self.logger.info(f"Session created with X-BX-APIKEY: {self.api_key[:8]}...")
+                else:
+                    self.logger.warning("Session created WITHOUT api_key!")
+                self._session = aiohttp.ClientSession(
+                    connector=connector, timeout=self._timeout, headers=headers
+                )
+            return self._session
 
     async def _close_session(self):
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        async with self._session_lock:
+            if self._session and not self._session.closed:
+                await self._session.close()
+            self._session = None
 
     def _build_signed_payload(self, params: Optional[dict] = None) -> dict:
         payload = {}
@@ -88,6 +103,9 @@ class BingXAPIClient:
 
     async def _request(self, method: str, endpoint: str, params: Optional[dict] = None,
                        signed: bool = False, retries: int = 3) -> dict:
+        if self._offline:
+            return {"code": -1, "msg": "Offline mode — request blocked"}
+
         now = time.time()
         elapsed = now - self._last_request_time
         if elapsed < self._adaptive_interval:
@@ -166,11 +184,17 @@ class BingXAPIClient:
                     self._adaptive_interval = max(0.02, self._adaptive_interval * 0.95)
                     return data
 
-                # handle common errors
+                # Handle specific error codes
                 if code == 100412:
                     self._consecutive_errors += 1
                     self.logger.error(f"100412 error: {data.get('msg')}")
                     await asyncio.sleep(2 ** attempt)
+                    continue
+
+                if code == 100001 or "signature" in msg or "invalid sign" in msg:
+                    self._consecutive_errors += 1
+                    self.logger.error(f"SIGNATURE ERROR (100001): {data.get('msg')} — retrying with fresh timestamp")
+                    await asyncio.sleep(0.5 * (attempt + 1))
                     continue
 
                 last_error = data
@@ -189,6 +213,10 @@ class BingXAPIClient:
                 await asyncio.sleep(2 ** attempt)
 
         self._adaptive_interval = min(2.0, self._adaptive_interval * 1.5)
+        if self._consecutive_errors >= 5:
+            self._circuit_open = True
+            self._circuit_open_time = time.time()
+            self.logger.error("Circuit breaker OPENED due to consecutive errors")
         return last_error or {"code": -1, "msg": "All retries failed"}
 
     # ======================== PUBLIC API ========================
@@ -271,13 +299,11 @@ class BingXAPIClient:
 
     async def place_order(self, symbol: str, side: str, position_side: str,
                           order_type: str, quantity: float, price: Optional[float] = None) -> dict:
-        # Округляем quantity до целочисленного шага лота (например, до 0.1 для DYDX)
         specs = self.get_symbol_specs(symbol)
         if specs:
             step = float(specs.get("size", specs.get("stepSize", 0.001)))
             if step > 0:
                 quantity = round(quantity / step) * step
-                # Обрезаем количество знаков после запятой согласно шагу
                 precision = len(str(step).rstrip('0').split('.')[-1]) if '.' in str(step) else 0
                 quantity = round(quantity, precision)
         else:
@@ -335,10 +361,6 @@ class BingXAPIClient:
         return []
 
     async def close_position(self, symbol: str, position_side: str, quantity: str = "0") -> dict:
-        """
-        Close position. quantity='0' => full close with closePosition='true'.
-        Otherwise partial close with explicit quantity.
-        """
         side = "SELL" if position_side == "LONG" else "BUY"
         qty_num = float(quantity) if quantity else 0.0
 
@@ -350,7 +372,6 @@ class BingXAPIClient:
         }
 
         if qty_num > 0:
-            # Частичное закрытие с точным количеством
             specs = self.get_symbol_specs(symbol)
             if specs:
                 step = float(specs.get("size", specs.get("stepSize", 0.001)))
@@ -360,7 +381,6 @@ class BingXAPIClient:
                     qty_num = round(qty_num, precision)
             params["quantity"] = qty_num
         else:
-            # Полное закрытие
             params["closePosition"] = "true"
 
         resp = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
@@ -379,4 +399,5 @@ class BingXAPIClient:
             "total_requests": self._total_requests,
             "circuit_open": self._circuit_open,
             "adaptive_interval": self._adaptive_interval,
+            "offline": self._offline,
         }

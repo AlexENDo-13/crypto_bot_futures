@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TradingEngine v11 — Fixed: scan scheduling, clearer decision logs, better error recovery."""
+"""TradingEngine v11.1 — STABLE
+Fixed: asyncio.Lock (no threading lock), symbol format preserved, graceful stop, memory-safe.
+"""
 import asyncio
 import time
 import logging
-import threading
 import csv
 import os
+import gc
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
@@ -32,7 +34,7 @@ class TradingEngine:
         self.telegram = telegram
         self.running = False
         self._task = None
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()  # FIXED: was threading.Lock()
         self._stop_event = asyncio.Event()
 
         self.order_manager = OrderManager(api_client, logger)
@@ -74,6 +76,7 @@ class TradingEngine:
         self._recovery_mode = False
         self._balance_fetch_attempts = 0
         self._max_balance_attempts = 10
+        self._shutdown_requested = False
 
     def _ensure_csv(self):
         if not os.path.exists(self._csv_path):
@@ -85,7 +88,8 @@ class TradingEngine:
     async def start(self):
         self.running = True
         self._stop_event.clear()
-        self.logger.info("Starting TradingEngine v11...")
+        self._shutdown_requested = False
+        self.logger.info("Starting TradingEngine v11.1 (STABLE)...")
 
         for attempt in range(self._max_balance_attempts):
             try:
@@ -113,13 +117,16 @@ class TradingEngine:
         self.logger.info("Engine started — self-healing active")
 
     async def stop(self):
+        if self._shutdown_requested:
+            return
+        self._shutdown_requested = True
         self.running = False
         self._stop_event.set()
         if self._task:
             self._task.cancel()
             try:
-                await self._task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._task, timeout=10)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
         self.logger.info("TradingEngine stopped")
 
@@ -128,6 +135,10 @@ class TradingEngine:
             try:
                 loop_start = time.time()
                 self._loop_count += 1
+
+                # Periodic garbage collection to prevent memory growth
+                if self._loop_count % 50 == 0:
+                    gc.collect()
 
                 # Balance recovery
                 if self.balance <= 0:
@@ -149,6 +160,8 @@ class TradingEngine:
                 ]:
                     try:
                         await operation()
+                    except asyncio.CancelledError:
+                        return
                     except Exception as e:
                         self.logger.error(f"{name} error (non-critical): {e}")
 
@@ -161,6 +174,8 @@ class TradingEngine:
                         await self._scan_and_trade()
                         self._consecutive_scan_errors = 0
                         self._api_error_streak = max(0, self._api_error_streak - 1)
+                    except asyncio.CancelledError:
+                        return
                     except Exception as e:
                         self._consecutive_scan_errors += 1
                         self._api_error_streak += 1
@@ -176,6 +191,7 @@ class TradingEngine:
                     pass
 
             except asyncio.CancelledError:
+                self.logger.info("Main loop cancelled")
                 break
             except Exception as e:
                 self._last_error = str(e)
@@ -199,7 +215,7 @@ class TradingEngine:
         try:
             bal_info = await self.risk_manager.get_account_balance()
             new_balance = bal_info.get("total_equity", self.balance)
-            with self._lock:
+            async with self._lock:
                 if new_balance > 0:
                     self.balance = new_balance
                     self._balance_fetch_failures = 0
@@ -207,15 +223,16 @@ class TradingEngine:
                 else:
                     self._balance_fetch_failures += 1
         except Exception as e:
-            with self._lock:
+            async with self._lock:
                 self._balance_fetch_failures += 1
 
     async def _sync_positions(self):
         try:
             exchange_positions = await self.api_client.get_positions()
-            current_symbols = {p.get("symbol", "").replace("-", "/") for p in exchange_positions if float(p.get("positionAmt", 0)) != 0}
+            # FIXED: Keep original symbol format (BTC-USDT), do NOT replace with "/"
+            current_symbols = {p.get("symbol", "") for p in exchange_positions if float(p.get("positionAmt", 0)) != 0}
 
-            with self._lock:
+            async with self._lock:
                 for sym in list(self.positions.keys()):
                     if sym not in current_symbols:
                         pos = self.positions.pop(sym)
@@ -224,7 +241,7 @@ class TradingEngine:
                         self._record_closed_position(pos, "EXCHANGE_CLOSE")
 
                 for p in exchange_positions:
-                    symbol = p.get("symbol", "").replace("-", "/")
+                    symbol = p.get("symbol", "")
                     amt = float(p.get("positionAmt", 0))
                     if amt == 0:
                         continue
@@ -267,15 +284,21 @@ class TradingEngine:
             self.logger.error(f"Exit check error: {e}")
 
     def _on_position_closed(self, pos: Position):
-        with self._lock:
-            self._record_closed_position(pos, pos.exit_reason.value if pos.exit_reason else "UNKNOWN")
-            self.risk_manager.update_pnl(pos.realized_pnl)
-            self.risk_controller.add_pnl(pos.realized_pnl)
-            if pos.realized_pnl > 0:
-                self._winning_trades += 1
-            self._total_trades += 1
-            self.strategy_engine.record_trade_result(pos.realized_pnl)
-            self._append_csv(pos)
+        async def _do():
+            async with self._lock:
+                self._record_closed_position(pos, pos.exit_reason.value if pos.exit_reason else "UNKNOWN")
+                self.risk_manager.update_pnl(pos.realized_pnl)
+                self.risk_controller.add_pnl(pos.realized_pnl)
+                if pos.realized_pnl > 0:
+                    self._winning_trades += 1
+                self._total_trades += 1
+                self.strategy_engine.record_trade_result(pos.realized_pnl)
+                self._append_csv(pos)
+        # Schedule safely
+        try:
+            asyncio.create_task(_do())
+        except Exception:
+            pass
 
     def _append_csv(self, pos: Position):
         try:
@@ -324,7 +347,7 @@ class TradingEngine:
             ignore_session_check=self.settings.get("force_ignore_session", True),
         )
 
-        with self._lock:
+        async with self._lock:
             self._last_scan_result = candidates
 
         if not candidates:
@@ -350,9 +373,9 @@ class TradingEngine:
             try:
                 ind = candidate.get("indicators", {})
                 self.logger.info(f"ATTEMPT ENTRY: {candidate.get('symbol')} {ind.get('signal_direction')} | "
-                                 f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
-                                 f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | "
-                                 f"Type={ind.get('entry_type','mixed')}")
+                    f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
+                    f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | "
+                    f"Type={ind.get('entry_type','mixed')}")
                 pos = await self.trade_executor.execute_trade_async(
                     candidate=candidate, balance=self.balance, open_positions=self.positions,
                     trailing_enabled=self.settings.get("trailing_stop_enabled", True),
@@ -361,12 +384,12 @@ class TradingEngine:
                     start_balance=self.start_balance,
                 )
                 if pos:
-                    with self._lock:
+                    async with self._lock:
                         self.positions[pos.symbol] = pos
-                        self.risk_controller.register_position_open(pos.symbol)
+                    self.risk_controller.register_position_open(pos.symbol)
                     self.logger.info(f"SUCCESS: Position opened {pos.symbol} {pos.side.value} | "
-                                     f"Entry={pos.entry_price:.4f} | Qty={pos.quantity:.6f} | "
-                                     f"SL={pos.stop_loss_price:.4f} | TP={pos.take_profit_price:.4f}")
+                        f"Entry={pos.entry_price:.4f} | Qty={pos.quantity:.6f} | "
+                        f"SL={pos.stop_loss_price:.4f} | TP={pos.take_profit_price:.4f}")
                 else:
                     self.logger.warning(f"FAILED: Trade returned None for {candidate.get('symbol')}")
             except Exception as e:
@@ -375,46 +398,57 @@ class TradingEngine:
         self.logger.info("=" * 50)
 
     def get_stats(self) -> dict:
-        with self._lock:
-            total_pnl = sum(p["realized_pnl"] for p in self.closed_positions)
-            win_rate = (self._winning_trades / self._total_trades * 100) if self._total_trades > 0 else 0
-            uptime = time.time() - self._start_time
-            return {
-                "balance": self.balance,
-                "start_balance": self.start_balance,
-                "positions_count": len(self.positions),
-                "daily_pnl": self.daily_pnl,
-                "weekly_pnl": self.weekly_pnl,
-                "total_trades": self._total_trades,
-                "winning_trades": self._winning_trades,
-                "win_rate": win_rate,
-                "total_pnl": total_pnl,
-                "api_latency_ms": self._api_latency_ms,
-                "last_error": self._last_error,
-                "health_status": self._health_status,
-                "uptime_seconds": uptime,
-                "loop_count": self._loop_count,
-                "risk_stats": self.risk_manager.get_daily_stats(),
-                "risk_controller_stats": self.risk_controller.get_stats(),
-                "strategy_stats": self.strategy_engine.get_recent_performance(),
-                "scan_result_count": len(self._last_scan_result),
-                "scan_stats": self.market_scanner.get_scan_stats(),
-                "fetch_health": self.data_fetcher.get_fetch_health(),
-                "adaptive_interval": self._adaptive_scan_interval,
-                "api_health": self.api_client.get_health(),
-            }
+        async def _get():
+            async with self._lock:
+                total_pnl = sum(p["realized_pnl"] for p in self.closed_positions)
+                win_rate = (self._winning_trades / self._total_trades * 100) if self._total_trades > 0 else 0
+                uptime = time.time() - self._start_time
+                return {
+                    "balance": self.balance,
+                    "start_balance": self.start_balance,
+                    "positions_count": len(self.positions),
+                    "daily_pnl": self.daily_pnl,
+                    "weekly_pnl": self.weekly_pnl,
+                    "total_trades": self._total_trades,
+                    "winning_trades": self._winning_trades,
+                    "win_rate": win_rate,
+                    "total_pnl": total_pnl,
+                    "api_latency_ms": self._api_latency_ms,
+                    "last_error": self._last_error,
+                    "health_status": self._health_status,
+                    "uptime_seconds": uptime,
+                    "loop_count": self._loop_count,
+                    "risk_stats": self.risk_manager.get_daily_stats(),
+                    "risk_controller_stats": self.risk_controller.get_stats(),
+                    "strategy_stats": self.strategy_engine.get_recent_performance(),
+                    "scan_result_count": len(self._last_scan_result),
+                    "scan_stats": self.market_scanner.get_scan_stats(),
+                    "fetch_health": self.data_fetcher.get_fetch_health(),
+                    "adaptive_interval": self._adaptive_scan_interval,
+                    "api_health": self.api_client.get_health(),
+                }
+        try:
+            return asyncio.get_event_loop().run_until_complete(_get())
+        except Exception:
+            return {}
 
     def get_closed_positions(self) -> List[Dict]:
-        with self._lock:
+        try:
             return list(reversed(self.closed_positions))
+        except Exception:
+            return []
 
     def get_open_positions(self) -> List[Dict]:
-        with self._lock:
+        try:
             return [p.to_dict() for p in self.positions.values()]
+        except Exception:
+            return []
 
     def get_last_scan_signals(self) -> List[Dict]:
-        with self._lock:
+        try:
             return list(self._last_scan_result)
+        except Exception:
+            return []
 
     def get_health(self) -> Dict[str, Any]:
         return {

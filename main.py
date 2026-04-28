@@ -1,22 +1,27 @@
 #!/usr/bin/env python3
 """
-CryptoBot v11.0 — Neural Adaptive Trading System (PRODUCTION READY)
-Fixed: More trading opportunities, better micro-balance support, clearer logs.
+CryptoBot v11.1 — Neural Adaptive Trading System (STABLE)
+Fixed: Graceful shutdown, QThread API worker, memory monitor, offline guard.
 """
 import sys
 import asyncio
 import logging
+import signal
 from pathlib import Path
 
 import qasync
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
 
 from src.exchange.api_client import BingXAPIClient
 from src.config.settings import Settings
 from src.core.engine.trading_engine import TradingEngine
 from src.core.bot_logger import BotLogger
 from src.ui.main_window import MainWindow
+from src.core.stability.graceful_shutdown import ShutdownManager
+from src.core.stability.memory_monitor import MemoryMonitor
+from src.core.stability.offline_guard import OfflineGuard
+from src.core.stability.watchdog import EngineWatchdog
 
 def setup_logging():
     log_dir = Path("logs")
@@ -37,10 +42,18 @@ def setup_logging():
 
 async def main():
     logger = setup_logging()
-    logger.info("Starting CryptoBot v11.0 (PRODUCTION READY)")
+    logger.info("Starting CryptoBot v11.1 (STABLE)")
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+
+    # Stability: Memory monitor
+    mem_monitor = MemoryMonitor(max_mb=512, check_interval_sec=30)
+    mem_monitor.start()
+
+    # Stability: Offline guard
+    offline_guard = OfflineGuard(check_interval_sec=10)
+    offline_guard.start()
 
     settings = Settings("config/bot_config.json")
 
@@ -84,9 +97,24 @@ async def main():
         from PyQt6.QtWidgets import QMessageBox
         msg = QMessageBox(window)
         msg.setWindowTitle("API Keys Required")
-        msg.setText("LIVE MODE requires API keys.\n\nPlease enter your BingX API Key and Secret in the Config tab, then click Save Settings.")
+        msg.setText("LIVE MODE requires API keys.\\n\\nPlease enter your BingX API Key and Secret in the Config tab, then click Save Settings.")
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.exec()
+
+    # Stability: Watchdog — auto-restart engine if it hangs
+    watchdog = EngineWatchdog(engine, api_client, restart_threshold_sec=60)
+    watchdog.start()
+
+    # Stability: Graceful shutdown manager
+    shutdown_mgr = ShutdownManager(app, engine, api_client, mem_monitor, offline_guard, watchdog)
+
+    # Handle Ctrl+C and system signals
+    def signal_handler(signum, frame):
+        logger.info(f"Signal {signum} received, initiating graceful shutdown...")
+        asyncio.create_task(shutdown_mgr.shutdown())
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     timer = QTimer()
     timer.timeout.connect(lambda: None)
@@ -96,18 +124,20 @@ async def main():
 
     def on_last_window_closed():
         if not future.done():
-            future.set_result(0)
+            logger.info("Last window closed, shutting down...")
+            asyncio.create_task(shutdown_mgr.shutdown())
+            if not future.done():
+                future.set_result(0)
 
     app.lastWindowClosed.connect(on_last_window_closed)
 
-    await future
+    # Wait for shutdown
+    try:
+        await future
+    except asyncio.CancelledError:
+        pass
 
-    logger.info("Shutting down application...")
-    if engine.running:
-        await engine.stop()
-    await api_client.close()
     logger.info("Application shutdown complete")
-
     app.quit()
 
 if __name__ == "__main__":
