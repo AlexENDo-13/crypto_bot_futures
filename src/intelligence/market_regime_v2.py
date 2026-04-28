@@ -8,7 +8,7 @@ import os
 import time
 import logging
 from collections import deque
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import statistics
 
 logger = logging.getLogger("CryptoBot.Regime")
@@ -32,7 +32,7 @@ class MarketRegimeV2:
             try:
                 with open(self.history_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    self._regime_stats = data.get("regime_stats", {})
+                self._regime_stats = data.get("regime_stats", {})
                 logger.info(f"Regime stats loaded: {len(self._regime_stats)} regimes tracked")
             except Exception as e:
                 logger.error(f"Regime load error: {e}")

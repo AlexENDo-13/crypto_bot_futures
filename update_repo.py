@@ -171,8 +171,10 @@ def handle_menu(root):
             input("\n  Нажми Enter...")
         elif choice == "6": print("\n📥 Pulling..."); pull_changes(root); input("\n  Нажми Enter...")
         elif choice == "7": print("\n📦 Stashing..."); stash_changes(root); input("\n  Нажми Enter...")
-        elif choice == "8": print("\n🔗 Setup remote..."); url = input("  URL: ").strip()
-                if url: setup_remote(root, url)
+        elif choice == "8":
+            print("\n🔗 Setup remote...")
+            url = input("  URL: ").strip()
+            if url: setup_remote(root, url)
             input("\n  Нажми Enter...")
         elif choice == "9": os.system("cls" if os.name == "nt" else "clear")
         else: print("\n❌ Invalid choice."); input("  Нажми Enter...")

@@ -52,7 +52,6 @@ class BingXAPIClient:
         self.logger.info(f"API credentials updated (key changed: {old_key != self.api_key})")
         self._circuit_open = False
         self._consecutive_errors = 0
-        # Schedule session close safely
         asyncio.create_task(self._recreate_session())
 
     async def _recreate_session(self):
@@ -185,7 +184,6 @@ class BingXAPIClient:
                     self._adaptive_interval = max(0.02, self._adaptive_interval * 0.95)
                     return data
 
-                # Handle specific error codes
                 if code == 100412:
                     self._consecutive_errors += 1
                     self.logger.error(f"100412 error: {data.get('msg')}")

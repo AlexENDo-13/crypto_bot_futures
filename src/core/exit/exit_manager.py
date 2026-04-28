@@ -1,10 +1,5 @@
 """
 Exit Manager — FIXED: correct position side for closing, emergency close all
-Исправления:
-- Правильное определение направления закрытия (side противоположен позиции)
-- Использование closePosition=true для надежного закрытия
-- Fallback на individual close при bulk close failure
-- Проверка что все позиции закрыты
 """
 import asyncio
 import logging
@@ -76,11 +71,9 @@ class ExitManager:
         activation = self.settings.get("trailing_activation", 1.5) / 100
 
         if position_side == "LONG":
-            # Update highest price
             if pos.current_price > pos.highest_price:
                 pos.highest_price = pos.current_price
 
-            # Check activation
             profit_pct = (pos.current_price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0
             if profit_pct >= activation:
                 trail_price = pos.highest_price * (1 - trail_dist)
@@ -88,7 +81,6 @@ class ExitManager:
                     self.logger.info(f"TRAILING STOP: {pos.symbol} LONG | Highest: {pos.highest_price:.4f} | Trail: {trail_price:.4f} | Current: {pos.current_price:.4f}")
                     await self._close_and_notify(pos, position_side, "trailing_stop", on_position_closed)
         else:
-            # SHORT — update lowest price
             if not hasattr(pos, 'lowest_price'):
                 pos.lowest_price = pos.entry_price
             if pos.current_price < pos.lowest_price:
@@ -129,11 +121,10 @@ class ExitManager:
         """Emergency close all positions — FIXED"""
         self.logger.warning(f"EMERGENCY CLOSE ALL | Positions: {len(positions)}")
 
-        # Method 1: Try individual close for each position
         for symbol, pos in list(positions.items()):
             position_side = "LONG" if pos.side == OrderSide.BUY else "SHORT"
             await self._close_and_notify(pos, position_side, "emergency_close", on_position_closed)
-            await asyncio.sleep(0.5)  # Rate limit protection
+            await asyncio.sleep(0.5)
 
         # Verify all closed
         await asyncio.sleep(2)
