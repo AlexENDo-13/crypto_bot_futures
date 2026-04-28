@@ -1,6 +1,11 @@
 """
-BingX API Client v18.2 — CRITICAL FIX: GET requests now use pre-built query string
-for signature consistency. aiohttp params encoding caused signature mismatch.
+BingX API Client v18.8 — FINAL FIX:
+- POST params in URL query string (body=None)
+- set_leverage uses 'side' param
+- quantity/stopPrice/price as NUMBER in params dict
+- _build_signed_payload converts to str only for signing
+- closePosition as string "true"/"false"
+- No Content-Type header (not needed for empty body)
 """
 import asyncio
 import hashlib
@@ -11,6 +16,7 @@ import logging
 from typing import Dict, List, Optional, Any
 
 import aiohttp
+
 
 class BingXAPIClient:
     def __init__(self, api_key: str = "", api_secret: str = "",
@@ -67,7 +73,7 @@ class BingXAPIClient:
         self._session = None
 
     def _build_signed_payload(self, params: Optional[dict] = None) -> dict:
-        """Build payload with timestamp and recvWindow. All values as strings."""
+        """Build payload with timestamp and recvWindow. All values as strings for signing."""
         payload = {}
         if params:
             for k, v in params.items():
@@ -116,8 +122,6 @@ class BingXAPIClient:
                     if signed:
                         payload = self._build_signed_payload(params)
                         signature, query_string = self._sign_payload(payload)
-                        # CRITICAL FIX: Build full URL with query string manually
-                        # so aiohttp does NOT re-encode params
                         full_url = f"{self.base_url}{endpoint}?{query_string}&signature={signature}"
                         self.logger.debug(f"GET {full_url[:120]}...")
                         async with session.get(full_url, timeout=self._timeout) as response:
@@ -127,7 +131,6 @@ class BingXAPIClient:
                             except:
                                 data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
                     else:
-                        # Unsigned GET — aiohttp can handle params normally
                         url = f"{self.base_url}{endpoint}"
                         async with session.get(url, params=params, timeout=self._timeout) as response:
                             text = await response.text()
@@ -140,18 +143,22 @@ class BingXAPIClient:
                     if signed:
                         payload = self._build_signed_payload(params)
                         signature, query_string = self._sign_payload(payload)
-                        payload["signature"] = signature
-                        body = urllib.parse.urlencode(payload)
+                        full_url = f"{self.base_url}{endpoint}?{query_string}&signature={signature}"
+                        self.logger.debug(f"POST {full_url[:120]}...")
+                        async with session.post(full_url, timeout=self._timeout) as response:
+                            text = await response.text()
+                            try:
+                                data = await response.json(content_type=None)
+                            except:
+                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
                     else:
-                        body = urllib.parse.urlencode(params or {})
-                    url = f"{self.base_url}{endpoint}"
-                    self.logger.debug(f"POST {url} body={body[:100]}...")
-                    async with session.post(url, data=body, timeout=self._timeout) as response:
-                        text = await response.text()
-                        try:
-                            data = await response.json(content_type=None)
-                        except:
-                            data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
+                        url = f"{self.base_url}{endpoint}"
+                        async with session.post(url, params=params, timeout=self._timeout) as response:
+                            text = await response.text()
+                            try:
+                                data = await response.json(content_type=None)
+                            except:
+                                data = {"code": -1, "msg": f"Invalid JSON: {text[:200]}"}
 
                 elif method.upper() == "DELETE":
                     if signed:
@@ -199,7 +206,6 @@ class BingXAPIClient:
                     self.logger.error(f"SIGNATURE MISMATCH on {endpoint}! Attempt {attempt+1}/{retries}")
                     self.logger.error(f"Response: {data}")
                     self.logger.error(f"api_key present: {bool(self.api_key)}, secret_len: {len(self.api_secret)}")
-                    # Debug: show what we signed
                     debug_payload = self._build_signed_payload(params)
                     _, debug_qs = self._sign_payload(debug_payload)
                     self.logger.error(f"Signed query string: {debug_qs}")
@@ -257,8 +263,10 @@ class BingXAPIClient:
     async def get_klines(self, symbol: str, interval: str = "15m", limit: int = 100,
                          start_time: Optional[int] = None, end_time: Optional[int] = None) -> List[Dict[str, Any]]:
         params = {"symbol": symbol, "interval": interval, "limit": limit}
-        if start_time: params["startTime"] = start_time
-        if end_time: params["endTime"] = end_time
+        if start_time:
+            params["startTime"] = start_time
+        if end_time:
+            params["endTime"] = end_time
         response = await self._request("GET", "/openApi/swap/v2/quote/klines", params, signed=False)
         if response.get("code") == 0 and "data" in response:
             return response["data"]
@@ -280,7 +288,8 @@ class BingXAPIClient:
             result = {}
             for item in data if isinstance(data, list) else [data]:
                 sym = item.get("symbol", "")
-                if sym: result[sym] = item
+                if sym:
+                    result[sym] = item
             return result
         return {}
 
@@ -290,7 +299,8 @@ class BingXAPIClient:
         if response.get("code") == 0 and "data" in response:
             for item in response.get("data", []):
                 sym = item.get("symbol", "")
-                if sym: self._symbol_specs[sym] = item
+                if sym:
+                    self._symbol_specs[sym] = item
             return response
         return response
 
@@ -314,7 +324,8 @@ class BingXAPIClient:
 
     async def get_positions(self, symbol: Optional[str] = None) -> list:
         params = {}
-        if symbol: params["symbol"] = symbol
+        if symbol:
+            params["symbol"] = symbol
         response = await self._request("GET", "/openApi/swap/v2/user/positions", params, signed=True)
         if response.get("code") == 0 and "data" in response:
             data = response["data"]
@@ -323,8 +334,9 @@ class BingXAPIClient:
             return data if isinstance(data, list) else []
         return []
 
-    async def set_leverage(self, symbol: str, leverage: int, position_side: str = "BOTH") -> dict:
-        params = {"symbol": symbol, "leverage": leverage, "positionSide": position_side}
+    async def set_leverage(self, symbol: str, leverage: int, side: str = "BOTH") -> dict:
+        """Set leverage. 'side' must be BOTH (one-way) or LONG/SHORT (hedge mode)."""
+        params = {"symbol": symbol, "leverage": leverage, "side": side}
         response = await self._request("POST", "/openApi/swap/v2/trade/leverage", params, signed=True)
         if response.get("code") == 0:
             return response.get("data", {})
@@ -337,15 +349,16 @@ class BingXAPIClient:
 
     async def place_order(self, symbol: str, side: str, position_side: str,
                           order_type: str, quantity: float, price: Optional[float] = None) -> dict:
+        # quantity as NUMBER per BingX swap v2 spec
         params = {
             "symbol": symbol,
             "side": side,
             "positionSide": position_side,
             "type": order_type,
-            "quantity": str(quantity)
+            "quantity": quantity
         }
         if order_type.upper() == "LIMIT" and price:
-            params["price"] = str(price)
+            params["price"] = price
             params["timeInForce"] = "GTC"
         self.logger.info(f"Placing order: {params}")
         response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
@@ -362,11 +375,11 @@ class BingXAPIClient:
             "side": side,
             "positionSide": position_side,
             "type": order_type,
-            "stopPrice": str(stop_price),
+            "stopPrice": stop_price,
             "closePosition": "true" if close_position else "false"
         }
         if quantity is not None and not close_position:
-            params["quantity"] = str(quantity)
+            params["quantity"] = quantity
         response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
         if response.get("code") == 0:
             return response.get("data", {})
@@ -394,12 +407,13 @@ class BingXAPIClient:
 
     async def close_position(self, symbol: str, position_side: str, quantity: str = "0") -> dict:
         side = "SELL" if position_side == "LONG" else "BUY"
+        qty_num = float(quantity) if quantity else 0.0
         params = {
             "symbol": symbol,
             "side": side,
             "positionSide": position_side,
             "type": "MARKET",
-            "quantity": str(quantity),
+            "quantity": qty_num,
             "closePosition": "true" if quantity == "0" else "false"
         }
         response = await self._request("POST", "/openApi/swap/v2/trade/order", params, signed=True)
