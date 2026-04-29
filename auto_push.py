@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""CryptoBot Auto-Pusher v1.1 — One command to update repository.
-Fixed: excludes backups/ folder to avoid 'Filename too long' errors.
+"""CryptoBot Auto-Pusher v1.3 — One command to update repository.
+Fixed: handles git status parsing, uses git add -A with .gitignore for backups.
 """
 import os
 import sys
@@ -46,35 +46,22 @@ def get_branch(root):
     stdout, _, _ = run(["git", "branch", "--show-current"], cwd=root)
     return stdout or "main"
 
-def add_files_safe(root):
-    """Add files excluding backups/ and other junk folders."""
-    # First, remove backups from git index if they were added before
-    run(["git", "rm", "-r", "--cached", "backups/"], cwd=root)
-
-    # Add specific folders instead of -A
-    folders_to_add = [
-        "src/", "config/", "main.py", "requirements.txt",
-        "setup.py", "README.md", "QUICK_START.md",
-        "cleanup_repo.py", "update_repo.py", "auto_push.py", "auto_push.bat"
-    ]
-
-    added = False
-    for folder in folders_to_add:
-        path = root / folder
-        if path.exists():
-            _, stderr, code = run(["git", "add", folder], cwd=root)
-            if code == 0:
-                added = True
-            elif "LF will be replaced by CRLF" in stderr:
-                added = True  # This is just a warning
-
-    if not added:
-        # Fallback: add all but exclude backups
-        _, stderr, code = run(["git", "add", ".", ":!backups/"], cwd=root)
-        if code != 0 and "Filename too long" not in stderr:
-            print(f"   ⚠️ Add warning: {stderr}")
-
-    print("   ✅ Changes added (backups excluded).")
+def ensure_gitignore(root):
+    """Ensure backups/ is in .gitignore"""
+    gitignore = root / ".gitignore"
+    content = ""
+    if gitignore.exists():
+        content = gitignore.read_text(encoding="utf-8")
+    if "backups/" not in content and "backups\\" not in content:
+        with open(gitignore, "a", encoding="utf-8") as f:
+            f.write("\n# Auto-pusher exclusions\n")
+            f.write("backups/\n")
+            f.write("*.bak\n")
+            f.write("*.pyc\n")
+            f.write("__pycache__/\n")
+        print("   📝 Added backups/ to .gitignore")
+        return True
+    return False
 
 def main():
     check_git_installed()
@@ -86,15 +73,24 @@ def main():
 
     branch = get_branch(root)
     print("=" * 60)
-    print("  🚀 CRYPTO BOT AUTO-PUSHER v1.1")
+    print("  🚀 CRYPTO BOT AUTO-PUSHER v1.3")
     print("=" * 60)
     print(f"  📁 Project: {root}")
     print(f"  🌿 Branch:  {branch}")
     print()
 
+    # Ensure .gitignore has backups/
+    print("📝 Checking .gitignore...")
+    if ensure_gitignore(root):
+        print("   ✅ .gitignore updated")
+    else:
+        print("   ✅ .gitignore OK")
+    print()
+
     # Step 1: Check status
     print("📊 Step 1/4: Checking git status...")
     stdout, _, _ = run(["git", "status", "--short"], cwd=root)
+
     if not stdout.strip():
         print("   ✅ No changes to commit.")
         print("\n🚀 Step 4/4: Pushing to GitHub...")
@@ -108,13 +104,19 @@ def main():
         print("=" * 60)
         return 0
 
-    print(f"   📋 Found changes:")
-    for line in stdout.splitlines():
-        print(f"      {line}")
+    print(f"   📋 Git status output:\n{stdout}")
+    print()
 
-    # Step 2: Add all (safe - excludes backups)
-    print("\n➕ Step 2/4: Adding changes (excluding backups)...")
-    add_files_safe(root)
+    # Step 2: Add ALL changes (backups are excluded by .gitignore)
+    print("➕ Step 2/4: Adding all changes...")
+    _, stderr, code = run(["git", "add", "-A"], cwd=root)
+    if code == 0:
+        print("   ✅ All changes added.")
+    elif "LF will be replaced by CRLF" in stderr:
+        print("   ✅ All changes added (with LF warning).")
+    else:
+        print(f"   ⚠️ Add warning: {stderr}")
+        print("   Continuing anyway...")
 
     # Step 3: Commit
     print("\n💾 Step 3/4: Committing...")
@@ -125,6 +127,16 @@ def main():
         print(f"   ✅ Committed: [{h}] {msg}")
     elif "nothing to commit" in (stderr + stdout).lower():
         print("   ℹ️  Nothing to commit.")
+        print("\n🚀 Step 4/4: Pushing to GitHub...")
+        stdout, stderr, code = run(["git", "push", "origin", branch], cwd=root)
+        if code == 0:
+            print("   ✅ Push successful!")
+        else:
+            print(f"   ❌ Push failed: {stderr}")
+        print("\n" + "=" * 60)
+        print("  DONE")
+        print("=" * 60)
+        return 0
     else:
         print(f"   ❌ Commit failed: {stderr}")
         sys.exit(1)

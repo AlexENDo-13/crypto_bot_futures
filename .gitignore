@@ -21,3 +21,9 @@ venv/
 
 !src/ui/pages/config.py
 !src/ui/pages/logs.py
+
+# Auto-pusher exclusions
+backups/
+*.bak
+*.pyc
+__pycache__/
