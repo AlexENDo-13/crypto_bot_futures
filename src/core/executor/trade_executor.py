@@ -59,8 +59,8 @@ class TradeExecutor:
         specs = None
         try:
             specs = self.order_manager.api_client.get_symbol_specs(symbol_formatted)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Suppressed: {e}")
 
         atr_percent = ind.get("atr_percent", 0.5)
         stop_distance = max(atr_percent * 1.5, 0.3)

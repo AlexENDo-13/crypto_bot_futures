@@ -144,8 +144,7 @@ class TerminalUI:
         while self._running:
             self._print_status()
             try:
-                cmd = input("
-> ").strip().lower()
+                cmd = input("> ").strip().lower()
                 self._handle_command(cmd)
             except EOFError:
                 break

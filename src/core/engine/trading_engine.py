@@ -23,6 +23,8 @@ from src.core.risk.risk_manager import RiskManager
 from src.core.risk.risk_controller import RiskController
 from src.core.trading.order_manager import OrderManager
 from src.intelligence.strategy_engine import StrategyEngine
+from src.core.performance_profile import PerformanceProfile
+from src.core.mode_switcher import ModeSwitcher
 
 logger = logging.getLogger("TradingEngine")
 
@@ -77,6 +79,14 @@ class TradingEngine:
         self._balance_fetch_attempts = 0
         self._max_balance_attempts = 10
         self._shutdown_requested = False
+        self.performance_profile.auto_detect()
+        self.performance_profile = PerformanceProfile()
+        self.mode_switcher = ModeSwitcher()
+
+
+
+    def is_running(self) -> bool:
+        return self.running
 
     def _ensure_csv(self):
         if not os.path.exists(self._csv_path):
