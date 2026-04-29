@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """TradingEngine v11.3 — ML-enhanced trading with volatility forecasting and correlation filtering.
 Fixed: asyncio.Lock, symbol format, graceful stop, memory-safe.
+Fixed: performance_profile initialization order (line 82-83 swapped).
 """
 import asyncio
 import time
@@ -79,11 +80,10 @@ class TradingEngine:
         self._balance_fetch_attempts = 0
         self._max_balance_attempts = 10
         self._shutdown_requested = False
-        self.performance_profile.auto_detect()
+        # FIX: initialize BEFORE calling auto_detect()
         self.performance_profile = PerformanceProfile()
+        self.performance_profile.auto_detect()
         self.mode_switcher = ModeSwitcher()
-
-
 
     def is_running(self) -> bool:
         return self.running
@@ -442,7 +442,7 @@ class TradingEngine:
                     opt_sl, opt_tp = self.strategy_engine.optimizer.get_recommended_sl_tp(ind.get("atr_percent"))
                     sl_pct = opt_sl
                     tp_pct = opt_tp
-                self.logger.info(f"OPTIMIZED SL/TP: SL={sl_pct:.2f}% TP={tp_pct:.2f}%")
+                    self.logger.info(f"OPTIMIZED SL/TP: SL={sl_pct:.2f}% TP={tp_pct:.2f}%")
 
                 vol_adj = self.strategy_engine.get_vol_adjustment(sym)
                 if vol_adj != 1.0:
