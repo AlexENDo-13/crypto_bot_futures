@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MainWindow v11.1 — FIXED: emergency close side, syntax error"""
 import asyncio
+from src.core.trading.position import OrderSide
 import logging
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -680,9 +681,8 @@ class MainWindow(QMainWindow):
     async def _do_emergency_close(self):
         for sym, pos in list(self.engine.positions.items()):
             try:
-                await self.engine.trade_executor.close_position_async(
-                    symbol=sym,
-                    position_side=pos.side,
+                await self.engine.trade_executor.close_position_async(symbol=sym,
+                    position_side=("LONG" if pos.side == OrderSide.BUY else "SHORT"),
                     quantity=pos.quantity,
                 )
                 logger.info(f"Emergency closed {sym}")
