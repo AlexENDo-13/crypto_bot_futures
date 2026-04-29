@@ -33,6 +33,7 @@ test_keys.py
 test_bingx_api.py
 bingx_api_test.py
 test_signature.py
+project_base64.txt
 
 # Запрещённые файлы с ключами
 test_keys.py

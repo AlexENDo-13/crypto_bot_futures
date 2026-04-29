@@ -1,92 +1,99 @@
-#!/usr/bin/env python3
 """
-Автоматический пуш текущих изменений на GitHub.
-Использует git через subprocess, дополнительные библиотеки НЕ нужны.
-Запуск: python push_to_github.py [-m "сообщение коммита"] [-b ветка]
+Auto Push v2.1 – безопасная отправка в GitHub с авто-датой.
+Запустите: python auto_push.py [-m "сообщение"] [--branch main]
 """
 
 import subprocess
 import sys
-import argparse
+import os
+from datetime import datetime
 
-def run_git(cmd: list, cwd: str = "."):
-    """Выполняет git-команду и возвращает stdout или печатает ошибку."""
+# Файлы, которые категорически запрещено отправлять
+FORBIDDEN_FILES = [
+    "test_keys.py",
+    "test_bingx_api.py",
+    "bingx_api_test.py",
+    "test_signature.py",
+    "project_base64.txt",
+]
+
+def run_git(command, cwd=".", capture_output=True):
+    """Выполняет git-команду и возвращает returncode, stdout, stderr."""
     try:
-        res = subprocess.run(
-            ["git"] + cmd,
-            cwd=cwd,
-            capture_output=True,
+        result = subprocess.run(
+            ["git"] + command,
+            capture_output=capture_output,
             text=True,
-            check=False
+            cwd=cwd,
+            encoding="utf-8",
+            errors="replace"
         )
-        if res.returncode != 0:
-            print(f"❌ Ошибка git {' '.join(cmd)}: {res.stderr.strip()}")
-            return None
-        return res.stdout.strip()
-    except FileNotFoundError:
-        print("❌ Git не найден. Убедитесь, что git установлен и доступен в PATH.")
-        sys.exit(1)
+        return result.returncode, result.stdout, result.stderr
+    except Exception as e:
+        print(f"Ошибка запуска git: {e}")
+        return 1, "", str(e)
+
+def check_forbidden_files():
+    """Проверяет, есть ли в рабочем каталоге запрещённые файлы."""
+    found = [f for f in FORBIDDEN_FILES if os.path.exists(f)]
+    if found:
+        print("❌ ОБНАРУЖЕНЫ ЗАПРЕЩЁННЫЕ ФАЙЛЫ:")
+        for f in found:
+            print(f"   - {f}")
+        print("Удалите их или переместите за пределы репозитория перед коммитом.")
+        return False
+    return True
+
+def get_auto_message():
+    """Генерирует сообщение коммита по текущей дате и времени."""
+    now = datetime.now()
+    return f"Auto-update {now.strftime('%Y-%m-%d %H:%M')}"
 
 def main():
-    parser = argparse.ArgumentParser(description="Быстрый пуш изменений в GitHub")
-    parser.add_argument("-m", "--message", default="Auto-update from notebook",
-                        help="Сообщение коммита")
-    parser.add_argument("-b", "--branch", default=None,
-                        help="Ветка для пуша (по умолчанию — текущая)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Только показать, что будет запушено, без реальных действий")
+    import argparse
+    parser = argparse.ArgumentParser(description="Безопасная отправка в GitHub с авто-сообщением")
+    parser.add_argument("-m", "--message", default=None, help="Сообщение коммита (если не указано – генерируется автоматически)")
+    parser.add_argument("--branch", default="main", help="Ветка для пуша (по умолчанию main)")
     args = parser.parse_args()
 
-    # 1. Проверяем, есть ли неприменённые изменения
-    status = run_git(["status", "--porcelain"])
-    if status is None:
-        print("❌ Не удалось проверить статус репозитория.")
-        sys.exit(1)
-    if not status:
-        print("✅ Нет изменений для коммита — всё уже актуально.")
-        return
+    message = args.message if args.message else get_auto_message()
 
-    # 2. Определяем текущую ветку, если не задана явно
-    if not args.branch:
-        current_branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"])
-        if not current_branch:
-            print("❌ Не удалось определить текущую ветку.")
-            sys.exit(1)
-        args.branch = current_branch
-        print(f"ℹ️  Текущая ветка: {args.branch}")
-
-    if args.dry_run:
-        print("🔍 Dry-run: будут выполнены следующие команды:")
-        print(f"  git add -A")
-        print(f"  git commit -m \"{args.message}\"")
-        print(f"  git push origin {args.branch}")
-        print("Изменённые файлы:")
-        print(status)
-        return
-
-    # 3. Добавляем все изменения
-    add_out = run_git(["add", "-A"])
-    if add_out is None:
+    # Проверка, что находимся в git-репозитории
+    ret, _, _ = run_git(["rev-parse", "--is-inside-work-tree"])
+    if ret != 0:
+        print("❌ Текущая папка не является Git-репозиторием.")
         sys.exit(1)
 
-    # 4. Коммит
-    commit_out = run_git(["commit", "-m", args.message])
-    if commit_out is None:
-        # Если ошибка "nothing to commit", это не страшно
-        if "nothing to commit" in (run_git(["status"]) or ""):
-            print("✅ Изменений для коммита нет.")
+    # Проверка на запрещённые файлы
+    if not check_forbidden_files():
+        sys.exit(1)
+
+    # Добавляем все изменения
+    print("[1/3] git add -A ...")
+    ret, out, err = run_git(["add", "-A"])
+    if ret != 0:
+        print(f"❌ Ошибка git add: {err}")
+        sys.exit(1)
+
+    # Коммит
+    print(f"[2/3] Коммит: \"{message}\"")
+    ret, out, err = run_git(["commit", "-m", message])
+    if ret != 0:
+        if "nothing to commit" in (out + err).lower():
+            print("⚠️  Нечего коммитить. Пуш не требуется.")
+            sys.exit(0)
         else:
+            print(f"❌ Ошибка коммита: {err}")
             sys.exit(1)
-    else:
-        print(f"✅ Коммит создан: \"{args.message}\"")
 
-    # 5. Пуш
-    print(f"🚀 Отправка изменений в origin/{args.branch}...")
-    push_out = run_git(["push", "origin", args.branch])
-    if push_out is None:
-        print("❌ Не удалось выполнить push. Возможно, нет прав или нужен pull.")
+    # Пуш
+    print(f"[3/3] Пуш в origin/{args.branch} ...")
+    ret, out, err = run_git(["push", "origin", args.branch])
+    if ret != 0:
+        print(f"❌ Ошибка пуша: {err}")
         sys.exit(1)
-    print("🎉 Готово! Изменения успешно отправлены на GitHub.")
+
+    print("✅ Успешно отправлено на GitHub!")
 
 if __name__ == "__main__":
     main()
