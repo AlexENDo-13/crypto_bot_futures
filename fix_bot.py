@@ -1,41 +1,52 @@
 #!/usr/bin/env python3
 """
-Исправление ошибки side → position_side в вызовах close_position_async.
-Улучшенный поиск: учитывает вызовы от объектов, многострочность.
+Ищет файл trade_executor.py (или любой .py с методом close_position) и исправляет
+метод close_position — добавляет конвертацию side в position_side.
 """
 
 import re
 from pathlib import Path
 
-def fix_side_arg(root_dir="."):
-    changed = []
-    # Ищем: всё что угодно, потом ".close_position_async(" или просто "close_position_async(",
-    # дальше любые символы (в том числе переносы строк) до первой "side" с необязательными пробелами и "=".
-    # Заменяем "side" на "position_side" внутри этих вызовов.
-    pattern = re.compile(
-        r'(\.?\s*close_position_async\s*\((?:(?!\bside\s*=).)*?)\bside\s*(=)',
-        re.DOTALL
-    )
-    for py_file in Path(root_dir).rglob("*.py"):
-        if any(p.startswith('.') or p in ('venv','env','__pycache__','.git') for p in py_file.parts):
+def find_trade_executor(root="."):
+    """
+    Ищет файл, содержащий одновременно 'def close_position' и 'close_position_async'.
+    Возвращает первый подходящий путь.
+    """
+    for py_file in Path(root).rglob("*.py"):
+        if any(part.startswith('.') or part in ('venv','env','__pycache__','.git') for part in py_file.parts):
             continue
         try:
             content = py_file.read_text(encoding="utf-8")
         except:
             continue
-        if 'close_position_async' not in content:
-            continue
-        new_content, n = pattern.subn(r'\1position_side\2', content)
-        if n > 0:
-            py_file.write_text(new_content, encoding="utf-8")
-            changed.append((str(py_file), n))
-            print(f"  ✅ {py_file}: {n} замен(ы)")
-    return changed
+        if "def close_position" in content and "close_position_async" in content:
+            return py_file
+    return None
 
-if __name__ == "__main__":
-    print("🔍 Расширенный поиск ошибки position_side= в close_position_async...")
-    changes = fix_side_arg()
-    if not changes:
-        print("ℹ️  Файлы не найдены. Проверьте вручную вызовы вида: await obj.close_position_async(symbol, position_side='...')")
-    else:
-        print(f"\n🎯 Исправлено файлов: {len(changes)}")
+def fix_close_position_method(filepath):
+    path = Path(filepath)
+    content = path.read_text(encoding="utf-8")
+
+    # Ищем метод close_position (синхронная обёртка)
+    # Ожидаем что-то вроде:
+    # def close_position(self, symbol, side, quantity=None):
+        """
+        Закрыть позицию (синхронная обертка). Поддерживает side как BUY/SELL
+        или LONG/SHORT. Конвертирует BUY/SELL в соответствующее position_side.
+        """
+        # Конвертация side (направление ордера) в position_side (сторона позиции)
+        if side == "BUY":
+            position_side = "SHORT"
+        elif side == "SELL":
+            position_side = "LONG"
+        else:
+            position_side = side  # уже LONG или SHORT
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(self.close_position_async(symbol, position_side, quantity))
+            else:
+                loop.run_until_complete(self.close_position_async(symbol, position_side, quantity))
+        except Exception as e:
+            self.logger.error(f"Close position error: {e}")
