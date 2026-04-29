@@ -165,7 +165,6 @@ class MarketScanner:
             self.empty_scans_count += 1
             return []
 
-        # Priority: sort by estimated volume (if available), then shuffle remainder
         symbols_to_scan.sort(key=lambda x: float(x[1].get("volume24h", x[1].get("quoteVolume", 0)) or 0), reverse=True)
         top_vol = symbols_to_scan[:self._symbols_per_scan]
         rest = symbols_to_scan[self._symbols_per_scan:]
@@ -206,8 +205,8 @@ class MarketScanner:
             self.empty_scans_count = 0
             self.successful_scans_count += 1
             candidates.sort(key=lambda x: x["indicators"].get("signal_strength", 0) *
-                                         x["indicators"].get("adx", 0) *
-                                         x["indicators"].get("atr_percent", 0), reverse=True)
+                                       x["indicators"].get("adx", 0) *
+                                       x["indicators"].get("atr_percent", 0), reverse=True)
             top = candidates[:5]
             self.logger.info(f"FOUND {len(candidates)} signals, top-{len(top)}:")
             for i, c in enumerate(top[:3], 1):
@@ -217,7 +216,7 @@ class MarketScanner:
                                  f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
                                  f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | "
                                  f"MTF={ind.get('mtf_agreement',0)}/{ind.get('mtf_total',0)} | {details}")
-        self._scan_stats = {"total": filtered_count["total"], "passed": filtered_count["passed"], "by_filter": filtered_count}
+            self._scan_stats = {"total": filtered_count["total"], "passed": filtered_count["passed"], "by_filter": filtered_count}
         return top if candidates else []
 
     async def _analyze_symbol(self, symbol, filtered_count):
@@ -314,7 +313,6 @@ class MarketScanner:
                     self.logger.debug(f"MTF error {symbol} {tf}: {e}")
                     continue
 
-        # RELAXED MTF: if no MTF data available, allow signal
         effective_mtf_required = self.mtf_required if mtf_total > 0 else 0
         if mtf_total > 0 and mtf_score < effective_mtf_required:
             filtered_count["mtf_reject"] += 1
@@ -345,7 +343,8 @@ class MarketScanner:
                        f"Details: {', '.join(signal_details[:4])}")
         self.logger.info(explanation)
         filtered_count["passed"] += 1
-        return {"symbol": symbol, "indicators": indicators, "ticker": ticker}
+        # FIX: Add current_price to candidate for trade_executor
+        return {"symbol": symbol, "indicators": indicators, "ticker": ticker, "current_price": last_price}
 
     def get_scan_stats(self):
         return {
