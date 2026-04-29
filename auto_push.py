@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""CryptoBot Auto-Pusher v1.0 — One command to update repository."""
+"""CryptoBot Auto-Pusher v1.1 — One command to update repository.
+Fixed: excludes backups/ folder to avoid 'Filename too long' errors.
+"""
 import os
 import sys
 import shutil
@@ -44,6 +46,36 @@ def get_branch(root):
     stdout, _, _ = run(["git", "branch", "--show-current"], cwd=root)
     return stdout or "main"
 
+def add_files_safe(root):
+    """Add files excluding backups/ and other junk folders."""
+    # First, remove backups from git index if they were added before
+    run(["git", "rm", "-r", "--cached", "backups/"], cwd=root)
+
+    # Add specific folders instead of -A
+    folders_to_add = [
+        "src/", "config/", "main.py", "requirements.txt",
+        "setup.py", "README.md", "QUICK_START.md",
+        "cleanup_repo.py", "update_repo.py", "auto_push.py", "auto_push.bat"
+    ]
+
+    added = False
+    for folder in folders_to_add:
+        path = root / folder
+        if path.exists():
+            _, stderr, code = run(["git", "add", folder], cwd=root)
+            if code == 0:
+                added = True
+            elif "LF will be replaced by CRLF" in stderr:
+                added = True  # This is just a warning
+
+    if not added:
+        # Fallback: add all but exclude backups
+        _, stderr, code = run(["git", "add", ".", ":!backups/"], cwd=root)
+        if code != 0 and "Filename too long" not in stderr:
+            print(f"   ⚠️ Add warning: {stderr}")
+
+    print("   ✅ Changes added (backups excluded).")
+
 def main():
     check_git_installed()
     root = get_project_root()
@@ -54,7 +86,7 @@ def main():
 
     branch = get_branch(root)
     print("=" * 60)
-    print("  🚀 CRYPTO BOT AUTO-PUSHER v1.0")
+    print("  🚀 CRYPTO BOT AUTO-PUSHER v1.1")
     print("=" * 60)
     print(f"  📁 Project: {root}")
     print(f"  🌿 Branch:  {branch}")
@@ -80,14 +112,9 @@ def main():
     for line in stdout.splitlines():
         print(f"      {line}")
 
-    # Step 2: Add all
-    print("\n➕ Step 2/4: Adding all changes...")
-    _, stderr, code = run(["git", "add", "-A"], cwd=root, check=True)
-    if code == 0:
-        print("   ✅ All changes added.")
-    else:
-        print(f"   ❌ Add failed: {stderr}")
-        sys.exit(1)
+    # Step 2: Add all (safe - excludes backups)
+    print("\n➕ Step 2/4: Adding changes (excluding backups)...")
+    add_files_safe(root)
 
     # Step 3: Commit
     print("\n💾 Step 3/4: Committing...")

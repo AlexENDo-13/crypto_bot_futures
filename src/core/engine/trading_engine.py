@@ -422,9 +422,9 @@ class TradingEngine:
                 sym = candidate.get("symbol", "")
 
                 self.logger.info(f"ATTEMPT ENTRY: {sym} {ind.get('signal_direction')} | "
-                    f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
-                    f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | "
-                    f"Type={ind.get('entry_type','mixed')} | CONF={conf:.0f}%")
+                                 f"ADX={ind.get('adx',0):.1f} | ATR={ind.get('atr_percent',0):.2f}% | "
+                                 f"Sig={ind.get('signal_strength',0):.2f} | RSI={ind.get('rsi',0):.1f} | "
+                                 f"Type={ind.get('entry_type','mixed')} | CONF={conf:.0f}%")
 
                 sl_pct = self.settings.get("default_sl_pct", 1.5)
                 tp_pct = self.settings.get("default_tp_pct", 3.0)
@@ -432,7 +432,7 @@ class TradingEngine:
                     opt_sl, opt_tp = self.strategy_engine.optimizer.get_recommended_sl_tp(ind.get("atr_percent"))
                     sl_pct = opt_sl
                     tp_pct = opt_tp
-                    self.logger.info(f"OPTIMIZED SL/TP: SL={sl_pct:.2f}% TP={tp_pct:.2f}%")
+                self.logger.info(f"OPTIMIZED SL/TP: SL={sl_pct:.2f}% TP={tp_pct:.2f}%")
 
                 vol_adj = self.strategy_engine.get_vol_adjustment(sym)
                 if vol_adj != 1.0:
@@ -448,10 +448,10 @@ class TradingEngine:
                 if pos:
                     async with self._lock:
                         self.positions[pos.symbol] = pos
-                    self.risk_controller.register_position_open(pos.symbol)
-                    self.logger.info(f"SUCCESS: Position opened {pos.symbol} {pos.side.value} | "
-                        f"Entry={pos.entry_price:.4f} | Qty={pos.quantity:.6f} | "
-                        f"SL={pos.stop_loss_price:.4f} | TP={pos.take_profit_price:.4f}")
+                        self.risk_controller.register_position_open(pos.symbol)
+                        self.logger.info(f"SUCCESS: Position opened {pos.symbol} {pos.side.value} | "
+                                         f"Entry={pos.entry_price:.4f} | Qty={pos.quantity:.6f} | "
+                                         f"SL={pos.stop_loss_price:.4f} | TP={pos.take_profit_price:.4f}")
                 else:
                     self.logger.warning(f"FAILED: Trade returned None for {sym}")
             except Exception as e:
@@ -460,37 +460,35 @@ class TradingEngine:
         self.logger.info("=" * 50)
 
     def get_stats(self) -> dict:
-        async def _get():
-            async with self._lock:
-                total_pnl = sum(p["realized_pnl"] for p in self.closed_positions)
-                win_rate = (self._winning_trades / self._total_trades * 100) if self._total_trades > 0 else 0
-                uptime = time.time() - self._start_time
-                return {
-                    "balance": self.balance,
-                    "start_balance": self.start_balance,
-                    "positions_count": len(self.positions),
-                    "daily_pnl": self.daily_pnl,
-                    "weekly_pnl": self.weekly_pnl,
-                    "total_trades": self._total_trades,
-                    "winning_trades": self._winning_trades,
-                    "win_rate": win_rate,
-                    "total_pnl": total_pnl,
-                    "api_latency_ms": self._api_latency_ms,
-                    "last_error": self._last_error,
-                    "health_status": self._health_status,
-                    "uptime_seconds": uptime,
-                    "loop_count": self._loop_count,
-                    "risk_stats": self.risk_manager.get_daily_stats(),
-                    "risk_controller_stats": self.risk_controller.get_stats(),
-                    "strategy_stats": self.strategy_engine.get_recent_performance(),
-                    "scan_result_count": len(self._last_scan_result),
-                    "scan_stats": self.market_scanner.get_scan_stats(),
-                    "fetch_health": self.data_fetcher.get_fetch_health(),
-                    "adaptive_interval": self._adaptive_scan_interval,
-                    "api_health": self.api_client.get_health(),
-                }
+        """Get engine stats synchronously - no async needed"""
         try:
-            return asyncio.get_event_loop().run_until_complete(_get())
+            total_pnl = sum(p["realized_pnl"] for p in self.closed_positions)
+            win_rate = (self._winning_trades / self._total_trades * 100) if self._total_trades > 0 else 0
+            uptime = time.time() - self._start_time
+            return {
+                "balance": self.balance,
+                "start_balance": self.start_balance,
+                "positions_count": len(self.positions),
+                "daily_pnl": self.daily_pnl,
+                "weekly_pnl": self.weekly_pnl,
+                "total_trades": self._total_trades,
+                "winning_trades": self._winning_trades,
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "api_latency_ms": self._api_latency_ms,
+                "last_error": self._last_error,
+                "health_status": self._health_status,
+                "uptime_seconds": uptime,
+                "loop_count": self._loop_count,
+                "risk_stats": self.risk_manager.get_daily_stats(),
+                "risk_controller_stats": self.risk_controller.get_stats(),
+                "strategy_stats": self.strategy_engine.get_recent_performance(),
+                "scan_result_count": len(self._last_scan_result),
+                "scan_stats": self.market_scanner.get_scan_stats(),
+                "fetch_health": self.data_fetcher.get_fetch_health(),
+                "adaptive_interval": self._adaptive_scan_interval,
+                "api_health": self.api_client.get_health(),
+            }
         except Exception:
             return {}
 
