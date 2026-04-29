@@ -3,6 +3,7 @@
 """TradingEngine v11.3 — ML-enhanced trading with volatility forecasting and correlation filtering.
 Fixed: asyncio.Lock, symbol format, graceful stop, memory-safe.
 Fixed: performance_profile initialization order (line 82-83 swapped).
+Fixed: Added detailed logging in start() and timeout guards.
 """
 import asyncio
 import time
@@ -102,29 +103,45 @@ class TradingEngine:
         self.logger.info("Starting TradingEngine v11.3 (ML-ENHANCED)...")
 
         for attempt in range(self._max_balance_attempts):
+            self.logger.info(f"[START] Fetching balance (attempt {attempt + 1}/{self._max_balance_attempts})...")
             try:
-                bal_info = await self.risk_manager.get_account_balance()
+                bal_info = await asyncio.wait_for(
+                    self.risk_manager.get_account_balance(),
+                    timeout=15.0
+                )
                 self.balance = bal_info.get("total_equity", 0)
                 self.start_balance = self.balance
                 if self.balance > 0:
-                    self.logger.info(f"Balance loaded: {self.balance:.4f} USDT")
+                    self.logger.info(f"[START] Balance loaded: {self.balance:.4f} USDT")
                     self._balance_fetch_failures = 0
                     break
                 else:
-                    self.logger.warning(f"Balance = 0 (attempt {attempt + 1}/{self._max_balance_attempts})")
+                    self.logger.warning(f"[START] Balance = 0 (attempt {attempt + 1}/{self._max_balance_attempts})")
                     if attempt < self._max_balance_attempts - 1:
                         await asyncio.sleep(min(2 ** attempt, 15))
+            except asyncio.TimeoutError:
+                self.logger.error(f"[START] Balance fetch TIMEOUT (attempt {attempt + 1})")
+                if attempt < self._max_balance_attempts - 1:
+                    await asyncio.sleep(min(2 ** attempt, 15))
             except Exception as e:
-                self.logger.error(f"Balance error (attempt {attempt + 1}/{self._max_balance_attempts}): {e}")
+                self.logger.error(f"[START] Balance error (attempt {attempt + 1}/{self._max_balance_attempts}): {e}")
                 if attempt < self._max_balance_attempts - 1:
                     await asyncio.sleep(min(2 ** attempt, 15))
 
         if self.balance <= 0:
-            self.logger.warning("Balance not received. Running in monitoring mode. Trading disabled.")
+            self.logger.warning("[START] Balance not received. Running in monitoring mode. Trading disabled.")
 
-        await self._sync_positions()
+        self.logger.info("[START] Syncing positions with exchange...")
+        try:
+            await asyncio.wait_for(self._sync_positions(), timeout=20.0)
+            self.logger.info(f"[START] Positions synced: {len(self.positions)} open positions")
+        except asyncio.TimeoutError:
+            self.logger.error("[START] Position sync TIMEOUT — continuing without sync")
+        except Exception as e:
+            self.logger.error(f"[START] Position sync error: {e}")
+
         self._task = asyncio.create_task(self._main_loop())
-        self.logger.info("Engine started — self-healing + learning + ML active")
+        self.logger.info("[START] Engine started — self-healing + learning + ML active")
 
     async def stop(self):
         if self._shutdown_requested:
@@ -151,12 +168,17 @@ class TradingEngine:
 
                 if self.balance <= 0:
                     try:
-                        bal_info = await self.risk_manager.get_account_balance()
+                        bal_info = await asyncio.wait_for(
+                            self.risk_manager.get_account_balance(),
+                            timeout=10.0
+                        )
                         new_balance = bal_info.get("total_equity", 0)
                         if new_balance > 0:
                             self.balance = new_balance
                             self.start_balance = new_balance
                             self.logger.info(f"Balance recovered: {self.balance:.4f} USDT")
+                    except asyncio.TimeoutError:
+                        self.logger.debug("Balance fetch retry TIMEOUT")
                     except Exception as e:
                         self.logger.debug(f"Balance fetch retry error: {e}")
 
@@ -167,7 +189,9 @@ class TradingEngine:
                     (self._check_exits, "exits"),
                 ]:
                     try:
-                        await operation()
+                        await asyncio.wait_for(operation(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        self.logger.warning(f"{name} operation TIMEOUT")
                     except asyncio.CancelledError:
                         return
                     except Exception as e:
@@ -179,9 +203,14 @@ class TradingEngine:
                 if now - self.last_scan_time >= self._adaptive_scan_interval:
                     self.last_scan_time = now
                     try:
-                        await self._scan_and_trade()
+                        await asyncio.wait_for(self._scan_and_trade(), timeout=120.0)
                         self._consecutive_scan_errors = 0
                         self._api_error_streak = max(0, self._api_error_streak - 1)
+                    except asyncio.TimeoutError:
+                        self.logger.error("Scan and trade TIMEOUT")
+                        self._consecutive_scan_errors += 1
+                        self._api_error_streak += 1
+                        self._adaptive_scan_interval = min(300, self._adaptive_scan_interval * 1.5)
                     except asyncio.CancelledError:
                         return
                     except Exception as e:

@@ -1,4 +1,4 @@
-"""BingX API Client v2/v3 — Fixed signature, correct endpoints."""
+"""BingX API Client v2/v3 — Fixed signature, correct endpoints, POST query string fix."""
 import hmac, hashlib, time, json, logging, asyncio
 from typing import Dict, Any, Optional, List
 import aiohttp
@@ -35,8 +35,12 @@ class BingXAPIClient:
         signature = self._generate_signature(payload)
         params["signature"] = signature
         url = f"{self.base_url}{endpoint}"
-        if method.upper() == "GET" and params:
-            url += "?" + self._build_params(params) + f"&signature={signature}"
+
+        # FIX: For ALL requests (GET and POST), timestamp and signature must be in query string
+        query_string = self._build_params(params) + f"&signature={signature}"
+        if query_string:
+            url += "?" + query_string
+
         headers = {"X-BX-APIKEY": self.api_key, "Content-Type": "application/json"}
         session = await self._get_session()
         for attempt in range(retries):
@@ -51,6 +55,7 @@ class BingXAPIClient:
                         result = json.loads(text)
                 if result.get("code") not in (0, None, 200):
                     logger.warning(f"API error {result.get('code')}: {result.get('msg')}")
+                    return result
                 return result
             except aiohttp.ClientError as e:
                 if attempt == retries - 1:
@@ -59,6 +64,7 @@ class BingXAPIClient:
             except json.JSONDecodeError as e:
                 logger.error(f"JSON decode error: {e}, raw: {text[:200]}")
                 raise
+        return {}
 
     async def get_account_balance(self) -> Dict[str, Any]:
         result = await self.request("GET", "/openApi/swap/v2/user/balance")
@@ -72,8 +78,16 @@ class BingXAPIClient:
     async def get_positions(self, symbol: Optional[str] = None) -> List[Dict]:
         params = {"symbol": symbol} if symbol else {}
         result = await self.request("GET", "/openApi/swap/v2/user/positions", params=params)
-        data = result.get("data", [])
-        return data if isinstance(data, list) else []
+        data = result.get("data", {})
+        # FIX: Handle both {"data": [...]} and {"data": {"positions": [...]}}
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            positions = data.get("positions", [])
+            if isinstance(positions, list):
+                return positions
+            return []
+        return []
 
     async def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict]:
         params = {"symbol": symbol} if symbol else {}
