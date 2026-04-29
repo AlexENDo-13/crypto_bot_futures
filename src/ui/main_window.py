@@ -682,7 +682,7 @@ class MainWindow(QMainWindow):
             try:
                 await self.engine.trade_executor.close_position_async(
                     symbol=sym,
-                    side=pos.side,
+                    position_side=pos.side,
                     quantity=pos.quantity,
                 )
                 logger.info(f"Emergency closed {sym}")
