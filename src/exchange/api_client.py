@@ -1,195 +1,169 @@
-#!/usr/bin/env python3
-"""BingX API Client v2 — Fixed asyncio loop handling."""
+"""BingX API Client v2 with fixed signature."""
 import asyncio
-import aiohttp
-import hmac
 import hashlib
+import hmac
+import json
 import time
-import logging
-from typing import Dict, Any, Optional
-from urllib.parse import urlencode
+from typing import Dict, Any, Optional, List
+import aiohttp
 
-logger = logging.getLogger("BingXAPI")
 
 class BingXAPIClient:
-    BASE_URL = "https://open-api.bingx.com"
-    
-    def __init__(self, api_key: str, api_secret: str):
+    """BingX API клиент с исправленной подписью.
+
+    Критическое исправление: apiKey только в заголовке X-BX-APIKEY,
+    НЕ в query string и НЕ в подписи.
+    """
+
+    def __init__(self, api_key: str, api_secret: str, base_url: str = "https://open-api.bingx.com"):
         self.api_key = api_key
         self.api_secret = api_secret
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._lock = asyncio.Lock()
-    
+        self.base_url = base_url.rstrip("/")
+        self.session: Optional[aiohttp.ClientSession] = None
+
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Lazy session creation in correct event loop."""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers={"X-BX-APIKEY": self.api_key}
-            )
-        return self._session
-    
-    def _generate_signature(self, params: Dict[str, Any]) -> str:
-        """Generate HMAC SHA256 signature for BingX v2."""
-        query_string = urlencode(sorted(params.items()))
-        signature = hmac.new(
-            self.api_secret.encode('utf-8'),
-            query_string.encode('utf-8'),
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
+
+    def _sign(self, payload: str) -> str:
+        """Создаёт HMAC-SHA256 подпись."""
+        return hmac.new(
+            self.api_secret.encode("utf-8"),
+            payload.encode("utf-8"),
             hashlib.sha256
         ).hexdigest()
-        return signature
-    
-    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None, signed: bool = True) -> Dict[str, Any]:
-        """Make authenticated request to BingX API."""
-        params = params or {}
-        params["timestamp"] = int(time.time() * 1000)
-        
-        if signed:
-            params["signature"] = self._generate_signature(params)
-        
-        url = f"{self.BASE_URL}{endpoint}"
-        
+
+    async def _request(self, method: str, endpoint: str, params: Optional[Dict] = None,
+                       data: Optional[Dict] = None, signed: bool = False) -> Dict[str, Any]:
+        session = await self._get_session()
+        url = f"{self.base_url}{endpoint}"
+        headers = {}
+
+        if params is None:
+            params = {}
+
+        if signed and self.api_key:
+            params["timestamp"] = int(time.time() * 1000)
+            # Сортируем параметры для стабильной подписи
+            sorted_params = sorted(params.items())
+            query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
+            signature = self._sign(query_string)
+            params["signature"] = signature
+            headers["X-BX-APIKEY"] = self.api_key
+
         try:
-            session = await self._get_session()
-            
-            if method == "GET":
-                async with session.get(url, params=params) as response:
-                    data = await response.json()
-            elif method == "POST":
-                async with session.post(url, data=params) as response:
-                    data = await response.json()
-            else:
-                raise ValueError(f"Unsupported method: {method}")
-            
-            if data.get("code") != 0:
-                logger.error(f"API error: {data}")
-            return data
-            
-        except Exception as e:
-            logger.error(f"Request error: {e}")
-            return {"code": -1, "msg": str(e)}
-    
+            async with session.request(method, url, params=params, json=data, headers=headers, timeout=30) as resp:
+                text = await resp.text()
+                try:
+                    result = json.loads(text)
+                except json.JSONDecodeError:
+                    result = {"code": -1, "msg": text}
+
+                if result.get("code") not in (0, None, 200):
+                    raise Exception(f"BingX API error {result.get('code')}: {result.get('msg')}")
+                return result.get("data", result)
+        except aiohttp.ClientError as e:
+            raise Exception(f"Request failed: {e}")
+
     async def get_account_balance(self) -> Dict[str, Any]:
-        """Get futures account balance."""
-        result = await self._request("GET", "/openApi/v2/account/balance", signed=True)
-        
-        if result.get("code") == 0:
-            data = result.get("data", {})
-            # Handle nested dict structure
-            if isinstance(data, dict) and "balance" in data:
-                balance_data = data["balance"]
-                if isinstance(balance_data, dict):
-                    return {
-                        "total_equity": float(balance_data.get("balance", 0)),
-                        "available_balance": float(balance_data.get("availableMargin", 0)),
-                        "used": float(balance_data.get("usedMargin", 0)),
-                        "equity": float(balance_data.get("equity", 0)),
-                        "unrealizedProfit": float(balance_data.get("unrealizedProfit", 0))
-                    }
-            # Fallback for direct values
-            return {
-                "total_equity": float(data.get("balance", data.get("totalEquity", 0))),
-                "available_balance": float(data.get("availableMargin", data.get("available", 0))),
-                "used": float(data.get("usedMargin", 0)),
-                "equity": float(data.get("equity", 0)),
-                "unrealizedProfit": float(data.get("unrealizedProfit", 0))
-        }
-        return {"total_equity": 0, "available_balance": 0, "used": 0, "equity": 0}
-    
-    async def get_positions(self, symbol: Optional[str] = None) -> list:
-        """Get open positions."""
+        return await self._request("GET", "/openApi/swap/v2/user/balance", signed=True)
+
+    async def get_positions(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         params = {}
         if symbol:
             params["symbol"] = symbol
-        
-        result = await self._request("GET", "/openApi/v2/position", params=params, signed=True)
-        if result.get("code") == 0:
-            data = result.get("data", [])
-            return data if isinstance(data, list) else [data] if data else []
-        return []
-    
-    async def get_symbol_specs(self, symbol: str) -> Dict[str, Any]:
-        """Get symbol specifications."""
-        result = await self._request("GET", "/openApi/v2/market/symbol", 
-                                   params={"symbol": symbol}, signed=False)
-        if result.get("code") == 0:
-            return result.get("data", {})
-        return {}
-    
-    async def place_order(self, symbol: str, side: str, order_type: str, 
-                         quantity: float, price: Optional[float] = None,
-                         stop_loss: Optional[float] = None,
-                         take_profit: Optional[float] = None) -> Dict[str, Any]:
-        """Place futures order."""
-        params = {
+        result = await self._request("GET", "/openApi/swap/v2/user/positions", params=params, signed=True)
+        # Handle nested dict response
+        if isinstance(result, dict) and "positions" in result:
+            return result["positions"]
+        return result if isinstance(result, list) else []
+
+    async def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        params = {}
+        if symbol:
+            params["symbol"] = symbol
+        result = await self._request("GET", "/openApi/swap/v2/trade/openOrders", params=params, signed=True)
+        return result if isinstance(result, list) else []
+
+    async def place_order(self, symbol: str, side: str, order_type: str, quantity: float,
+                          price: Optional[float] = None, stop_price: Optional[float] = None,
+                          leverage: int = 1) -> Dict[str, Any]:
+        data = {
             "symbol": symbol,
             "side": side,
-            "type": order_type,
-            "quantity": quantity,
+            "positionSide": "LONG" if side == "BUY" else "SHORT",
+            "type": order_type.upper(),
+            "quantity": str(quantity),
         }
-        if price:
-            params["price"] = price
-        if stop_loss:
-            params["stopLoss"] = stop_loss
-        if take_profit:
-            params["takeProfit"] = take_profit
-        
-        return await self._request("POST", "/openApi/v2/order", params=params, signed=True)
-    
-    async def close_position(self, symbol: str, position_side: str, 
-                            quantity: Optional[float] = None) -> Dict[str, Any]:
-        """Close position by position side."""
-        params = {
+        if price is not None:
+            data["price"] = str(price)
+        if stop_price is not None:
+            data["stopPrice"] = str(stop_price)
+        return await self._request("POST", "/openApi/swap/v2/trade/order", data=data, signed=True)
+
+    async def close_position(self, symbol: str, position_side: str) -> Dict[str, Any]:
+        """Закрытие позиции через closePosition=true."""
+        data = {
             "symbol": symbol,
+            "side": "SELL" if position_side == "LONG" else "BUY",
             "positionSide": position_side,
+            "type": "MARKET",
+            "closePosition": "true"
         }
-        if quantity:
-            params["quantity"] = quantity
-        
-        return await self._request("POST", "/openApi/v2/position/close", params=params, signed=True)
-    
-    async def set_leverage(self, symbol: str, leverage: int, position_side: str = "BOTH") -> Dict[str, Any]:
-        """Set leverage for symbol."""
-        params = {
-            "symbol": symbol,
-            "leverage": leverage,
-            "positionSide": position_side,
-        }
-        return await self._request("POST", "/openApi/v2/leverage", params=params, signed=True)
-    
+        try:
+            return await self._request("POST", "/openApi/swap/v2/trade/order", data=data, signed=True)
+        except Exception:
+            # Fallback: close via market order
+            pos = await self.get_positions(symbol)
+            if pos:
+                qty = abs(float(pos[0].get("positionAmt", 0)))
+                if qty > 0:
+                    return await self.place_order(
+                        symbol=symbol,
+                        side="SELL" if position_side == "LONG" else "BUY",
+                        order_type="MARKET",
+                        quantity=qty
+                    )
+            raise
+
+    async def cancel_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
+        data = {"symbol": symbol, "orderId": order_id}
+        return await self._request("DELETE", "/openApi/swap/v2/trade/order", data=data, signed=True)
+
+    async def set_leverage(self, symbol: str, leverage: int, side: str = "BOTH") -> Dict[str, Any]:
+        data = {"symbol": symbol, "leverage": leverage, "side": side}
+        return await self._request("POST", "/openApi/swap/v2/trade/leverage", data=data, signed=True)
+
+    async def get_klines(self, symbol: str, interval: str, limit: int = 100) -> List[list]:
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        result = await self._request("GET", "/openApi/swap/v3/quote/klines", params=params)
+        return result if isinstance(result, list) else []
+
     async def get_ticker(self, symbol: str) -> Dict[str, Any]:
-        """Get ticker data."""
-        result = await self._request("GET", "/openApi/v2/ticker", 
-                                   params={"symbol": symbol}, signed=False)
-        if result.get("code") == 0:
-            return result.get("data", {})
+        params = {"symbol": symbol}
+        result = await self._request("GET", "/openApi/swap/v2/quote/ticker", params=params)
+        return result if isinstance(result, dict) else {}
+
+    async def get_symbol_info(self) -> Dict[str, Any]:
+        result = await self._request("GET", "/openApi/swap/v2/quote/contracts")
+        return result if isinstance(result, dict) else {}
+
+    async def get_symbol_specs(self, symbol: str) -> Dict[str, Any]:
+        info = await self.get_symbol_info()
+        if isinstance(info, dict) and "contracts" in info:
+            for contract in info["contracts"]:
+                if contract.get("symbol") == symbol:
+                    return contract
         return {}
-    
-    async def get_klines(self, symbol: str, interval: str = "15m", limit: int = 100) -> list:
-        """Get kline/candlestick data."""
-        result = await self._request("GET", "/openApi/v2/market/kline",
-                                   params={"symbol": symbol, "interval": interval, "limit": limit},
-                                   signed=False)
-        if result.get("code") == 0:
-            return result.get("data", [])
-        return []
-    
-    async def get_symbol_info(self) -> list:
-        """Get all trading symbols."""
-        result = await self._request("GET", "/openApi/v2/market/symbols", signed=False)
-        if result.get("code") == 0:
-            data = result.get("data", [])
-            return data if isinstance(data, list) else []
-        return []
-    
-    def get_health(self) -> Dict[str, Any]:
-        """Get client health status."""
-        return {
-            "session_active": self._session is not None and not self._session.closed,
-            "api_key_configured": bool(self.api_key),
-        }
-    
+
+    async def get_health(self) -> Dict[str, Any]:
+        try:
+            await self.get_ticker("BTC-USDT")
+            return {"status": "ok"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
     async def close(self):
-        """Close session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        if self.session and not self.session.closed:
+            await self.session.close()

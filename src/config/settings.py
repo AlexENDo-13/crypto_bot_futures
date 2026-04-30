@@ -1,62 +1,67 @@
-#!/usr/bin/env python3
-"""Settings — configuration loader."""
+"""Settings manager with JSON config support."""
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+
 
 class Settings:
+    """Управление настройками бота."""
+
+    DEFAULT_CONFIG = {
+        "api_key": "",
+        "api_secret": "",
+        "testnet": True,
+        "demo_mode": True,
+        "leverage": 5,
+        "risk_per_trade": 2.0,
+        "max_positions": 3,
+        "timeframes": ["15m", "1h", "4h", "1d"],
+        "min_adx": 15,
+        "min_atr_percent": 0.5,
+        "timeframe_agreement": 2,
+        "symbols": ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT"],
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "auto_trading": False,
+        "circuit_breaker_daily_loss": 10.0,
+        "partial_tp_1": 50,
+        "partial_tp_1_pct": 50,
+        "partial_tp_2": 30,
+        "partial_tp_2_pct": 80,
+        "trailing_stop_activation": 1.5,
+        "trailing_stop_distance": 1.0,
+        "breakeven_after_tp1": True,
+    }
+
     def __init__(self, config_path: str = "config/bot_config.json"):
         self.config_path = Path(config_path)
-        self._data: Dict[str, Any] = {}
-        self._load()
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        self._config = self._load()
 
-    def _load(self):
-        defaults = {
-            "api_key": os.getenv("BINGX_API_KEY", ""),
-            "api_secret": os.getenv("BINGX_API_SECRET", ""),
-            "testnet": os.getenv("BINGX_TESTNET", "false").lower() == "true",
-            "scan_interval_minutes": 3,
-            "timeframe": "15m",
-            "mtf_timeframes": ["1h", "4h", "1d"],
-            "use_multi_timeframe": True,
-            "mtf_required_agreement": 2,
-            "min_adx": 12,
-            "min_atr_percent": 0.3,
-            "min_volume_24h_usdt": 30000,
-            "min_signal_strength": 0.25,
-            "use_spread_filter": True,
-            "max_spread_percent": 0.8,
-            "max_funding_rate": 0.0,
-            "default_sl_pct": 1.5,
-            "default_tp_pct": 3.0,
-            "auto_optimize_sl_tp": True,
-            "trailing_stop_enabled": True,
-            "trailing_stop_distance_percent": 2.0,
-            "learning_enabled": True,
-            "force_ignore_session": True,
-            "correlation_filter_enabled": True,
-            "cache_ttl_seconds": 60,
-            "telegram_token": os.getenv("TELEGRAM_TOKEN", ""),
-            "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
-            "max_open_positions": 5,
-            "risk_per_trade_percent": 1.0,
-            "max_daily_loss_percent": 5.0,
-            "max_weekly_loss_percent": 10.0,
-            "leverage": 1,
-            "log_level": "INFO",
-            "log_dir": "logs",
-        }
+    def _load(self) -> Dict[str, Any]:
         if self.config_path.exists():
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
-                    defaults.update(json.load(f))
+                    loaded = json.load(f)
+                    # Merge with defaults
+                    config = dict(self.DEFAULT_CONFIG)
+                    config.update(loaded)
+                    return config
             except Exception:
                 pass
-        self._data = defaults
+        return dict(self.DEFAULT_CONFIG)
+
+    def save(self):
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump(self._config, f, indent=2, ensure_ascii=False)
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
+        return self._config.get(key, default)
 
-    def to_dict(self) -> Dict[str, Any]:
-        return self._data.copy()
+    def set(self, key: str, value: Any):
+        self._config[key] = value
+        self.save()
+
+    def all(self) -> Dict[str, Any]:
+        return dict(self._config)
