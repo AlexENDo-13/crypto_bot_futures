@@ -1,98 +1,101 @@
-"""Crypto Bot Futures — Main Entry Point WITH GUI."""
-import asyncio
-import logging
+#!/usr/bin/env python3
 import sys
+import os
+import asyncio
 import threading
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from src.config.settings import Settings
-from src.core.bot_logger import BotLogger
 from src.exchange.exchange import Exchange
+from src.core.bot_logger import BotLogger
 from src.core.engine.trading_engine import TradingEngine
+from src.ui.main_window import MainWindow
 
-# GUI imports
-try:
-    from PyQt5.QtWidgets import QApplication
-    from PyQt5.QtCore import Qt
-    GUI_AVAILABLE = True
-except ImportError:
+def run_engine_in_thread(engine: TradingEngine):
+    """Запускает TradingEngine в отдельном потоке с собственным event loop."""
+    def thread_target():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(engine.start())
+            loop.run_forever()
+        except Exception as e:
+            print(f"Engine thread error: {e}")
+        finally:
+            loop.close()
+    
+    thread = threading.Thread(target=thread_target, daemon=True)
+    thread.start()
+    return thread
+
+def main():
+    print("=== MAIN START ===")
+    
+    # Инициализация логгера
+    logger = BotLogger(log_dir="logs", level="INFO")
+    
+    # Загрузка настроек
+    settings = Settings()
+    
+    # === ИСПРАВЛЕНО: правильные аргументы для Exchange ===
+    api_key = settings.get("api_key", "")
+    api_secret = settings.get("api_secret", "")
+    testnet = settings.get("testnet", False)
+    
+    exchange = Exchange(
+        api_key=api_key,
+        api_secret=api_secret,
+        testnet=testnet
+    )
+    logger.info("Exchange initialized")
+    
+    # Создание движка
+    engine = TradingEngine(
+        settings=settings,
+        logger=logger,
+        api_client=exchange.client,  # ИСПРАВЛЕНО: exchange.client, не exchange.api_client
+        telegram=None
+    )
+    
+    logger.info("TradingEngine created")
+    
+    # Запуск движка в ОТДЕЛЬНОМ потоке
+    engine_thread = run_engine_in_thread(engine)
+    logger.info("Engine thread started")
+    
+    # Запуск GUI в главном потоке
+    logger.info("Starting GUI...")
     try:
-        from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtCore import Qt
-        GUI_AVAILABLE = True
-    except ImportError:
-        GUI_AVAILABLE = False
-        print("WARNING: PyQt not installed. GUI unavailable.")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
-
-async def main():
-    try:
-        logger.info("=== MAIN START ===")
-        settings = Settings()
-        bot_logger = BotLogger(
-            log_dir=settings.get("log_dir", "logs"),
-            level=getattr(logging, settings.get("log_level", "INFO").upper())
+        import PyQt5.QtWidgets as QtWidgets
+        
+        app = QtWidgets.QApplication(sys.argv)
+        
+        # Передаём правильные аргументы
+        window = MainWindow(
+            api_client=exchange.client,  # ИСПРАВЛЕНО
+            settings=settings,
+            engine=engine
         )
-        api_client = Exchange(
-            api_key=settings.get("api_key", ""),
-            api_secret=settings.get("api_secret", ""),
-            testnet=settings.get("testnet", False)
-        )
-        engine = TradingEngine(settings, bot_logger, api_client)
-        logger.info("TradingEngine created")
-
-        # Start engine in background thread (GUI runs in main thread)
-        async def run_engine():
-            bot_logger.info("Crypto Bot Futures v10.0 — GUI Mode")
-            await engine.start()
-            while engine.is_running():
-                await asyncio.sleep(1)
-
-        engine_thread = threading.Thread(target=lambda: asyncio.run(run_engine()), daemon=True)
-        engine_thread.start()
-        logger.info("Engine thread started")
-
-        # Start GUI in main thread
-        if GUI_AVAILABLE:
-            logger.info("Starting GUI...")
-            app = QApplication(sys.argv)
-            app.setQuitOnLastWindowClosed(True)
-
-            try:
-                from src.ui.main_window import MainWindow
-                window = MainWindow(engine=engine)
-                window.show()
-                logger.info("GUI window shown")
-                app.exec_()  # PyQt5
-            except Exception as e:
-                logger.error(f"GUI error: {e}", exc_info=True)
-                # Fallback: terminal mode
-                logger.info("Falling back to terminal mode...")
-                while engine.is_running():
-                    await asyncio.sleep(1)
-        else:
-            logger.info("No GUI available, running in terminal mode...")
-            while engine.is_running():
-                await asyncio.sleep(1)
-
-    except KeyboardInterrupt:
-        logger.info("Shutdown requested")
+        window.show()
+        
+        logger.info("GUI started successfully")
+        sys.exit(app.exec_())
+        
     except Exception as e:
-        logger.critical(f"Fatal error: {e}", exc_info=True)
-    finally:
-        if 'engine' in locals():
-            await engine.stop()
-        if 'api_client' in locals():
-            await api_client.close()
-        logger.info("Bot stopped")
+        logger.error(f"GUI error: {e}", exc_info=True)
+        logger.info("Falling back to terminal mode...")
+        
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(engine.start())
+            loop.run_forever()
+        except KeyboardInterrupt:
+            print("\nShutdown requested...")
+            loop = asyncio.get_event_loop()
+            asyncio.run_coroutine_threadsafe(engine.stop(), loop)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
