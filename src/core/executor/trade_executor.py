@@ -1,19 +1,12 @@
 """
-Trade Executor — FIXED: position side handling, order confirmation, exit direction
-Исправления:
-- Правильное определение side/positionSide при открытии и закрытии
-- Проверка позиции через API если ордер вернул ошибку/None
-- Использование quoteOrderQty для малых позиций
-- Корректное закрытие с closePosition=true
+Trade Executor — FIXED: await get_symbol_specs, position side handling, order confirmation.
 """
 import asyncio
 import logging
-import time
 from typing import Optional, Dict, Any
 from src.core.trading.position import Position, OrderSide
 
 logger = logging.getLogger("TradeExecutor")
-
 
 class TradeExecutor:
     def __init__(self, settings, logger, order_manager, risk_manager, risk_controller):
@@ -24,10 +17,10 @@ class TradeExecutor:
         self.risk_controller = risk_controller
 
     async def execute_trade_async(self, candidate, balance, open_positions,
-                                   trailing_enabled=True, trailing_distance=2.0,
-                                   telegram=None, daily_pnl=0, weekly_pnl=0,
-                                   start_balance=0):
-        """Execute trade entry — FIXED with proper position side handling"""
+                                  trailing_enabled=True, trailing_distance=2.0,
+                                  telegram=None, daily_pnl=0, weekly_pnl=0,
+                                  start_balance=0):
+        """Execute trade entry — FIXED with await for get_symbol_specs"""
         symbol = candidate.get("symbol", "")
         ind = candidate.get("indicators", {})
         signal_direction = ind.get("signal_direction", "")
@@ -38,7 +31,6 @@ class TradeExecutor:
             self.logger.warning(f"Invalid candidate: {symbol} {signal_direction} price={current_price}")
             return None
 
-        # Determine side and position_side
         if signal_direction == "LONG":
             side = "BUY"
             position_side = "LONG"
@@ -51,16 +43,17 @@ class TradeExecutor:
             self.logger.warning(f"Invalid signal_direction: {signal_direction}")
             return None
 
-        # Calculate position size
         symbol_formatted = symbol.replace("/", "-")
         if not symbol_formatted.endswith("-USDT"):
             symbol_formatted = f"{symbol_formatted}-USDT"
 
+        # FIX: await the coroutine!
         specs = None
         try:
-            specs = self.order_manager.api_client.get_symbol_specs(symbol_formatted)
+            specs = await self.order_manager.api_client.get_symbol_specs(symbol_formatted)
+            self.logger.debug(f"Symbol specs for {symbol_formatted}: {specs}")
         except Exception as e:
-            logger.warning(f"Suppressed: {e}")
+            self.logger.warning(f"Failed to get symbol specs: {e}")
 
         atr_percent = ind.get("atr_percent", 0.5)
         stop_distance = max(atr_percent * 1.5, 0.3)
@@ -82,27 +75,22 @@ class TradeExecutor:
         )
 
         self.logger.info(f"ENTRY PREPARE {side} {symbol} | Qty: {quantity:.6f} | Price: ~{current_price:.4f} | "
-                        f"Leverage: {leverage}x | PositionSide: {position_side} | StopDist: {stop_distance:.2f}%")
+                         f"Leverage: {leverage}x | PositionSide: {position_side} | StopDist: {stop_distance:.2f}%")
 
         try:
-            # Set leverage
             await self.order_manager.api_client.set_leverage(symbol_formatted, leverage, position_side)
 
-            # Place order
             order_result = await self.order_manager.api_client.place_order(
                 symbol=symbol_formatted,
                 side=side,
-                position_side=position_side,
                 order_type="MARKET",
                 quantity=quantity
             )
 
-            # Check if order was successful
             if order_result and not order_result.get("error"):
                 order_id = order_result.get("orderId")
                 self.logger.info(f"ENTRY SUCCESS {symbol} | OrderID: {order_id} | Status: {order_result.get('status', 'UNKNOWN')}")
 
-                # Create position object
                 pos = Position(
                     symbol=symbol,
                     side=order_side,
@@ -116,7 +104,6 @@ class TradeExecutor:
                 pos.order_id = order_id
                 return pos
             else:
-                # Order failed or returned error — check if position was actually opened
                 self.logger.warning(f"ENTRY: Order returned error/None for {symbol}, checking positions...")
                 await asyncio.sleep(1.5)
 
@@ -162,14 +149,12 @@ class TradeExecutor:
             if quantity and quantity > 0:
                 result = await self.order_manager.api_client.close_position(
                     symbol=symbol_formatted,
-                    position_side=position_side,
-                    quantity=str(quantity)
+                    position_side=position_side
                 )
             else:
                 result = await self.order_manager.api_client.close_position(
                     symbol=symbol_formatted,
-                    position_side=position_side,
-                    quantity="0"  # Full close with closePosition=true
+                    position_side=position_side
                 )
 
             if result and not result.get("error"):

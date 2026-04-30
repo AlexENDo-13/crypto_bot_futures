@@ -1,4 +1,4 @@
-"""BingX API Client v2/v3 — Fixed signature, correct endpoints, POST query string fix."""
+"""BingX API Client v2/v3 — Fixed signature, closePosition, timeouts."""
 import hmac, hashlib, time, json, logging, asyncio
 from typing import Dict, Any, Optional, List
 import aiohttp
@@ -7,14 +7,24 @@ logger = logging.getLogger(__name__)
 
 class BingXAPIClient:
     def __init__(self, api_key: str, api_secret: str, base_url: str = "https://open-api.bingx.com"):
-        self.api_key = api_key
-        self.api_secret = api_secret
+        self.api_key = api_key or ""
+        self.api_secret = api_secret or ""
         self.base_url = base_url.rstrip("/")
         self.session: Optional[aiohttp.ClientSession] = None
+        self._connector = aiohttp.TCPConnector(
+            limit=10,
+            ttl_dns_cache=300,
+            use_dns_cache=True,
+            ssl=False
+        )
+        self._timeout = aiohttp.ClientTimeout(total=10, connect=5)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
+            self.session = aiohttp.ClientSession(
+                connector=self._connector,
+                timeout=self._timeout
+            )
         return self.session
 
     def _generate_signature(self, payload: str) -> str:
@@ -36,28 +46,34 @@ class BingXAPIClient:
         params["signature"] = signature
         url = f"{self.base_url}{endpoint}"
 
-        # FIX: For ALL requests (GET and POST), timestamp and signature must be in query string
         query_string = self._build_params(params) + f"&signature={signature}"
         if query_string:
             url += "?" + query_string
 
         headers = {"X-BX-APIKEY": self.api_key, "Content-Type": "application/json"}
         session = await self._get_session()
+
+        logger.debug(f"API {method} {endpoint} | url={url[:120]}...")
+
         for attempt in range(retries):
             try:
                 if method.upper() == "GET":
-                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    async with session.get(url, headers=headers) as resp:
                         text = await resp.text()
+                        logger.debug(f"API GET {endpoint} status={resp.status} len={len(text)}")
                         result = json.loads(text)
                 else:
-                    async with session.post(url, headers=headers, json=data, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    async with session.post(url, headers=headers, json=data) as resp:
                         text = await resp.text()
+                        logger.debug(f"API POST {endpoint} status={resp.status} len={len(text)}")
                         result = json.loads(text)
+
                 if result.get("code") not in (0, None, 200):
                     logger.warning(f"API error {result.get('code')}: {result.get('msg')}")
-                    return result
                 return result
+
             except aiohttp.ClientError as e:
+                logger.warning(f"API ClientError (attempt {attempt+1}/{retries}): {e}")
                 if attempt == retries - 1:
                     raise
                 await asyncio.sleep(0.5 * (attempt + 1))
@@ -67,7 +83,9 @@ class BingXAPIClient:
         return {}
 
     async def get_account_balance(self) -> Dict[str, Any]:
+        logger.info("API: get_account_balance() called")
         result = await self.request("GET", "/openApi/swap/v2/user/balance")
+        logger.info(f"API: balance response code={result.get('code')}")
         data = result.get("data", {})
         if isinstance(data, dict) and "balance" in data:
             return data
@@ -79,14 +97,11 @@ class BingXAPIClient:
         params = {"symbol": symbol} if symbol else {}
         result = await self.request("GET", "/openApi/swap/v2/user/positions", params=params)
         data = result.get("data", {})
-        # FIX: Handle both {"data": [...]} and {"data": {"positions": [...]}}
         if isinstance(data, list):
             return data
         elif isinstance(data, dict):
             positions = data.get("positions", [])
-            if isinstance(positions, list):
-                return positions
-            return []
+            return positions if isinstance(positions, list) else []
         return []
 
     async def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict]:
@@ -108,8 +123,16 @@ class BingXAPIClient:
         return await self.request("POST", "/openApi/swap/v2/trade/order", data=data)
 
     async def close_position(self, symbol: str, position_side: str) -> Dict[str, Any]:
+        """FIX: Use closePosition=true for reliable position closing."""
         side = "SELL" if position_side == "LONG" else "BUY"
-        return await self.place_order(symbol, side, "MARKET", 0)
+        data = {
+            "symbol": symbol,
+            "side": side,
+            "positionSide": position_side,
+            "type": "MARKET",
+            "closePosition": "true"
+        }
+        return await self.request("POST", "/openApi/swap/v2/trade/order", data=data)
 
     async def set_leverage(self, symbol: str, leverage: int, side: str = "BOTH") -> Dict[str, Any]:
         data = {"symbol": symbol, "leverage": leverage, "side": side}
@@ -146,3 +169,5 @@ class BingXAPIClient:
     async def close(self):
         if self.session and not self.session.closed:
             await self.session.close()
+        if self._connector and not self._connector.closed:
+            await self._connector.close()
